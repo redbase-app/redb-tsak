@@ -1,0 +1,224 @@
+@page "/node/{NodeId}/watchdog"
+@inject INodeClientProvider NodeProvider
+@inject ToastService Toast
+@using redb.Tsak.Client
+@using redb.Tsak.Contracts
+@implements IDisposable
+
+<TsakPageHeader Title="Watchdog" Description="Exchange watchdog monitoring and alerts"
+                RefreshInterval="15s" OnRefresh="Refresh" />
+
+@if (_loading)
+{
+    <div class="empty-state">
+        <div class="spinner spinner-lg"></div>
+        <p>Loading watchdog state…</p>
+    </div>
+}
+else if (_state is not null)
+{
+    @* Status cards *@
+    <div class="grid-stats">
+        <TsakCard Title="Status" Icon="shield">
+            <TsakBadge Text="@(_state.Enabled ? "Enabled" : "Disabled")"
+                       Variant="@(_state.Enabled ? "online" : "offline")" />
+        </TsakCard>
+        <TsakCard Title="Suspected" Icon="alert-triangle"
+                  Value="@_state.SuspectedExchanges.ToString()"
+                  ValueStyle="@(_state.SuspectedExchanges > 0 ? "color: var(--status-warning)" : "")" />
+        <TsakCard Title="Hung" Icon="alert-circle"
+                  Value="@_state.HungExchanges.ToString()"
+                  ValueStyle="@(_state.HungExchanges > 0 ? "color: var(--status-error)" : "")" />
+        <TsakCard Title="Auto-Restarts" Icon="refresh"
+                  Value="@_state.AutoRestartsPerformed.ToString()" />
+        <TsakCard Title="Last Check" Icon="clock"
+                  Value="@_state.LastCheckAt.ToString("HH:mm:ss")" />
+        <TsakCard Title="Active Alerts" Icon="activity"
+                  Value="@_state.ActiveAlerts.Count.ToString()"
+                  ValueStyle="@(_state.ActiveAlerts.Count > 0 ? "color: var(--status-error)" : "")" />
+    </div>
+
+    @* Enable/Disable *@
+    <AuthorizedView AdminOnly="true">
+        <div style="margin-bottom: var(--space-4);">
+            @if (_state.Enabled)
+            {
+                <button class="btn btn-secondary btn-sm" @onclick="Disable">
+                    <TsakIcon Name="stop" Size="14" /> Disable Watchdog
+                </button>
+            }
+            else
+            {
+                <button class="btn btn-primary btn-sm" @onclick="Enable">
+                    <TsakIcon Name="play" Size="14" /> Enable Watchdog
+                </button>
+            }
+        </div>
+    </AuthorizedView>
+
+    @* Active Alerts *@
+    <div class="card" style="margin-bottom: var(--space-4);">
+        <div class="card-header">
+            <span class="card-title">
+                <TsakIcon Name="alert-triangle" Size="16" /> Active Alerts
+            </span>
+            <TsakBadge Text="@_state.ActiveAlerts.Count.ToString()" Variant="@(_state.ActiveAlerts.Count > 0 ? "error" : "online")" ShowDot="false" />
+        </div>
+
+        @if (_state.ActiveAlerts.Count > 0)
+        {
+            <TsakGrid Items="_state.ActiveAlerts" T="WatchdogAlert">
+                <HeaderContent>
+                    <th>Route ID</th>
+                    <th>Context</th>
+                    <th>Level</th>
+                    <th>Exchange ID</th>
+                    <th>Elapsed</th>
+                    <th>Detected At</th>
+                </HeaderContent>
+                <RowContent>
+                    <td class="mono text-sm">@context.RouteId</td>
+                    <td class="text-sm">@context.ContextName</td>
+                    <td><TsakBadge Text="@context.Level" Variant="@(context.Level == "Hung" ? "error" : "warning")" ShowDot="false" /></td>
+                    <td class="mono text-xs">@context.ExchangeId</td>
+                    <td class="mono text-sm" style="@(context.ElapsedSeconds > 300 ? "color: var(--status-error)" : "")">
+                        @FormatElapsed(context.ElapsedSeconds)
+                    </td>
+                    <td class="text-sm">@context.DetectedAt.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                </RowContent>
+            </TsakGrid>
+        }
+        else
+        {
+            <div class="empty-state" style="padding: var(--space-4);">
+                <TsakIcon Name="check-circle" Size="32" />
+                <p>All clear — no active alerts</p>
+            </div>
+        }
+    </div>
+
+    @* Lifecycle events filtered to watchdog-related *@
+    @if (_watchdogEvents is { Length: > 0 })
+    {
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">
+                    <TsakIcon Name="clock" Size="16" /> Auto-Restart History
+                </span>
+            </div>
+            <TsakGrid Items="_watchdogEvents" T="LifecycleEvent">
+                <HeaderContent>
+                    <th>Timestamp</th>
+                    <th>Event</th>
+                    <th>Context</th>
+                    <th>Route</th>
+                    <th>Details</th>
+                </HeaderContent>
+                <RowContent>
+                    <td class="text-sm">@context.Timestamp.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                    <td><TsakBadge Text="@context.EventType.ToString()" Variant="@(context.EventType == LifecycleEventType.WatchdogAutoRestart ? "error" : "warning")" ShowDot="false" /></td>
+                    <td class="text-sm">@context.ContextName</td>
+                    <td class="mono text-xs">@(context.RouteId ?? "—")</td>
+                    <td class="text-xs text-secondary">@(context.Details ?? "—")</td>
+                </RowContent>
+            </TsakGrid>
+        </div>
+    }
+}
+else
+{
+    <div class="empty-state">
+        <TsakIcon Name="shield" Size="48" />
+        <p>Watchdog not available on this node</p>
+    </div>
+}
+
+@code {
+    [Parameter] public string NodeId { get; set; } = "";
+
+    private bool _loading = true;
+    private WatchdogState? _state;
+    private LifecycleEvent[]? _watchdogEvents;
+
+    private PeriodicTimer? _timer;
+    private CancellationTokenSource? _cts;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+        _cts = new CancellationTokenSource();
+        _ = PollLoop(_cts.Token);
+    }
+
+    private async Task PollLoop(CancellationToken ct)
+    {
+        _timer = new PeriodicTimer(TimeSpan.FromSeconds(15));
+        while (await _timer.WaitForNextTickAsync(ct))
+        {
+            await LoadData();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task LoadData()
+    {
+        var client = NodeProvider.GetClient(NodeId);
+        if (client is null) { _loading = false; return; }
+
+        try
+        {
+            _state = await client.GetWatchdogStatusAsync();
+            try
+            {
+                var events = await client.GetLifecycleEventsAsync(
+                    type: nameof(LifecycleEventType.WatchdogAutoRestart), limit: 50);
+                _watchdogEvents = events;
+            }
+            catch { }
+        }
+        catch { }
+        _loading = false;
+    }
+
+    private async Task Refresh() => await LoadData();
+
+    private async Task Enable()
+    {
+        var client = NodeProvider.GetClient(NodeId);
+        if (client is null) return;
+        try
+        {
+            await client.EnableWatchdogAsync();
+            await LoadData();
+            Toast.Success("Watchdog enabled");
+        }
+        catch (Exception ex) { Toast.Error($"Failed: {ex.Message}"); }
+    }
+
+    private async Task Disable()
+    {
+        var client = NodeProvider.GetClient(NodeId);
+        if (client is null) return;
+        try
+        {
+            await client.DisableWatchdogAsync();
+            await LoadData();
+            Toast.Success("Watchdog disabled");
+        }
+        catch (Exception ex) { Toast.Error($"Failed: {ex.Message}"); }
+    }
+
+    private static string FormatElapsed(double seconds)
+    {
+        if (seconds < 60) return $"{seconds:F0}s";
+        if (seconds < 3600) return $"{(int)(seconds / 60)}m {(int)(seconds % 60)}s";
+        return $"{(int)(seconds / 3600)}h {(int)((seconds % 3600) / 60)}m";
+    }
+
+    public void Dispose()
+    {
+        _cts?.Cancel();
+        _cts?.Dispose();
+        _timer?.Dispose();
+    }
+}

@@ -1,0 +1,394 @@
+@page "/auth"
+@inject INodeClientProvider NodeProvider
+@inject IAuthService AuthService
+@inject ToastService Toast
+@using redb.Tsak.Contracts
+
+<TsakPageHeader Title="Auth & Users" Description="Manage API keys and user accounts">
+    <Actions>
+        <AuthorizedView AdminOnly="true">
+            <button class="btn btn-primary btn-sm" @onclick="ShowCreateForm">
+                <TsakIcon Name="key" Size="14" />
+                Create Key
+            </button>
+        </AuthorizedView>
+    </Actions>
+</TsakPageHeader>
+
+@if (_showCreate)
+{
+    <div class="card" style="margin-bottom: var(--space-4);">
+        <div class="card-header">
+            <span class="card-title">Create new API key</span>
+        </div>
+        <div style="display: flex; gap: var(--space-3); align-items: end;">
+            <div style="flex: 1;">
+                <label class="text-sm text-secondary" style="display: block; margin-bottom: var(--space-1);">Name</label>
+                <input class="input" placeholder="Key name" @bind="_newKeyName" />
+            </div>
+            <div style="flex: 1;">
+                <label class="text-sm text-secondary" style="display: block; margin-bottom: var(--space-1);">Roles</label>
+                <input class="input" placeholder="admin, viewer (comma-separated)" @bind="_newKeyRoles" />
+            </div>
+            <div style="display: flex; gap: var(--space-2);">
+                <button class="btn btn-primary" @onclick="CreateKey" disabled="@(string.IsNullOrWhiteSpace(_newKeyName))">
+                    Create
+                </button>
+                <button class="btn btn-secondary" @onclick="() => _showCreate = false">Cancel</button>
+            </div>
+        </div>
+
+        @if (_createdKey is not null)
+        {
+            <div style="margin-top: var(--space-4); padding: var(--space-3); background: var(--status-info-bg); border-radius: var(--radius-md);">
+                <p class="text-sm font-semibold" style="color: var(--status-info); margin-bottom: var(--space-1);">
+                    Key created — copy it now, it won't be shown again:
+                </p>
+                <code class="mono" style="font-size: var(--font-size-sm); word-break: break-all;">@_createdKey</code>
+            </div>
+        }
+    </div>
+}
+
+@if (_loading)
+{
+    <div class="empty-state">
+        <div class="spinner spinner-lg"></div>
+        <p>Loading keys…</p>
+    </div>
+}
+else if (_keys.Count == 0)
+{
+    <div class="empty-state">
+        <TsakIcon Name="key" Size="48" />
+        <h2>No API keys</h2>
+        <p class="text-secondary">No running nodes returned API key data.</p>
+    </div>
+}
+else
+{
+    @foreach (var (nodeId, keys) in _keys)
+    {
+        <div class="card" style="margin-bottom: var(--space-4);">
+            <div class="card-header">
+                <div style="display: flex; align-items: center; gap: var(--space-2);">
+                    <TsakIcon Name="server" Size="16" />
+                    <span class="font-semibold mono text-sm">@nodeId</span>
+                </div>
+                <span class="text-sm text-secondary">@keys.Length keys</span>
+            </div>
+            <TsakGrid Items="keys" T="ApiKeyInfo">
+                <HeaderContent>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Roles</th>
+                    <th>Created</th>
+                    <th>Valid</th>
+                    <th>Actions</th>
+                </HeaderContent>
+                <RowContent>
+                    <td class="mono text-sm">@context.Id[..Math.Min(8, context.Id.Length)]…</td>
+                    <td>@context.Name</td>
+                    <td class="text-sm">@context.Roles</td>
+                    <td class="text-sm">@context.CreatedAt.ToString("yyyy-MM-dd HH:mm")</td>
+                    <td>
+                        <TsakBadge Text="@(context.IsValid ? "Valid" : "Revoked")" Variant="@(context.IsValid ? "online" : "error")" />
+                    </td>
+                    <td>
+                        @if (context.IsValid)
+                        {
+                            <AuthorizedView AdminOnly="true">
+                                <button class="btn btn-danger btn-sm" @onclick="() => RevokeKey(nodeId, context.Id.ToString())">
+                                    <TsakIcon Name="trash" Size="14" /> Revoke
+                                </button>
+                            </AuthorizedView>
+                        }
+                    </td>
+                </RowContent>
+            </TsakGrid>
+        </div>
+    }
+}
+
+<TsakConfirmDialog @ref="_confirm" />
+
+@* ── Users section (admin only) ────────────────────────────────── *@
+<AuthorizedView AdminOnly="true">
+    <div style="margin-top: var(--space-6);">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-4);">
+            <h2 style="margin: 0; font-size: var(--font-size-lg);">
+                <TsakIcon Name="users" Size="20" /> Users
+            </h2>
+            <button class="btn btn-primary btn-sm" @onclick="() => ShowUserForm(null)">
+                <TsakIcon Name="user-plus" Size="14" /> Add User
+            </button>
+        </div>
+
+        @if (_showUserForm)
+        {
+            <div class="card" style="margin-bottom: var(--space-4);">
+                <div class="card-header">
+                    <span class="card-title">@(_editingUser is null ? "Create user" : $"Edit {_editingUser.Login}")</span>
+                </div>
+                <div style="display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: end;">
+                    @if (_editingUser is null)
+                    {
+                        <div style="flex: 1; min-width: 140px;">
+                            <label class="text-sm text-secondary" style="display: block; margin-bottom: var(--space-1);">Login</label>
+                            <input class="input" @bind="_userLogin" @bind:event="oninput" placeholder="login" />
+                        </div>
+                    }
+                    <div style="flex: 1; min-width: 140px;">
+                        <label class="text-sm text-secondary" style="display: block; margin-bottom: var(--space-1);">Name</label>
+                        <input class="input" @bind="_userName" @bind:event="oninput" placeholder="Display name"
+                               disabled="@(_editingUser is not null && _editingUser.Id <= 1)" />
+                    </div>
+                    <div style="flex: 1; min-width: 140px;">
+                        <label class="text-sm text-secondary" style="display: block; margin-bottom: var(--space-1);">Password@(_editingUser is not null ? " (blank = keep)" : "")</label>
+                        <input class="input" type="password" @bind="_userPassword" @bind:event="oninput" placeholder="@(_editingUser is not null ? "unchanged" : "password")" />
+                    </div>
+                    <div style="min-width: 120px;">
+                        <label class="text-sm text-secondary" style="display: block; margin-bottom: var(--space-1);">Role</label>
+                        <select class="input" @bind="_userRole" disabled="@(_editingUser is not null && _editingUser.Id <= 1)">
+                            <option value="admin">admin</option>
+                            <option value="viewer">viewer</option>
+                        </select>
+                    </div>
+                    <div style="display: flex; gap: var(--space-2);">
+                        <button class="btn btn-primary" @onclick="SaveUser"
+                                disabled="@(_editingUser is null && (string.IsNullOrWhiteSpace(_userLogin) || string.IsNullOrWhiteSpace(_userPassword)))">
+                            @(_editingUser is null ? "Create" : "Save")
+                        </button>
+                        <button class="btn btn-secondary" @onclick="() => _showUserForm = false">Cancel</button>
+                    </div>
+                </div>
+            </div>
+        }
+
+        @if (_users.Length > 0)
+        {
+            <div class="card">
+                <TsakGrid Items="_users" T="TsakUserInfo">
+                    <HeaderContent>
+                        <th>Login</th>
+                        <th>Name</th>
+                        <th>Role</th>
+                        <th>Enabled</th>
+                        <th>Registered</th>
+                        <th>Actions</th>
+                    </HeaderContent>
+                    <RowContent>
+                        <td class="mono text-sm">@context.Login</td>
+                        <td>@context.Name</td>
+                        <td><TsakBadge Text="@context.Role" Variant="@(context.Role == "admin" ? "online" : "info")" /></td>
+                        <td><TsakBadge Text="@(context.Enabled ? "Active" : "Disabled")" Variant="@(context.Enabled ? "online" : "offline")" /></td>
+                        <td class="text-sm">@(context.DateRegister?.ToString("yyyy-MM-dd") ?? "—")</td>
+                        <td style="display: flex; gap: var(--space-2);">
+                            <button class="btn btn-sm" @onclick="() => ShowUserForm(context)">
+                                <TsakIcon Name="edit" Size="14" />
+                            </button>
+                            @if (context.Id > 1 && context.Login != AuthService.Login)
+                            {
+                                <button class="btn btn-danger btn-sm" @onclick="() => DeleteUser(context.Login)">
+                                    <TsakIcon Name="trash" Size="14" />
+                                </button>
+                            }
+                        </td>
+                    </RowContent>
+                </TsakGrid>
+            </div>
+        }
+        else if (!_loading)
+        {
+            <div class="empty-state">
+                <TsakIcon Name="users" Size="48" />
+                <h2>No users</h2>
+                <p class="text-secondary">Create the first user account.</p>
+            </div>
+        }
+    </div>
+</AuthorizedView>
+
+@code {
+    private readonly Dictionary<string, ApiKeyInfo[]> _keys = new();
+    private TsakUserInfo[] _users = [];
+    private bool _loading = true;
+    private bool _showCreate;
+    private string _newKeyName = "";
+    private string _newKeyRoles = "";
+    private string? _createdKey;
+    private TsakConfirmDialog? _confirm;
+
+    // User form
+    private bool _showUserForm;
+    private TsakUserInfo? _editingUser;
+    private string _userLogin = "";
+    private string _userName = "";
+    private string _userPassword = "";
+    private string _userRole = "viewer";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+    }
+
+    private async Task LoadData()
+    {
+        _loading = true;
+        _keys.Clear();
+        _users = [];
+        StateHasChanged();
+
+        var topology = await NodeProvider.LoadTopologyAsync();
+        foreach (var node in topology.Nodes.Where(n => n.IsAlive))
+        {
+            var client = NodeProvider.GetClient(node.NodeId);
+            if (client is null) continue;
+
+            var keys = await client.ListApiKeysAsync();
+            if (keys.Length > 0)
+                _keys[node.NodeId] = keys;
+
+            if (_users.Length == 0)
+            {
+                try { _users = await client.ListUsersAsync(); }
+                catch { /* node may not support users API yet */ }
+            }
+        }
+
+        _loading = false;
+    }
+
+    // ── API Keys ─────────────────────────────────────────────────────
+
+    private void ShowCreateForm()
+    {
+        _showCreate = true;
+        _createdKey = null;
+        _newKeyName = "";
+        _newKeyRoles = "";
+    }
+
+    private async Task CreateKey()
+    {
+        if (string.IsNullOrWhiteSpace(_newKeyName)) return;
+
+        var topology = await NodeProvider.LoadTopologyAsync();
+        var node = topology.Nodes.FirstOrDefault(n => n.IsAlive);
+        if (node is null) return;
+
+        var client = NodeProvider.GetClient(node.NodeId);
+        if (client is null) return;
+
+        var roles = string.IsNullOrWhiteSpace(_newKeyRoles)
+            ? null
+            : _newKeyRoles.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        var result = await client.CreateApiKeyAsync(_newKeyName, roles);
+        _createdKey = result.Key;
+        Toast.Success($"API key '{_newKeyName}' created");
+        await LoadData();
+    }
+
+    private async Task RevokeKey(string nodeId, string keyId)
+    {
+        if (_confirm is not null)
+        {
+            var confirmed = await _confirm.ShowAsync(
+                $"Revoke API key {keyId[..Math.Min(8, keyId.Length)]}…? This cannot be undone.",
+                "Revoke API key");
+            if (!confirmed) return;
+        }
+
+        var client = NodeProvider.GetClient(nodeId);
+        if (client is null) return;
+
+        await client.RevokeApiKeyAsync(keyId);
+        Toast.Success("API key revoked");
+        await LoadData();
+    }
+
+    // ── Users ────────────────────────────────────────────────────────
+
+    private void ShowUserForm(TsakUserInfo? user)
+    {
+        _editingUser = user;
+        _showUserForm = true;
+        _userLogin = user?.Login ?? "";
+        _userName = user?.Name ?? "";
+        _userPassword = "";
+        _userRole = user?.Role ?? "viewer";
+    }
+
+    private async Task SaveUser()
+    {
+        var client = await GetFirstAliveClientAsync();
+        if (client is null) return;
+
+        try
+        {
+            if (_editingUser is null)
+            {
+                var request = new TsakCreateUserRequest
+                {
+                    Login = _userLogin,
+                    Password = _userPassword,
+                    Name = _userName,
+                    Role = _userRole
+                };
+                await client.CreateUserAsync(request);
+                Toast.Success($"User '{_userLogin}' created");
+            }
+            else
+            {
+                var request = new TsakUpdateUserRequest
+                {
+                    Name = _userName != _editingUser.Name ? _userName : null,
+                    Role = _userRole != _editingUser.Role ? _userRole : null,
+                    Password = string.IsNullOrWhiteSpace(_userPassword) ? null : _userPassword
+                };
+                await client.UpdateUserAsync(_editingUser.Login, request);
+                Toast.Success($"User '{_editingUser.Login}' updated");
+            }
+
+            _showUserForm = false;
+            await LoadData();
+        }
+        catch (Exception ex)
+        {
+            Toast.Error(ex.Message);
+        }
+    }
+
+    private async Task DeleteUser(string login)
+    {
+        if (_confirm is not null)
+        {
+            var confirmed = await _confirm.ShowAsync(
+                $"Delete user '{login}'? This cannot be undone.",
+                "Delete user");
+            if (!confirmed) return;
+        }
+
+        var client = await GetFirstAliveClientAsync();
+        if (client is null) return;
+
+        try
+        {
+            await client.DeleteUserAsync(login);
+            Toast.Success($"User '{login}' deleted");
+            await LoadData();
+        }
+        catch (Exception ex)
+        {
+            Toast.Error(ex.Message);
+        }
+    }
+
+    private async Task<Client.TsakApiClient?> GetFirstAliveClientAsync()
+    {
+        var topology = await NodeProvider.LoadTopologyAsync();
+        var node = topology.Nodes.FirstOrDefault(n => n.IsAlive);
+        return node is null ? null : NodeProvider.GetClient(node.NodeId);
+    }
+}

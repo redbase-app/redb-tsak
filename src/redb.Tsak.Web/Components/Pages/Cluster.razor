@@ -1,0 +1,208 @@
+@page "/cluster"
+@inject INodeClientProvider NodeProvider
+@inject NavigationManager Nav
+@inject ToastService Toast
+@implements IDisposable
+
+<TsakPageHeader Title="Cluster" Description="Topology, groups, and node details"
+                RefreshInterval="30s" OnRefresh="Refresh" />
+
+@if (!NodeProvider.IsCluster)
+{
+    <div class="empty-state">
+        <TsakIcon Name="cluster" Size="48" />
+        <h2>Cluster mode is not enabled</h2>
+        <p class="text-secondary">Configure <code>Tsak:Web:Mode = "cluster"</code> to enable cluster management.</p>
+    </div>
+}
+else if (_topology is null)
+{
+    <div class="empty-state">
+        <div class="spinner spinner-lg"></div>
+        <p>Loading topology…</p>
+    </div>
+}
+else
+{
+    @foreach (var group in _topology.Groups)
+    {
+        var groupNodes = _topology.Nodes.Where(n => n.GroupName == group.GroupName).ToList();
+        var leader = _topology.Leader;
+
+        <div class="card" style="margin-bottom: var(--space-4);">
+            <div class="card-header">
+                <div style="display: flex; align-items: center; gap: var(--space-2);">
+                    <TsakIcon Name="cluster" Size="18" />
+                    <span class="font-semibold">@group.GroupName</span>
+                    @if (!string.IsNullOrEmpty(group.Description))
+                    {
+                        <span class="text-tertiary text-sm">— @group.Description</span>
+                    }
+                </div>
+                <span class="text-sm text-secondary">
+                    @groupNodes.Count(n => n.IsAlive) / @groupNodes.Count online
+                </span>
+            </div>
+
+            <TsakGrid Items="groupNodes" T="NodeInfo" OnRowClick="((NodeInfo n) => NavigateToNode(n.NodeId))">
+                <EmptyContent>
+                    <p class="text-tertiary text-sm" style="padding: var(--space-2) 0;">No nodes in this group</p>
+                </EmptyContent>
+                <HeaderContent>
+                    <th style="width: 32px;"></th>
+                    <th>Node ID</th>
+                    <th>Hostname</th>
+                    <th>Status</th>
+                    <th>Endpoint</th>
+                    <th>Started</th>
+                    <th>Heartbeat</th>
+                    <th>Capabilities</th>
+                    <th style="width: 60px;"></th>
+                </HeaderContent>
+                <RowContent>
+                    <td>
+                        @if (leader?.NodeId == context.NodeId)
+                        {
+                            <span title="Leader" style="color: var(--status-warning);">★</span>
+                        }
+                    </td>
+                    <td class="mono text-sm">@context.NodeId</td>
+                    <td>@context.Hostname</td>
+                    <td>
+                        <TsakBadge Text="@context.Status.ToString()" Variant="@GetBadgeClass(context)" />
+                    </td>
+                    <td class="mono text-sm">@(string.IsNullOrEmpty(context.ApiEndpoint) ? "—" : context.ApiEndpoint)</td>
+                    <td class="text-sm">@context.StartedAt.ToString("yyyy-MM-dd HH:mm")</td>
+                    <td class="text-sm">@FormatAgo(context.LastHeartbeat)</td>
+                    <td class="text-sm text-secondary">@(string.IsNullOrEmpty(context.Capabilities) ? "—" : context.Capabilities)</td>
+                    <td>
+                        @if (context.Status is NodeStatus.Dead or NodeStatus.Offline)
+                        {
+                            <AuthorizedView AdminOnly="true">
+                                <button class="btn btn-sm btn-danger"
+                                        title="Remove node"
+                                        @onclick="(() => RemoveNode(context.NodeId))"
+                                        @onclick:stopPropagation="true">
+                                    ✕
+                                </button>
+                            </AuthorizedView>
+                        }
+                    </td>
+                </RowContent>
+            </TsakGrid>
+        </div>
+    }
+
+    @if (_topology.Assignments.Count > 0)
+    {
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Module assignments</span>
+            </div>
+            <TsakGrid Items="_topology.Assignments" T="AssignmentInfo">
+                <HeaderContent>
+                    <th>Module</th>
+                    <th>Node</th>
+                    <th>Group</th>
+                    <th>State</th>
+                    <th>Assigned</th>
+                </HeaderContent>
+                <RowContent>
+                    <td class="mono text-sm">@context.ModuleName</td>
+                    <td class="mono text-sm">@context.NodeId</td>
+                    <td>@context.GroupName</td>
+                    <td>@context.State</td>
+                    <td class="text-sm">@context.AssignedAt.ToString("yyyy-MM-dd HH:mm")</td>
+                </RowContent>
+            </TsakGrid>
+        </div>
+    }
+}
+
+<TsakConfirmDialog @ref="_confirm" />
+
+@code {
+    private ClusterTopology? _topology;
+    private TsakConfirmDialog? _confirm;
+
+    private PeriodicTimer? _timer;
+    private CancellationTokenSource? _cts;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _topology = await NodeProvider.LoadTopologyAsync();
+        _cts = new CancellationTokenSource();
+        _ = PollLoop(_cts.Token);
+    }
+
+    private async Task PollLoop(CancellationToken ct)
+    {
+        _timer = new PeriodicTimer(TimeSpan.FromSeconds(30));
+        while (await _timer.WaitForNextTickAsync(ct))
+        {
+            _topology = await NodeProvider.LoadTopologyAsync(forceRefresh: true);
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task Refresh()
+    {
+        _topology = await NodeProvider.LoadTopologyAsync(forceRefresh: true);
+    }
+
+    private void NavigateToNode(string nodeId) => Nav.NavigateTo($"node/{nodeId}");
+
+    public void Dispose()
+    {
+        _cts?.Cancel();
+        _cts?.Dispose();
+        _timer?.Dispose();
+    }
+
+    private static string GetBadgeClass(NodeInfo node) => node.Status switch
+    {
+        NodeStatus.Online when node.IsAlive => "online",
+        NodeStatus.Online => "warning",
+        NodeStatus.Offline => "offline",
+        NodeStatus.Dead => "error",
+        _ => "offline"
+    };
+
+    private static string FormatAgo(DateTimeOffset timestamp)
+    {
+        var diff = DateTimeOffset.UtcNow - timestamp;
+        if (diff.TotalSeconds < 60) return $"{(int)diff.TotalSeconds}s ago";
+        if (diff.TotalMinutes < 60) return $"{(int)diff.TotalMinutes}m ago";
+        if (diff.TotalHours < 24) return $"{(int)diff.TotalHours}h ago";
+        return $"{(int)diff.TotalDays}d ago";
+    }
+
+    private async Task RemoveNode(string nodeId)
+    {
+        if (_confirm is not null)
+        {
+            var confirmed = await _confirm.ShowAsync(
+                $"Remove node '{nodeId}' from the cluster? This cannot be undone.",
+                "Remove node");
+            if (!confirmed) return;
+        }
+
+        try
+        {
+            var removed = await NodeProvider.RemoveNodeAsync(nodeId);
+            if (removed)
+            {
+                Toast.Success($"Node '{nodeId}' removed");
+                _topology = await NodeProvider.LoadTopologyAsync(forceRefresh: true);
+            }
+            else
+            {
+                Toast.Error($"Cannot remove node '{nodeId}' — not found or still online");
+            }
+        }
+        catch (Exception ex)
+        {
+            Toast.Error(ex.Message);
+        }
+    }
+}

@@ -1,0 +1,102 @@
+@inject IAuthService Auth
+
+<div class="login-backdrop">
+    <div class="login-card">
+        <div class="login-brand">
+            <TsakIcon Name="database" Size="28" />
+            <span class="login-brand-name">redb.Tsak</span>
+        </div>
+
+        <h2 class="login-title">Sign In</h2>
+        <p class="login-subtitle">Cluster dashboard</p>
+
+        @if (_error is not null)
+        {
+            <div class="login-error">
+                <TsakIcon Name="alert-circle" Size="16" />
+                <span>@_error</span>
+            </div>
+        }
+
+        <div class="float-field">
+            <input id="login"
+                   type="text"
+                   placeholder=" "
+                   autocomplete="username"
+                   @bind="_login"
+                   @bind:event="oninput"
+                   @onkeydown="OnKeyDown"
+                   disabled="@_loading" />
+            <label for="login">Login</label>
+        </div>
+
+        <div class="float-field">
+            <input id="password"
+                   type="password"
+                   placeholder=" "
+                   autocomplete="current-password"
+                   @bind="_password"
+                   @bind:event="oninput"
+                   @onkeydown="OnKeyDown"
+                   disabled="@_loading" />
+            <label for="password">Password</label>
+        </div>
+
+        <div class="login-actions">
+            <button class="btn btn-primary login-btn"
+                    @onclick="DoLogin"
+                    disabled="@(_loading || string.IsNullOrWhiteSpace(_login) || string.IsNullOrWhiteSpace(_password))">
+                @if (_loading)
+                {
+                    <span class="spinner"></span>
+                    <span>Signing in…</span>
+                }
+                else
+                {
+                    <TsakIcon Name="key" Size="16" />
+                    <span>Sign In</span>
+                }
+            </button>
+        </div>
+    </div>
+</div>
+
+@code {
+    private string _login = "";
+    private string _password = "";
+    private string? _error;
+    private bool _loading;
+
+    private async Task DoLogin()
+    {
+        if (string.IsNullOrWhiteSpace(_login) || string.IsNullOrWhiteSpace(_password)) return;
+
+        _loading = true;
+        _error = null;
+        StateHasChanged();
+
+        try
+        {
+            var ok = await Auth.LoginAsync(_login, _password);
+            if (!ok)
+                _error = "Invalid login or password.";
+        }
+        catch (Exception ex)
+        {
+            _error = $"Authentication failed: {ex.Message}";
+        }
+        finally
+        {
+            _password = "";
+            _loading = false;
+        }
+    }
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await DoLogin();
+        }
+    }
+}

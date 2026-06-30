@@ -5,5 +5,6 @@
     <Project Path="src/redb.Tsak.CLI/redb.Tsak.CLI.csproj" />
     <Project Path="src/redb.Tsak.Core/redb.Tsak.Core.csproj" />
     <Project Path="src/redb.Tsak.Worker/redb.Tsak.Worker.csproj" />
+    <Project Path="src/redb.Tsak.Web/redb.Tsak.Web.csproj" />
   </Folder>
 </Solution>

@@ -1,0 +1,118 @@
+@inject NavigationManager Nav
+@inject INodeClientProvider NodeProvider
+@implements IDisposable
+
+<aside class="sidebar">
+    <div class="sidebar-brand">
+        <TsakIcon Name="database" Size="24" />
+        <span class="sidebar-brand-text">redb.Tsak</span>
+    </div>
+
+    <nav class="sidebar-nav">
+        <div class="sidebar-group">
+            <span class="sidebar-group-label">Overview</span>
+            <NavLink class="sidebar-link" href="" Match="NavLinkMatch.All">
+                <TsakIcon Name="dashboard" Size="18" />
+                <span>Dashboard</span>
+            </NavLink>
+            @if (NodeProvider.IsCluster)
+            {
+                <NavLink class="sidebar-link" href="cluster">
+                    <TsakIcon Name="cluster" Size="18" />
+                    <span>Cluster</span>
+                </NavLink>
+            }
+        </div>
+
+        @if (_activeNodeId is not null)
+        {
+            <div class="sidebar-group">
+                <span class="sidebar-group-label">
+                    <TsakIcon Name="server" Size="12" />
+                    @_activeNodeId
+                </span>
+                <NavLink class="sidebar-link" href="@($"node/{_activeNodeId}")" Match="NavLinkMatch.All">
+                    <TsakIcon Name="info" Size="18" />
+                    <span>Overview</span>
+                </NavLink>
+                <NavLink class="sidebar-link" href="@($"node/{_activeNodeId}/contexts")">
+                    <TsakIcon Name="route" Size="18" />
+                    <span>Contexts</span>
+                </NavLink>
+                <NavLink class="sidebar-link" href="@($"node/{_activeNodeId}/endpoints")">
+                    <TsakIcon Name="zap" Size="18" />
+                    <span>Endpoints</span>
+                </NavLink>
+                <NavLink class="sidebar-link" href="@($"node/{_activeNodeId}/routes")">
+                    <TsakIcon Name="route" Size="18" />
+                    <span>Routes</span>
+                </NavLink>
+                <NavLink class="sidebar-link" href="@($"node/{_activeNodeId}/watchdog")">
+                    <TsakIcon Name="shield" Size="18" />
+                    <span>Watchdog</span>
+                </NavLink>
+                <NavLink class="sidebar-link" href="@($"node/{_activeNodeId}/modules")">
+                    <TsakIcon Name="package" Size="18" />
+                    <span>Modules</span>
+                </NavLink>
+                <NavLink class="sidebar-link" href="@($"node/{_activeNodeId}/scheduler")">
+                    <TsakIcon Name="clock" Size="18" />
+                    <span>Scheduler</span>
+                </NavLink>
+                <NavLink class="sidebar-link" href="@($"node/{_activeNodeId}/monitoring")">
+                    <TsakIcon Name="activity" Size="18" />
+                    <span>Monitoring</span>
+                </NavLink>
+                <NavLink class="sidebar-link" href="@($"node/{_activeNodeId}/logs")">
+                    <TsakIcon Name="terminal" Size="18" />
+                    <span>Logs</span>
+                </NavLink>
+            </div>
+        }
+
+        <div class="sidebar-group">
+            <span class="sidebar-group-label">Settings</span>
+            <NavLink class="sidebar-link" href="auth">
+                <TsakIcon Name="shield" Size="18" />
+                <span>Auth & Users</span>
+            </NavLink>
+        </div>
+    </nav>
+</aside>
+
+@code {
+    private string? _activeNodeId;
+
+    protected override void OnInitialized()
+    {
+        Nav.LocationChanged += OnLocationChanged;
+        UpdateActiveNode();
+    }
+
+    private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
+    {
+        UpdateActiveNode();
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void UpdateActiveNode()
+    {
+        var path = Nav.ToBaseRelativePath(Nav.Uri);
+        if (path.StartsWith("node/", StringComparison.OrdinalIgnoreCase))
+        {
+            var rest = path.Substring(5);
+            var slash = rest.IndexOf('/');
+            _activeNodeId = slash >= 0 ? rest.Substring(0, slash) : rest;
+            if (string.IsNullOrEmpty(_activeNodeId)) _activeNodeId = null;
+        }
+        else
+        {
+            _activeNodeId = null;
+        }
+    }
+
+    public void Dispose()
+    {
+        Nav.LocationChanged -= OnLocationChanged;
+    }
+}

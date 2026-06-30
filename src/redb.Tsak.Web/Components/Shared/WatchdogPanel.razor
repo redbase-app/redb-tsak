@@ -1,0 +1,127 @@
+@* Embeddable watchdog status panel for Dashboard or standalone use. *@
+@using redb.Tsak.Client
+@using redb.Tsak.Contracts
+
+@if (_state is not null)
+{
+    <div class="card" style="margin-bottom: var(--space-4);">
+        <div class="card-header">
+            <span class="card-title">
+                <TsakIcon Name="shield" Size="16" /> Watchdog
+                @if (!string.IsNullOrEmpty(NodeLabel))
+                {
+                    <span class="text-secondary text-sm" style="font-weight: 400;">— @NodeLabel</span>
+                }
+            </span>
+            <div style="display: flex; gap: var(--space-2); align-items: center;">
+                <TsakBadge Text="@(_state.Enabled ? "Enabled" : "Disabled")"
+                           Variant="@(_state.Enabled ? "online" : "offline")" />
+                @if (ShowActions)
+                {
+                    <AuthorizedView AdminOnly="true">
+                        @if (_state.Enabled)
+                        {
+                            <button class="btn btn-ghost btn-sm" @onclick="Disable">Disable</button>
+                        }
+                        else
+                        {
+                            <button class="btn btn-ghost btn-sm" @onclick="Enable">Enable</button>
+                        }
+                    </AuthorizedView>
+                }
+            </div>
+        </div>
+
+        <div style="padding: 0 var(--space-4) var(--space-4);">
+            <div class="grid-stats" style="margin-bottom: var(--space-3);">
+                <TsakCard Title="Suspected" Value="@_state.SuspectedExchanges.ToString()"
+                          ValueStyle="@(_state.SuspectedExchanges > 0 ? "color: var(--status-warning)" : "")" />
+                <TsakCard Title="Hung" Value="@_state.HungExchanges.ToString()"
+                          ValueStyle="@(_state.HungExchanges > 0 ? "color: var(--status-error)" : "")" />
+                <TsakCard Title="Auto-Restarts" Value="@_state.AutoRestartsPerformed.ToString()" />
+                <TsakCard Title="Last Check" Value="@_state.LastCheckAt.ToString("HH:mm:ss")" />
+            </div>
+
+            @if (_state.ActiveAlerts.Count > 0)
+            {
+                <div style="max-height: 240px; overflow-y: auto;">
+                <TsakGrid Items="_state.ActiveAlerts" T="WatchdogAlert">
+                    <HeaderContent>
+                        <th>Route</th>
+                        <th>Context</th>
+                        <th>Level</th>
+                        <th>Exchange</th>
+                        <th>Elapsed</th>
+                        <th>Detected</th>
+                    </HeaderContent>
+                    <RowContent>
+                        <td class="mono text-sm">@context.RouteId</td>
+                        <td class="text-sm">@context.ContextName</td>
+                        <td><TsakBadge Text="@context.Level" Variant="@(context.Level == "Hung" ? "error" : "warning")" ShowDot="false" /></td>
+                        <td class="mono text-xs">@context.ExchangeId[..Math.Min(12, context.ExchangeId.Length)]…</td>
+                        <td class="mono text-sm">@($"{context.ElapsedSeconds:F0}s")</td>
+                        <td class="text-sm">@context.DetectedAt.ToString("HH:mm:ss")</td>
+                    </RowContent>
+                </TsakGrid>
+                </div>
+            }
+            else if (_state.Enabled)
+            {
+                <p class="text-secondary text-sm" style="text-align: center; padding: var(--space-2);">
+                    <TsakIcon Name="check-circle" Size="14" /> No active alerts
+                </p>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public TsakApiClient? Client { get; set; }
+    [Parameter] public bool ShowActions { get; set; } = true;
+    [Parameter] public EventCallback OnStateChanged { get; set; }
+    [Parameter] public string? NodeLabel { get; set; }
+
+    private WatchdogState? _state;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await LoadState();
+    }
+
+    public async Task RefreshAsync()
+    {
+        await LoadState();
+        StateHasChanged();
+    }
+
+    private async Task LoadState()
+    {
+        if (Client is null) return;
+        try { _state = await Client.GetWatchdogStatusAsync(); }
+        catch { /* watchdog may not be available */ }
+    }
+
+    private async Task Enable()
+    {
+        if (Client is null) return;
+        try
+        {
+            await Client.EnableWatchdogAsync();
+            await LoadState();
+            await OnStateChanged.InvokeAsync();
+        }
+        catch { }
+    }
+
+    private async Task Disable()
+    {
+        if (Client is null) return;
+        try
+        {
+            await Client.DisableWatchdogAsync();
+            await LoadState();
+            await OnStateChanged.InvokeAsync();
+        }
+        catch { }
+    }
+}

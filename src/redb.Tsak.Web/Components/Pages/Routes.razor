@@ -1,0 +1,267 @@
+@page "/node/{NodeId}/routes"
+@inject INodeClientProvider NodeProvider
+@inject NavigationManager Nav
+@inject ToastService Toast
+@using redb.Tsak.Client
+@using redb.Tsak.Contracts
+@using redb.Tsak.Web.Components.Shared
+@implements IDisposable
+
+<TsakPageHeader Title="Routes" Description="Route management and monitoring" RefreshInterval="5s" OnRefresh="Refresh">
+    <Actions>
+        <select class="input" style="width: 130px; padding: 4px 8px; font-size: 0.8rem;" @bind="_statusFilter">
+            <option value="">All statuses</option>
+            <option value="Started">Started</option>
+            <option value="Stopped">Stopped</option>
+            <option value="Suspended">Suspended</option>
+        </select>
+        <input class="input" style="width: 220px; padding: 4px 8px; font-size: 0.8rem; margin-left: var(--space-2);"
+               placeholder="Search by RouteId or URI…" @bind="_searchText" @bind:event="oninput" />
+    </Actions>
+</TsakPageHeader>
+
+@if (_loading)
+{
+    <div class="empty-state">
+        <div class="spinner spinner-lg"></div>
+        <p>Loading routes…</p>
+    </div>
+}
+else if (_allRoutes.Length > 0)
+{
+    <div class="grid-stats">
+        <TsakCard Title="Total Routes" Icon="route" Value="@_allRoutes.Length.ToString()" />
+        <TsakCard Title="Started" Icon="play" Value="@_allRoutes.Count(r => r.Route.Status == "Started").ToString()"
+                  ValueStyle="color: var(--status-online)" />
+        <TsakCard Title="Stopped" Icon="stop" Value="@_allRoutes.Count(r => r.Route.Status != "Started").ToString()" />
+        <TsakCard Title="Total Inflight" Icon="activity" Value="@_allRoutes.Sum(r => r.Route.InflightCount).ToString()"
+                  ValueStyle="@(_allRoutes.Sum(r => r.Route.InflightCount) > 0 ? "color: var(--primary)" : "")" />
+    </div>
+
+    @foreach (var group in GroupedRoutes)
+    {
+        <div class="card" style="margin-bottom: var(--space-4);">
+            <div class="card-header" style="cursor: pointer; user-select: none;" @onclick="() => ToggleCollapse(group.Key)">
+                <span class="card-title" style="display: flex; align-items: center; gap: var(--space-2);">
+                    <TsakIcon Name="@(_collapsed.Contains(group.Key) ? "chevron-right" : "chevron-down")" Size="14" />
+                    @group.Key
+                    <span class="text-secondary text-sm" style="font-weight: 400;">
+                        (@group.Value.Length routes)
+                    </span>
+                </span>
+                <span style="display: flex; align-items: center; gap: var(--space-2);">
+                    <TsakBadge Text="@($"{group.Value.Count(r => r.Route.Status == "Started")}/{group.Value.Length}")"
+                              Variant="@(group.Value.All(r => r.Route.Status == "Started") ? "online" : "warning")" ShowDot="false" />
+                </span>
+            </div>
+
+            @if (!_collapsed.Contains(group.Key))
+            {
+                <div style="padding: 0 var(--space-4) var(--space-4);">
+                    <TsakGrid Items="group.Value" T="RouteEntry" OnRowClick="((RouteEntry r) => NavigateToDetail(r))">
+                        <HeaderContent>
+                            <th>Route ID</th>
+                            <th>From URI</th>
+                            <th>Status</th>
+                            <th>AutoStart</th>
+                            <th>Inflight</th>
+                            <th>Actions</th>
+                        </HeaderContent>
+                        <RowContent>
+                            <td class="mono text-sm">
+                                @context.Route.RouteId
+                                @if (context.Route.IsCluster)
+                                {
+                                    <TsakBadge Text="C" Variant="info" ShowDot="false" />
+                                }
+                            </td>
+                            <td class="mono text-xs text-secondary" style="max-width: 300px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="@context.Route.FromUri">
+                                @context.Route.FromUri
+                            </td>
+                            <td><TsakBadge Text="@context.Route.Status" Variant="@GetStatusBadge(context.Route.Status)" /></td>
+                            <td><TsakBadge Text="@(context.Route.AutoStart ? "Yes" : "No")" Variant="@(context.Route.AutoStart ? "online" : "offline")" ShowDot="false" /></td>
+                            <td class="mono text-sm">@context.Route.InflightCount</td>
+                            <td>
+                                <AuthorizedView AdminOnly="true">
+                                    <div class="btn-group">
+                                    @if (context.Route.Status is "Started")
+                                    {
+                                        <button class="btn btn-ghost btn-sm" @onclick="() => RouteAction(context, false)" @onclick:stopPropagation="true">
+                                            <TsakIcon Name="stop" Size="14" /> Stop
+                                        </button>
+                                    }
+                                    else
+                                    {
+                                        <button class="btn btn-ghost btn-sm" @onclick="() => RouteAction(context, true)" @onclick:stopPropagation="true">
+                                            <TsakIcon Name="play" Size="14" /> Start
+                                        </button>
+                                    }
+                                    <button class="btn btn-ghost btn-sm" style="color: var(--status-error);"
+                                            @onclick="() => ForceStop(context)" @onclick:stopPropagation="true">
+                                        <TsakIcon Name="x-circle" Size="14" />
+                                    </button>
+                                    </div>
+                                </AuthorizedView>
+                            </td>
+                        </RowContent>
+                    </TsakGrid>
+                </div>
+            }
+        </div>
+    }
+}
+else
+{
+    <div class="empty-state">
+        <TsakIcon Name="route" Size="48" />
+        <p>No routes on this node</p>
+    </div>
+}
+
+<TsakConfirmDialog @ref="_confirmDialog" />
+
+@code {
+    [Parameter] public string NodeId { get; set; } = "";
+
+    private bool _loading = true;
+    private string _statusFilter = "";
+    private string _searchText = "";
+    private RouteEntry[] _allRoutes = [];
+    private readonly HashSet<string> _collapsed = new();
+    private TsakConfirmDialog _confirmDialog = null!;
+
+    private PeriodicTimer? _timer;
+    private CancellationTokenSource? _cts;
+
+    private record RouteEntry(string ContextName, TsakRouteInfo Route);
+
+    private KeyValuePair<string, RouteEntry[]>[] GroupedRoutes
+    {
+        get
+        {
+            IEnumerable<RouteEntry> filtered = _allRoutes;
+            if (!string.IsNullOrEmpty(_statusFilter))
+                filtered = filtered.Where(r => r.Route.Status == _statusFilter);
+            if (!string.IsNullOrEmpty(_searchText))
+                filtered = filtered.Where(r =>
+                    r.Route.RouteId.Contains(_searchText, StringComparison.OrdinalIgnoreCase) ||
+                    r.Route.FromUri.Contains(_searchText, StringComparison.OrdinalIgnoreCase));
+
+            return filtered
+                .GroupBy(r => r.ContextName)
+                .OrderBy(g => g.Key)
+                .Select(g => new KeyValuePair<string, RouteEntry[]>(g.Key, g.ToArray()))
+                .ToArray();
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+        _cts = new CancellationTokenSource();
+        _ = PollLoop(_cts.Token);
+    }
+
+    private async Task PollLoop(CancellationToken ct)
+    {
+        _timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
+        while (await _timer.WaitForNextTickAsync(ct))
+        {
+            await LoadData();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task LoadData()
+    {
+        var client = NodeProvider.GetClient(NodeId);
+        if (client is null) { _loading = false; return; }
+
+        try
+        {
+            var contexts = await client.ListContextsAsync();
+            var entries = new List<RouteEntry>();
+            foreach (var ctx in contexts)
+            {
+                try
+                {
+                    var routes = await client.ListRoutesAsync(ctx.Name);
+                    entries.AddRange(routes.Select(r => new RouteEntry(ctx.Name, r)));
+                }
+                catch { /* skip failing contexts */ }
+            }
+            _allRoutes = entries.ToArray();
+        }
+        catch { /* retain previous data on error */ }
+        _loading = false;
+    }
+
+    private async Task Refresh() => await LoadData();
+
+    private void ToggleCollapse(string name)
+    {
+        if (!_collapsed.Remove(name))
+            _collapsed.Add(name);
+    }
+
+    private async Task RouteAction(RouteEntry entry, bool start)
+    {
+        try
+        {
+            var client = NodeProvider.GetClient(NodeId)
+                ?? throw new InvalidOperationException($"No API client for node {NodeId}");
+
+            if (start)
+                await client.StartRouteAsync(entry.ContextName, entry.Route.RouteId);
+            else
+                await client.StopRouteAsync(entry.ContextName, entry.Route.RouteId);
+
+            await LoadData();
+            Toast.Success($"Route '{entry.Route.RouteId}' {(start ? "started" : "stopped")}");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Route action failed: {ex.Message}");
+        }
+    }
+
+    private async Task ForceStop(RouteEntry entry)
+    {
+        var confirmed = await _confirmDialog.ShowAsync(
+            $"Force-stop route '{entry.Route.RouteId}' in '{entry.ContextName}'? This will immediately cancel all in-flight exchanges.",
+            "Force-Stop Route");
+        if (!confirmed) return;
+
+        try
+        {
+            var client = NodeProvider.GetClient(NodeId)
+                ?? throw new InvalidOperationException($"No API client for node {NodeId}");
+
+            await client.ForceStopRouteAsync(entry.ContextName, entry.Route.RouteId);
+            await LoadData();
+            Toast.Success($"Route '{entry.Route.RouteId}' force-stopped");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Force-stop failed: {ex.Message}");
+        }
+    }
+
+    private void NavigateToDetail(RouteEntry entry) =>
+        Nav.NavigateTo($"node/{NodeId}/routes/{entry.ContextName}/{entry.Route.RouteId}");
+
+    private static string GetStatusBadge(string status) => status switch
+    {
+        "Started" => "online",
+        "Stopped" => "offline",
+        "Suspended" => "warning",
+        _ => "offline"
+    };
+
+    public void Dispose()
+    {
+        _cts?.Cancel();
+        _cts?.Dispose();
+        _timer?.Dispose();
+    }
+}

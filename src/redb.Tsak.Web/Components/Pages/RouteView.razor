@@ -1,0 +1,375 @@
+@page "/node/{NodeId}/routes/{ContextName}/{RouteId}"
+@inject INodeClientProvider NodeProvider
+@inject NavigationManager Nav
+@inject ToastService Toast
+@using redb.Tsak.Client
+@using redb.Tsak.Contracts
+@implements IDisposable
+
+<TsakPageHeader Title="@($"Route: {RouteId}")" Description="@($"Context: {ContextName}")"
+                RefreshInterval="5s" OnRefresh="Refresh">
+    <Actions>
+        <button class="btn btn-ghost btn-sm" @onclick="GoBack">
+            <TsakIcon Name="arrow-left" Size="14" /> Back
+        </button>
+        @if (_detail is not null)
+        {
+            <AuthorizedView AdminOnly="true">
+                @if (_detail.Status is "Started")
+                {
+                    <button class="btn btn-secondary btn-sm" @onclick="() => RouteAction(false)">
+                        <TsakIcon Name="stop" Size="14" /> Stop
+                    </button>
+                }
+                else
+                {
+                    <button class="btn btn-primary btn-sm" @onclick="() => RouteAction(true)">
+                        <TsakIcon Name="play" Size="14" /> Start
+                    </button>
+                }
+                <button class="btn btn-danger btn-sm" @onclick="ForceStop">
+                    <TsakIcon Name="x-circle" Size="14" /> Force-Stop
+                </button>
+            </AuthorizedView>
+        }
+    </Actions>
+</TsakPageHeader>
+
+@if (_loading)
+{
+    <div class="empty-state">
+        <div class="spinner spinner-lg"></div>
+        <p>Loading route details…</p>
+    </div>
+}
+else if (_detail is not null)
+{
+    @* Status header *@
+    <div class="grid-stats">
+        <TsakCard Title="Status" Icon="info">
+            <TsakBadge Text="@_detail.Status" Variant="@GetStatusBadge(_detail.Status)" />
+        </TsakCard>
+        <TsakCard Title="AutoStart" Icon="play"
+                  Value="@(_detail.AutoStart ? "Yes" : "No")" />
+        <TsakCard Title="Inflight" Icon="activity"
+                  Value="@_detail.InflightCount.ToString()"
+                  ValueStyle="@(_detail.InflightCount > 0 ? "color: var(--primary)" : "")" />
+        <TsakCard Title="Endpoints" Icon="zap"
+                  Value="@_detail.Endpoints.Length.ToString()" />
+        @if (IsClusterRoute())
+        {
+            <TsakCard Title="Cluster" Icon="server">
+                <TsakBadge Text="C" Variant="info" ShowDot="false" />
+                <span class="text-xs text-secondary" style="margin-left: 6px;">
+                    @GetLeaderDisplay()
+                </span>
+            </TsakCard>
+        }
+    </div>
+
+    @* Metrics *@
+    @if (_metrics is not null)
+    {
+        <div class="grid-stats">
+            <TsakCard Title="Messages" Icon="mail" Value="@FormatNumber(_metrics.MessagesProcessed)" />
+            <TsakCard Title="Errors" Icon="alert-triangle"
+                      Value="@FormatNumber(_metrics.Errors)"
+                      ValueStyle="@(_metrics.Errors > 0 ? "color: var(--status-error)" : "")" />
+            <TsakCard Title="Warnings" Icon="alert-triangle"
+                      Value="@FormatNumber(_metrics.Warnings)"
+                      ValueStyle="@(_metrics.Warnings > 0 ? "color: var(--status-warning)" : "")" />
+            <TsakCard Title="Avg Time" Icon="clock" Value="@($"{_metrics.AvgProcessingMs:F1}ms")" />
+            <TsakCard Title="Throughput" Icon="activity" Value="@($"{_metrics.ThroughputPerSecond:F1}/s")" />
+            <TsakCard Title="Uptime" Icon="check-circle" Value="@(_metrics.Uptime ?? "—")" />
+            @if (_metrics.LastActivity.HasValue)
+            {
+                <TsakCard Title="Last Activity" Icon="clock" Value="@FormatTimeAgo(_metrics.LastActivity)" />
+            }
+        </div>
+
+        @if (_metrics.LastError is not null)
+        {
+            <div class="card" style="margin-bottom: var(--space-4); border-left: 3px solid var(--status-error);">
+                <div class="card-header">
+                    <span class="card-title" style="color: var(--status-error);">
+                        <TsakIcon Name="alert-circle" Size="16" /> Last Error
+                    </span>
+                    <span class="text-xs text-secondary">@(_metrics.LastErrorTime?.ToString("yyyy-MM-dd HH:mm:ss") ?? "")</span>
+                </div>
+                <p class="mono text-xs" style="padding: 0 var(--space-4) var(--space-4); color: var(--status-error); word-break: break-all;">
+                    @_metrics.LastError
+                </p>
+            </div>
+        }
+
+        @if (_metrics.LastWarning is not null)
+        {
+            <div class="card" style="margin-bottom: var(--space-4); border-left: 3px solid var(--status-warning);">
+                <div class="card-header">
+                    <span class="card-title" style="color: var(--status-warning);">
+                        <TsakIcon Name="alert-triangle" Size="16" /> Last Warning
+                    </span>
+                    <span class="text-xs text-secondary">@(_metrics.LastWarningTime?.ToString("yyyy-MM-dd HH:mm:ss") ?? "")</span>
+                </div>
+                <p class="mono text-xs" style="padding: 0 var(--space-4) var(--space-4); color: var(--status-warning); word-break: break-all;">
+                    @_metrics.LastWarning
+                </p>
+            </div>
+        }
+    }
+
+    @* In-Flight Exchanges *@
+    @if (_inflight is { Length: > 0 })
+    {
+        <div class="card" style="margin-bottom: var(--space-4);">
+            <div class="card-header">
+                <span class="card-title">
+                    <TsakIcon Name="activity" Size="16" /> In-Flight Exchanges
+                </span>
+                <TsakBadge Text="@_inflight.Length.ToString()" Variant="info" ShowDot="false" />
+            </div>
+            <TsakGrid Items="_inflight" T="InflightExchangeDto">
+                <HeaderContent>
+                    <th>Exchange ID</th>
+                    <th>Elapsed</th>
+                    <th>Thread</th>
+                    <th>From</th>
+                </HeaderContent>
+                <RowContent>
+                    <td class="mono text-sm">@context.ExchangeId</td>
+                    <td class="mono text-sm">@($"{context.ElapsedMs:F0}ms")</td>
+                    <td class="mono text-sm">@context.ThreadId</td>
+                    <td class="mono text-xs text-secondary">@(context.FromEndpoint ?? "—")</td>
+                </RowContent>
+            </TsakGrid>
+        </div>
+    }
+
+    @* Endpoint Statistics *@
+    @if (_detail.Endpoints is { Length: > 0 })
+    {
+        <div class="card" style="margin-bottom: var(--space-4);">
+            <div class="card-header">
+                <span class="card-title">
+                    <TsakIcon Name="zap" Size="16" /> Endpoints
+                </span>
+            </div>
+            <TsakGrid Items="_detail.Endpoints" T="TsakEndpointInfo">
+                <HeaderContent>
+                    <th>URI</th>
+                    <th>In / Out</th>
+                    <th>Errors</th>
+                    <th>Throughput</th>
+                    <th>Health</th>
+                </HeaderContent>
+                <RowContent>
+                    <td class="mono text-xs text-secondary" style="max-width: 300px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="@context.Uri">@context.Uri</td>
+                    <td class="mono text-sm">@FormatNumber(context.MessagesIn) / @FormatNumber(context.MessagesOut)</td>
+                    <td class="mono text-sm" style="@(context.Errors > 0 ? "color: var(--status-error)" : "")">@context.Errors</td>
+                    <td class="mono text-sm">@($"{context.ThroughputPerSecond:F1}/s")</td>
+                    <td><TsakBadge Text="@context.HealthStatus" Variant="@GetHealthBadge(context.HealthStatus)" /> @if (!string.IsNullOrEmpty(context.HealthReason) && context.HealthStatus != "Healthy") { <span class="text-xs text-secondary">@context.HealthReason</span> }</td>
+                </RowContent>
+            </TsakGrid>
+        </div>
+    }
+
+    @* Lifecycle History *@
+    @if (_lifecycle is { Length: > 0 })
+    {
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">
+                    <TsakIcon Name="clock" Size="16" /> Lifecycle History
+                </span>
+            </div>
+            <TsakGrid Items="_lifecycle" T="LifecycleEvent">
+                <HeaderContent>
+                    <th>Timestamp</th>
+                    <th>Event</th>
+                    <th>Details</th>
+                </HeaderContent>
+                <RowContent>
+                    <td class="text-sm">@context.Timestamp.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                    <td><TsakBadge Text="@context.EventType.ToString()" Variant="@GetEventBadge(context.EventType)" ShowDot="false" /></td>
+                    <td class="text-xs text-secondary">@(context.Details ?? "—")</td>
+                </RowContent>
+            </TsakGrid>
+        </div>
+    }
+}
+else
+{
+    <div class="empty-state">
+        <TsakIcon Name="alert-triangle" Size="48" />
+        <p>Route not found</p>
+    </div>
+}
+
+<TsakConfirmDialog @ref="_confirmDialog" />
+
+@code {
+    [Parameter] public string NodeId { get; set; } = "";
+    [Parameter] public string ContextName { get; set; } = "";
+    [Parameter] public string RouteId { get; set; } = "";
+
+    private bool _loading = true;
+    private RouteDetail? _detail;
+    private RouteMetricsSummary? _metrics;
+    private InflightExchangeDto[]? _inflight;
+    private LifecycleEvent[]? _lifecycle;
+    private TsakConfirmDialog _confirmDialog = null!;
+
+    private PeriodicTimer? _timer;
+    private CancellationTokenSource? _cts;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+        _cts = new CancellationTokenSource();
+        _ = PollLoop(_cts.Token);
+    }
+
+    private async Task PollLoop(CancellationToken ct)
+    {
+        _timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
+        while (await _timer.WaitForNextTickAsync(ct))
+        {
+            await LoadData();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task LoadData()
+    {
+        var client = NodeProvider.GetClient(NodeId);
+        if (client is null) { _loading = false; return; }
+
+        try
+        {
+            _detail = await client.GetRouteAsync(ContextName, RouteId);
+            try { _metrics = await client.GetRouteMetricsAsync(ContextName, RouteId); } catch { }
+            try { _inflight = await client.GetRouteInflightAsync(ContextName, RouteId); } catch { }
+            try { _lifecycle = await client.GetLifecycleEventsAsync(context: ContextName, route: RouteId, limit: 20); } catch { }
+        }
+        catch { /* retain previous data */ }
+        _loading = false;
+    }
+
+    private async Task Refresh() => await LoadData();
+
+    private async Task RouteAction(bool start)
+    {
+        try
+        {
+            var client = NodeProvider.GetClient(NodeId)
+                ?? throw new InvalidOperationException($"No API client for node {NodeId}");
+            if (start)
+                await client.StartRouteAsync(ContextName, RouteId);
+            else
+                await client.StopRouteAsync(ContextName, RouteId);
+            await LoadData();
+            Toast.Success($"Route '{RouteId}' {(start ? "started" : "stopped")}");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Route action failed: {ex.Message}");
+        }
+    }
+
+    private async Task ForceStop()
+    {
+        var confirmed = await _confirmDialog.ShowAsync(
+            $"Force-stop route '{RouteId}'? This will immediately cancel all in-flight exchanges.",
+            "Force-Stop Route");
+        if (!confirmed) return;
+
+        try
+        {
+            var client = NodeProvider.GetClient(NodeId)
+                ?? throw new InvalidOperationException($"No API client for node {NodeId}");
+            await client.ForceStopRouteAsync(ContextName, RouteId);
+            await LoadData();
+            Toast.Success($"Route '{RouteId}' force-stopped");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Force-stop failed: {ex.Message}");
+        }
+    }
+
+    private void GoBack() => Nav.NavigateTo($"node/{NodeId}/routes");
+
+    private static string GetStatusBadge(string status) => status switch
+    {
+        "Started" => "online",
+        "Stopped" => "offline",
+        "Suspended" => "warning",
+        _ => "offline"
+    };
+
+    private static string GetHealthBadge(string status) => status switch
+    {
+        "Healthy" => "online",
+        "Warning" => "warning",
+        "Critical" or "Failed" => "error",
+        _ => "offline"
+    };
+
+    private static string GetEventBadge(LifecycleEventType type) => type switch
+    {
+        LifecycleEventType.RouteStarted or LifecycleEventType.ContextStarted => "online",
+        LifecycleEventType.RouteStopped or LifecycleEventType.ContextStopped => "offline",
+        LifecycleEventType.RouteErrored => "error",
+        LifecycleEventType.RouteSuspended or LifecycleEventType.ExchangeTimedOut => "warning",
+        LifecycleEventType.ExchangeHung or LifecycleEventType.WatchdogAutoRestart => "error",
+        _ => "info"
+    };
+
+    private static string FormatNumber(long num)
+    {
+        if (num < 1_000) return num.ToString();
+        if (num < 1_000_000) return $"{num / 1_000.0:F1}K";
+        return $"{num / 1_000_000.0:F1}M";
+    }
+
+    private string GetLeaderDisplay()
+    {
+        if (_detail?.PolicyMetadata is not { } meta) return "";
+        if (GetMetaBool(meta, "leader") == true)
+            return "Leader: This node";
+        if (GetMetaBool(meta, "suspended") == true)
+            return "Suspended";
+        return "Leader: Other node";
+    }
+
+    private bool IsClusterRoute() =>
+        _detail?.PolicyMetadata is { } meta && GetMetaBool(meta, "cluster") == true;
+
+    private static bool? GetMetaBool(IReadOnlyDictionary<string, object> meta, string key)
+    {
+        if (!meta.TryGetValue(key, out var val)) return null;
+        if (val is bool b) return b;
+        if (val is System.Text.Json.JsonElement je)
+            return je.ValueKind == System.Text.Json.JsonValueKind.True ? true
+                 : je.ValueKind == System.Text.Json.JsonValueKind.False ? false
+                 : null;
+        return null;
+    }
+
+    private static string FormatTimeAgo(DateTime? timestamp)
+    {
+        if (timestamp is null) return "—";
+        var diff = DateTime.UtcNow - timestamp.Value;
+        if (diff.TotalSeconds < 60) return $"{(int)diff.TotalSeconds}s ago";
+        if (diff.TotalMinutes < 60) return $"{(int)diff.TotalMinutes}m ago";
+        if (diff.TotalHours < 24) return $"{(int)diff.TotalHours}h ago";
+        return $"{(int)diff.TotalDays}d ago";
+    }
+
+    public void Dispose()
+    {
+        _cts?.Cancel();
+        _cts?.Dispose();
+        _timer?.Dispose();
+    }
+}

@@ -1,0 +1,32 @@
+@* Metric card with title, icon, value, and optional content. *@
+
+<div class="card">
+    <div class="card-header">
+        <span class="card-title">@Title</span>
+        @if (Icon is not null)
+        {
+            <TsakIcon Name="@Icon" Size="18" />
+        }
+        @if (HeaderExtra is not null)
+        {
+            @HeaderExtra
+        }
+    </div>
+    @if (ChildContent is not null)
+    {
+        @ChildContent
+    }
+    else
+    {
+        <span class="card-value" style="@ValueStyle">@Value</span>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string Title { get; set; } = "";
+    [Parameter] public string? Icon { get; set; }
+    [Parameter] public string? Value { get; set; }
+    [Parameter] public string? ValueStyle { get; set; }
+    [Parameter] public RenderFragment? HeaderExtra { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+}

@@ -1,0 +1,714 @@
+@page "/node/{NodeId}"
+@page "/node/{NodeId}/{Tab}"
+@inject INodeClientProvider NodeProvider
+@inject NavigationManager Nav
+@inject ILogger<NodeDetail> Log
+@inject ToastService Toast
+@inject IJSRuntime JS
+@using Microsoft.JSInterop
+@using redb.Tsak.Client
+@using redb.Tsak.Contracts
+@using redb.Tsak.Web.Components.Shared
+@implements IAsyncDisposable
+
+@if (_node is null)
+{
+    <div class="empty-state">
+        @if (_loading)
+        {
+            <div class="spinner spinner-lg"></div>
+            <p>Loading node…</p>
+        }
+        else
+        {
+            <TsakIcon Name="server" Size="48" />
+            <h2>Node not found</h2>
+            <p class="text-secondary">Node "@NodeId" was not found in the cluster topology.</p>
+            <button class="btn btn-secondary" style="margin-top: var(--space-4);" @onclick="GoBack">
+                ← Back to Cluster
+            </button>
+        }
+    </div>
+}
+else
+{
+    <div class="node-detail">
+    <div class="page-header">
+        <div style="display: flex; align-items: center; gap: var(--space-3);">
+            <button class="btn btn-ghost btn-sm" @onclick="GoBack" title="Back">
+                <TsakIcon Name="arrow-left" Size="16" />
+            </button>
+            <div>
+                <h1 class="page-title" style="display: flex; align-items: center; gap: var(--space-2);">
+                    <TsakIcon Name="server" Size="22" />
+                    @_node.NodeId
+                    @if (_isLeader)
+                    {
+                        <span title="Leader" style="color: var(--status-warning); font-size: var(--font-size-lg);">★</span>
+                    }
+                    <TsakBadge Text="@_node.Status.ToString()" Variant="@GetNodeBadge(_node)" />
+                </h1>
+                <p class="page-description">@_node.Hostname · @_node.GroupName · @_node.ApiEndpoint</p>
+            </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: var(--space-2); margin-left: auto;">
+            <span class="text-xs text-tertiary">Auto-refresh 10s</span>
+            <button class="btn btn-secondary btn-sm" @onclick="LoadAll">
+                <TsakIcon Name="refresh" Size="14" /> Refresh
+            </button>
+        </div>
+    </div>
+
+    @* Overview cards *@
+    <div class="grid-stats">
+        <TsakCard Title="Status" Icon="check-circle">
+            <TsakBadge Text="@(_health?.Status.ToString() ?? "Unknown")"
+                       Variant="@(_health?.Status == HealthStatus.Healthy ? "online" : "warning")" />
+        </TsakCard>
+        <TsakCard Title="Uptime" Icon="clock" Value="@FormatUptime(_sysInfo?.Uptime)" />
+        <TsakCard Title="Version" Icon="info" Value="@(_sysInfo?.Version ?? "—")" />
+        <TsakCard Title="Contexts / Modules" Icon="route"
+                  Value="@($"{_sysInfo?.ContextCount ?? 0} / {_sysInfo?.ModuleCount ?? 0}")" />
+        <TsakCard Title="Processors" Icon="activity"
+                  Value="@(_sysInfo?.ProcessorCount.ToString() ?? "—")" />
+        <TsakCard Title="Started At" Icon="clock"
+                  Value="@(_sysInfo?.StartedAt.ToString("yyyy-MM-dd HH:mm") ?? "—")" />
+        @if (_metrics is { Available: true, Latest: { } snap })
+        {
+            <TsakCard Title="CPU (process)" Icon="activity"
+                      Value="@($"{snap.Cpu.ProcessUsage:F1}%")"
+                      ValueStyle="@(snap.Cpu.ProcessUsage > 80 ? "color: var(--status-error)" : "")" />
+            <TsakCard Title="System CPU" Icon="activity"
+                      Value="@($"{snap.Cpu.SystemUsage:F1}%")"
+                      ValueStyle="@(snap.Cpu.SystemUsage > 80 ? "color: var(--status-error)" : "")" />
+            <TsakCard Title="Memory (managed)" Icon="server"
+                      Value="@($"{snap.GarbageCollector.TotalMemoryMB:F1} MB")" />
+            <TsakCard Title="Working set" Icon="server"
+                      Value="@($"{_sysInfo?.WorkingSetMb:F1} MB")" />
+            <TsakCard Title="Private Memory" Icon="server"
+                      Value="@($"{snap.Memory.PrivateMemoryMB:F1} MB")" />
+            <TsakCard Title="System Memory" Icon="server"
+                      Value="@($"{snap.Memory.SystemMemoryUsageMB:F1} MB")" />
+            <TsakCard Title="Threads" Icon="activity"
+                      Value="@snap.Threading.ActiveThreads.ToString()" />
+            <TsakCard Title="Pending Work" Icon="activity"
+                      Value="@snap.Threading.ThreadPoolPendingWork.ToString()" />
+            <TsakCard Title="GC Gen0/1/2" Icon="refresh"
+                      Value="@($"{FormatNumber(snap.GarbageCollector.Gen0Collections)}/{FormatNumber(snap.GarbageCollector.Gen1Collections)}/{FormatNumber(snap.GarbageCollector.Gen2Collections)}")" />
+        }
+    </div>
+
+    @* Tabs *@
+    <div class="tabs">
+        @foreach (var tab in _tabs)
+        {
+            var href = $"node/{NodeId}/{tab.ToLower()}";
+            <NavLink class="tab" ActiveClass="tab-active" href="@href" Match="NavLinkMatch.All">
+                <TsakIcon Name="@GetTabIcon(tab)" Size="14" />
+                @tab
+            </NavLink>
+        }
+    </div>
+
+    @* Tab content *@
+    <div class="tab-content">
+        @switch (_activeTab)
+        {
+            case "Contexts":
+                <TsakGrid Items="_contexts" T="ContextSummary">
+                    <EmptyContent>
+                        <div class="empty-state">
+                            <TsakIcon Name="route" Size="32" />
+                            <p class="text-secondary">No route contexts on this node</p>
+                        </div>
+                    </EmptyContent>
+                    <HeaderContent>
+                        <th>Name</th>
+                        <th>Status</th>
+                        <th>Endpoints</th>
+                        <th>Actions</th>
+                    </HeaderContent>
+                    <RowContent>
+                        <td class="mono text-sm">@context.Name</td>
+                        <td><TsakBadge Text="@context.Status" Variant="@GetContextBadge(context.Status)" /></td>
+                        <td>@context.EndpointCount</td>
+                        <td>
+                            <AuthorizedView AdminOnly="true">
+                            @if (context.Status is "Started" or "Running")
+                            {
+                                <button class="btn btn-ghost btn-sm" @onclick="() => StopContext(context.Name)">
+                                    <TsakIcon Name="stop" Size="14" /> Stop
+                                </button>
+                                <button class="btn btn-ghost btn-sm" @onclick="@(() => ContextAction(c => c.RestartContextAsync(context.Name), $"'{context.Name}' restarted"))">
+                                    <TsakIcon Name="refresh" Size="14" /> Restart
+                                </button>
+                                <button class="btn btn-ghost btn-sm" title="Reset route states to defaults and restart" @onclick="@(() => ContextAction(c => c.ResetRouteStatesAsync(context.Name), $"'{context.Name}' route states reset"))">
+                                    <TsakIcon Name="x-circle" Size="14" /> Reset
+                                </button>
+                            }
+                            else
+                            {
+                                <button class="btn btn-ghost btn-sm" @onclick="@(() => ContextAction(c => c.StartContextAsync(context.Name), $"'{context.Name}' started"))">
+                                    <TsakIcon Name="play" Size="14" /> Start
+                                </button>
+                            }
+                            </AuthorizedView>
+                        </td>
+                    </RowContent>
+                </TsakGrid>
+                break;
+
+            case "Scheduler":
+                @if (_scheduler is null)
+                {
+                    <div class="empty-state"><div class="spinner"></div></div>
+                }
+                else
+                {
+                    <div style="display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-4);">
+                        <TsakBadge Text="@_scheduler.Status.Status"
+                                   Variant="@(_scheduler.Status.IsStarted ? "online" : "offline")" />
+                        <span class="text-sm text-secondary">
+                            @_scheduler.Status.TotalJobs jobs · @_scheduler.Status.RunningJobs running
+                        </span>
+                        <AuthorizedView AdminOnly="true">
+                        @if (_scheduler.Status.IsStarted && !_scheduler.Status.InStandbyMode)
+                        {
+                            <button class="btn btn-ghost btn-sm" @onclick="@(() => SchedulerAction(c => c.StandbySchedulerAsync(), "set to standby"))">
+                                <TsakIcon Name="pause" Size="14" /> Standby
+                            </button>
+                        }
+                        else if (!_scheduler.Status.IsShutdown)
+                        {
+                            <button class="btn btn-ghost btn-sm" @onclick="@(() => SchedulerAction(c => c.StartSchedulerAsync(), "started"))">
+                                <TsakIcon Name="play" Size="14" /> Start
+                            </button>
+                        }
+                        </AuthorizedView>
+                    </div>
+
+                    <TsakGrid Items="_scheduler.Jobs.Jobs" T="ScheduledJobInfo">
+                        <EmptyContent><p class="text-secondary text-sm">No scheduled jobs on this node.</p></EmptyContent>
+                        <HeaderContent>
+                            <th>Job</th>
+                            <th>Group</th>
+                            <th>Cron</th>
+                            <th>State</th>
+                            <th>Next Fire</th>
+                            <th>Actions</th>
+                        </HeaderContent>
+                        <RowContent>
+                            <td class="mono text-sm">@context.JobName</td>
+                            <td class="text-sm">@context.JobGroup</td>
+                            <td class="mono text-sm">@(context.CronExpression ?? "—")</td>
+                            <td><TsakBadge Text="@context.TriggerState" Variant="@GetTriggerBadge(context.TriggerState)" /></td>
+                            <td class="text-sm">@(context.NextFireTime?.ToString("HH:mm:ss") ?? "—")</td>
+                            <td>
+                                <AuthorizedView AdminOnly="true">
+                                @if (context.TriggerState == "Normal")
+                                {
+                                    <button class="btn btn-ghost btn-sm"
+                                            @onclick="@(() => SchedulerAction(c => c.PauseJobAsync(context.JobKey), $"job '{context.JobName}' paused"))">
+                                        <TsakIcon Name="pause" Size="14" />
+                                    </button>
+                                }
+                                else if (context.TriggerState == "Paused")
+                                {
+                                    <button class="btn btn-ghost btn-sm"
+                                            @onclick="@(() => SchedulerAction(c => c.ResumeJobAsync(context.JobKey), $"job '{context.JobName}' resumed"))">
+                                        <TsakIcon Name="play" Size="14" />
+                                    </button>
+                                }
+                                </AuthorizedView>
+                            </td>
+                        </RowContent>
+                    </TsakGrid>
+                }
+                break;
+
+            case "Modules":
+                <TsakGrid Items="_modules" T="ModuleInfo">
+                    <EmptyContent>
+                        <div class="empty-state">
+                            <TsakIcon Name="package" Size="32" />
+                            <p class="text-secondary">No modules on this node</p>
+                        </div>
+                    </EmptyContent>
+                    <HeaderContent>
+                        <th>Name</th>
+                        <th>Version</th>
+                        <th>Status</th>
+                        <th>Dependencies</th>
+                        <th>Description</th>
+                    </HeaderContent>
+                    <RowContent>
+                        <td class="mono text-sm">@context.ModuleName</td>
+                        <td class="mono text-sm">@(context.Version ?? "—")</td>
+                        <td><TsakBadge Text="@context.Status" Variant="@GetModuleBadge(context.Status)" /></td>
+                        <td class="text-sm">@(context.Dependencies.Length > 0 ? string.Join(", ", context.Dependencies) : "—")</td>
+                        <td class="text-sm text-secondary">@(context.Description ?? "—")</td>
+                    </RowContent>
+                </TsakGrid>
+                break;
+
+            case "Monitoring":
+                <div style="display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-3);">
+                    <span class="text-sm text-secondary" style="margin-right: var(--space-2);">Range:</span>
+                    <div class="btn-group">
+                        <button class="btn btn-sm @(_monMinutes == 15 ? "btn-primary" : "btn-ghost")" @onclick="() => SetTimeRange(15)">15m</button>
+                        <button class="btn btn-sm @(_monMinutes == 60 ? "btn-primary" : "btn-ghost")" @onclick="() => SetTimeRange(60)">1h</button>
+                        <button class="btn btn-sm @(_monMinutes == 180 ? "btn-primary" : "btn-ghost")" @onclick="() => SetTimeRange(180)">3h</button>
+                        <button class="btn btn-sm @(_monMinutes == 720 ? "btn-primary" : "btn-ghost")" @onclick="() => SetTimeRange(720)">12h</button>
+                    </div>
+                </div>
+                @if (_monHistory is null)
+                {
+                    <div class="empty-state"><div class="spinner"></div></div>
+                }
+                else
+                {
+                        <div class="monitoring-charts">
+                            <div class="grid-charts">
+                                <div class="card card-chart">
+                                    <div class="card-header"><span class="card-title">CPU Usage</span></div>
+                                    <div class="chart-body">
+                                        <TsakChart @ref="_cpuChart" ChartId="@($"mon-cpu-{NodeId}")" />
+                                    </div>
+                                </div>
+                                <div class="card card-chart">
+                                    <div class="card-header"><span class="card-title">Memory</span></div>
+                                    <div class="chart-body">
+                                        <TsakChart @ref="_memChart" ChartId="@($"mon-mem-{NodeId}")" />
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="grid-charts">
+                                <div class="card card-chart">
+                                    <div class="card-header"><span class="card-title">Thread Count</span></div>
+                                    <div class="chart-body">
+                                        <TsakChart @ref="_threadChart" ChartId="@($"mon-thread-{NodeId}")" />
+                                    </div>
+                                </div>
+                                <div class="card card-chart">
+                                    <div class="card-header"><span class="card-title">GC Collections</span></div>
+                                    <div class="chart-body">
+                                        <TsakChart @ref="_gcChart" ChartId="@($"mon-gc-{NodeId}")" />
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                }
+                break;
+
+            case "Logs":
+                <div style="max-height: 60vh; overflow-y: auto;">
+                    <TsakGrid Items="_logs" T="LogEntry">
+                        <EmptyContent>
+                            <div class="empty-state">
+                                <TsakIcon Name="terminal" Size="32" />
+                                <p class="text-secondary">No log entries from this node</p>
+                            </div>
+                        </EmptyContent>
+                        <HeaderContent>
+                            <th style="width: 140px;">Timestamp</th>
+                            <th style="width: 80px;">Level</th>
+                            <th>Message</th>
+                            <th style="width: 160px;">Source</th>
+                        </HeaderContent>
+                        <RowContent>
+                            <td class="mono text-xs">@context.Timestamp.ToString("HH:mm:ss.fff")</td>
+                            <td><TsakBadge Text="@context.Level" Variant="@GetLevelBadge(context.Level)" ShowDot="false" /></td>
+                            <td class="text-sm" style="word-break: break-word;">
+                                @context.Message
+                                @if (!string.IsNullOrEmpty(context.Exception))
+                                {
+                                    <pre style="margin-top: var(--space-1); font-size: var(--font-size-xs); color: var(--status-error);">@context.Exception</pre>
+                                }
+                            </td>
+                            <td class="mono text-xs text-secondary">@(context.Source ?? "—")</td>
+                        </RowContent>
+                    </TsakGrid>
+                </div>
+                break;
+        }
+    </div>
+    </div>
+}
+
+<TsakConfirmDialog @ref="_confirm" />
+
+@code {
+    [Parameter] public string NodeId { get; set; } = "";
+    [Parameter] public string? Tab { get; set; }
+
+    private static readonly string[] _tabs = ["Contexts", "Scheduler", "Modules", "Monitoring", "Logs"];
+    private TsakConfirmDialog? _confirm;
+    private string _activeTab = "Contexts";
+    private bool _loading = true;
+
+    // Topology
+    private NodeInfo? _node;
+    private bool _isLeader;
+
+    // Runtime data
+    private HealthCheckResult? _health;
+    private SystemInfoResponse? _sysInfo;
+    private MetricsResponse? _metrics;
+    private ContextSummary[]? _contexts;
+    private record SchedulerData(SchedulerStatusResponse Status, ScheduledJobsResponse Jobs);
+    private SchedulerData? _scheduler;
+    private ModuleInfo[]? _modules;
+    private LogEntry[]? _logs;
+
+    // Monitoring tab data
+    private MetricsHistoryResponse? _monHistory;
+    private TsakChart? _cpuChart;
+    private TsakChart? _memChart;
+    private TsakChart? _threadChart;
+    private TsakChart? _gcChart;
+    private bool _monChartsCreated;
+    private int _monMinutes = 60;
+
+    // Polling
+    private PeriodicTimer? _timer;
+    private CancellationTokenSource? _cts;
+
+    protected override async Task OnInitializedAsync()
+    {
+        SyncTab();
+        await LoadAll();
+        _cts = new CancellationTokenSource();
+        _ = PollLoop(_cts.Token);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_activeTab == "Monitoring" && !_monChartsCreated
+            && _monHistory is { Available: true, Points.Length: > 0 })
+        {
+            await UpdateMonitoringChartsAsync();
+        }
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var prev = _activeTab;
+        SyncTab();
+        if (prev != _activeTab)
+        {
+            // Charts are destroyed when leaving Monitoring tab — force recreation on return
+            if (prev == "Monitoring")
+                _monChartsCreated = false;
+
+            var client = NodeProvider.GetClient(NodeId);
+            if (client is not null)
+                await LoadTabData(client);
+        }
+    }
+
+    private void SyncTab()
+    {
+        if (!string.IsNullOrEmpty(Tab))
+        {
+            var match = _tabs.FirstOrDefault(t => t.Equals(Tab, StringComparison.OrdinalIgnoreCase));
+            if (match is not null) _activeTab = match;
+        }
+    }
+
+    private async Task PollLoop(CancellationToken ct)
+    {
+        _timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
+        while (await _timer.WaitForNextTickAsync(ct))
+        {
+            await InvokeAsync(async () =>
+            {
+                await LoadAll();
+                StateHasChanged();
+            });
+        }
+    }
+
+    private async Task LoadAll()
+    {
+        _loading = _node is null;
+
+        var topology = await NodeProvider.LoadTopologyAsync(forceRefresh: true);
+        _node = topology.Nodes.FirstOrDefault(n => n.NodeId == NodeId);
+        _isLeader = topology.Leader?.NodeId == NodeId;
+
+        if (_node is null)
+        {
+            Log.LogWarning("[NodeDetail] Node {NodeId} not found in topology ({Count} nodes)", NodeId, topology.Nodes.Count);
+            _loading = false;
+            return;
+        }
+
+        var client = NodeProvider.GetClient(NodeId);
+        if (client is null)
+        {
+            Log.LogWarning("[NodeDetail] GetClient returned null for {NodeId}", NodeId);
+            _loading = false;
+            return;
+        }
+        if (!_node.IsAlive)
+        {
+            Log.LogWarning("[NodeDetail] Node {NodeId} is not alive, skipping API calls", NodeId);
+            _loading = false;
+            return;
+        }
+
+        // Load overview data
+        _health = await client.GetHealthAsync();
+        _sysInfo = await client.GetInfoAsync();
+        _metrics = await client.GetMetricsAsync();
+
+        // Load tab data for active tab
+        await LoadTabData(client);
+
+        _loading = false;
+    }
+
+    private async Task LoadTabData(TsakApiClient client)
+    {
+        switch (_activeTab)
+        {
+            case "Contexts":
+                _contexts = await client.ListContextsAsync();
+                break;
+            case "Scheduler":
+                var status = await client.GetSchedulerStatusAsync();
+                var jobs = await client.ListScheduledJobsAsync();
+                _scheduler = new SchedulerData(status, jobs);
+                break;
+            case "Modules":
+                _modules = await client.ListModulesAsync();
+                break;
+            case "Monitoring":
+                _monHistory = await client.GetMetricsHistoryAsync(_monMinutes);
+                await UpdateMonitoringChartsAsync();
+                break;
+            case "Logs":
+                var response = await client.GetLogsAsync(limit: 200);
+                _logs = response is { Available: true, Entries: { } entries } ? entries : [];
+                break;
+        }
+    }
+
+    private async Task SetTimeRange(int minutes)
+    {
+        if (_monMinutes == minutes) return;
+        _monMinutes = minutes;
+        _monChartsCreated = false;
+        var client = NodeProvider.GetClient(NodeId);
+        if (client is null) return;
+        _monHistory = await client.GetMetricsHistoryAsync(_monMinutes);
+        await UpdateMonitoringChartsAsync();
+        StateHasChanged();
+    }
+
+    private static string FormatNumber(int num)
+    {
+        if (num < 1_000) return num.ToString();
+        if (num < 1_000_000) return $"{num / 1_000.0:F1}K";
+        if (num < 1_000_000_000) return $"{num / 1_000_000.0:F1}M";
+        return $"{num / 1_000_000_000.0:F1}B";
+    }
+
+    private static string FormatUptime(string? uptime)
+    {
+        if (uptime is null) return "—";
+        var dot = uptime.LastIndexOf('.');
+        return dot >= 0 && uptime.Length > dot + 3 ? uptime[..(dot + 3)] : uptime;
+    }
+
+    private static string GetTabIcon(string tab) => tab switch
+    {
+        "Contexts" => "route",
+        "Endpoints" => "zap",
+        "Scheduler" => "clock",
+        "Modules" => "package",
+        "Monitoring" => "activity",
+        "Logs" => "terminal",
+        _ => "info"
+    };
+
+    private async Task ContextAction(Func<TsakApiClient, Task> action, string actionName)
+    {
+        try
+        {
+            var client = NodeProvider.GetClient(NodeId)
+                ?? throw new InvalidOperationException($"No API client for node {NodeId}");
+            await action(client);
+            _contexts = await client.ListContextsAsync();
+            Toast.Success($"Context {actionName}");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Context action failed: {ex.Message}");
+        }
+    }
+
+    private async Task StopContext(string name)
+    {
+        if (_confirm is not null)
+        {
+            var message = name == "_system"
+                ? "WARNING: Stopping '_system' will shut down the management API. You will lose remote access to this node until Worker restart. Continue?"
+                : $"Stop context '{name}'?";
+            var confirmed = await _confirm.ShowAsync(message, "Stop Context");
+            if (!confirmed) return;
+        }
+        await ContextAction(c => c.StopContextAsync(name), $"'{name}' stopped");
+    }
+
+    private async Task SchedulerAction(Func<TsakApiClient, Task> action, string actionName)
+    {
+        try
+        {
+            var client = NodeProvider.GetClient(NodeId)
+                ?? throw new InvalidOperationException($"No API client for node {NodeId}");
+            await action(client);
+            _scheduler = new SchedulerData(
+                await client.GetSchedulerStatusAsync(),
+                await client.ListScheduledJobsAsync());
+            Toast.Success($"Scheduler {actionName}");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Scheduler action failed: {ex.Message}");
+        }
+    }
+
+    private void GoBack() => Nav.NavigateTo("cluster");
+
+    private static string GetNodeBadge(NodeInfo node) => node.Status switch
+    {
+        NodeStatus.Online when node.IsAlive => "online",
+        NodeStatus.Online => "warning",
+        NodeStatus.Offline => "offline",
+        NodeStatus.Dead => "error",
+        _ => "offline"
+    };
+
+    private static string GetContextBadge(string status) => status switch
+    {
+        "Started" or "Running" => "online",
+        "Stopped" => "offline",
+        "Faulted" => "error",
+        _ => "warning"
+    };
+
+    private static string GetTriggerBadge(string state) => state switch
+    {
+        "Normal" => "online",
+        "Paused" => "warning",
+        "Complete" => "info",
+        "Blocked" => "error",
+        _ => "offline"
+    };
+
+    private static string GetModuleBadge(string status) => status switch
+    {
+        "Initialized" or "Loaded" => "online",
+        "NotLoaded" => "offline",
+        "Error" => "error",
+        _ => "warning"
+    };
+
+    private static string GetHealthBadge(string status) => status switch
+    {
+        "Healthy" => "online",
+        "Warning" => "warning",
+        "Critical" or "Failed" => "error",
+        _ => "offline"
+    };
+
+    private static string GetLevelBadge(string level) => level switch
+    {
+        "Error" or "Critical" => "error",
+        "Warning" => "warning",
+        "Information" => "info",
+        "Debug" or "Trace" => "offline",
+        _ => "offline"
+    };
+
+    private async Task UpdateMonitoringChartsAsync()
+    {
+        if (_monHistory is not { Available: true, Points.Length: > 0 })
+            return;
+
+        // All 4 chart refs must be available (rendered) before we can create
+        if (_cpuChart is null || _memChart is null || _threadChart is null || _gcChart is null)
+            return;
+
+        var labels = _monHistory.Points.Select(p =>
+            DateTimeOffset.FromUnixTimeMilliseconds(p.TimestampMs).LocalDateTime.ToString("HH:mm:ss")).ToArray();
+
+        var cpuDatasets = new[]
+        {
+            new TsakChart.ChartDataset("Process %", _monHistory.Points.Select(p => p.Cpu.ProcessUsage).ToArray(), "rgb(59,130,246)", null),
+            new TsakChart.ChartDataset("System %", _monHistory.Points.Select(p => p.Cpu.SystemUsage).ToArray(), "rgb(244,63,94)", null)
+        };
+
+        var memDatasets = new[]
+        {
+            new TsakChart.ChartDataset("Working Set MB", _monHistory.Points.Select(p => p.Memory.WorkingSetMB).ToArray(), "rgb(16,185,129)", "rgba(16,185,129,0.15)"),
+            new TsakChart.ChartDataset("Private MB", _monHistory.Points.Select(p => p.Memory.PrivateMemoryMB).ToArray(), "rgb(244,63,94)", "rgba(244,63,94,0.15)"),
+            new TsakChart.ChartDataset("GC Memory MB", _monHistory.Points.Select(p => p.Memory.GCMemoryMB).ToArray(), "rgb(139,92,246)", "rgba(139,92,246,0.15)")
+        };
+
+        var threadDatasets = new[]
+        {
+            new TsakChart.ChartDataset("Active Threads", _monHistory.Points.Select(p => (double)p.Threading.ActiveThreads).ToArray(), "rgb(245,158,11)", null),
+            new TsakChart.ChartDataset("Pending Work", _monHistory.Points.Select(p => (double)p.Threading.ThreadPoolPendingWork).ToArray(), "rgb(168,85,247)", null)
+        };
+
+        var gcDatasets = new[]
+        {
+            new TsakChart.ChartDataset("Gen 0", _monHistory.Points.Select(p => (double)p.GarbageCollector.Gen0Collections).ToArray(), "rgb(59,130,246)", "rgb(59,130,246)"),
+            new TsakChart.ChartDataset("Gen 1", _monHistory.Points.Select(p => (double)p.GarbageCollector.Gen1Collections).ToArray(), "rgb(16,185,129)", "rgb(16,185,129)"),
+            new TsakChart.ChartDataset("Gen 2", _monHistory.Points.Select(p => (double)p.GarbageCollector.Gen2Collections).ToArray(), "rgb(244,63,94)", "rgb(244,63,94)")
+        };
+
+        if (!_monChartsCreated)
+        {
+            await _cpuChart.CreateLineAsync(labels, cpuDatasets, "%");
+            await _memChart.CreateAreaAsync(labels, memDatasets, "MB");
+            await _threadChart.CreateLineAsync(labels, threadDatasets);
+            await _gcChart.CreateBarAsync(labels, gcDatasets);
+            _monChartsCreated = true;
+
+            // Size charts container to fill remaining viewport
+            await JS.InvokeVoidAsync("tsakCharts.fitToViewport", ".monitoring-charts");
+        }
+        else
+        {
+            await _cpuChart.UpdateAsync(labels, cpuDatasets);
+            await _memChart.UpdateAsync(labels, memDatasets);
+            await _threadChart.UpdateAsync(labels, threadDatasets);
+            await _gcChart.UpdateAsync(labels, gcDatasets);
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _cts?.Cancel();
+        _cts?.Dispose();
+        _timer?.Dispose();
+        try
+        {
+            await JS.InvokeVoidAsync("tsakCharts.disconnectResize");
+        }
+        catch (JSDisconnectedException) { }
+        catch (JSException) { }
+        catch (InvalidOperationException) { }
+        if (_cpuChart is not null)
+            await _cpuChart.DisposeAsync();
+        if (_memChart is not null)
+            await _memChart.DisposeAsync();
+        if (_threadChart is not null)
+            await _threadChart.DisposeAsync();
+        if (_gcChart is not null)
+            await _gcChart.DisposeAsync();
+    }
+}

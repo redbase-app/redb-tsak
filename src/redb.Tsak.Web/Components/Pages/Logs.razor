@@ -1,0 +1,311 @@
+@page "/node/{NodeId}/logs"
+@inject INodeClientProvider NodeProvider
+@inject ToastService Toast
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+@using redb.Tsak.Client
+@using redb.Tsak.Contracts
+@implements IDisposable
+
+<TsakPageHeader Title="Logs" Description="Live log viewer and log file downloads"
+                RefreshInterval="3s" OnRefresh="RefreshLive" />
+
+<div style="display: flex; flex-direction: column; height: calc(100vh - 160px);">
+
+<div style="display: flex; gap: var(--space-2); margin-bottom: var(--space-4);">
+    <button class="btn @(_activeTab == "live" ? "btn-primary" : "btn-secondary") btn-sm"
+            @onclick='() => _activeTab = "live"'>
+        <TsakIcon Name="activity" Size="14" /> Live
+    </button>
+    <button class="btn @(_activeTab == "files" ? "btn-primary" : "btn-secondary") btn-sm"
+            @onclick="SwitchToFiles">
+        <TsakIcon Name="archive" Size="14" /> Files
+    </button>
+</div>
+
+@if (_activeTab == "live")
+{
+    @* Filters *@
+    <div style="display: flex; gap: var(--space-2); margin-bottom: var(--space-3); flex-wrap: wrap; align-items: center;">
+        <select class="form-input" style="width: 120px;" @bind="_levelFilter">
+            <option value="">All Levels</option>
+            <option value="VRB">Verbose</option>
+            <option value="DBG">Debug</option>
+            <option value="INF">Info</option>
+            <option value="WRN">Warning</option>
+            <option value="ERR">Error</option>
+            <option value="FTL">Fatal</option>
+        </select>
+        <input class="form-input" style="width: 260px;" type="text" placeholder="Search text…"
+               @bind="_searchText" @bind:event="oninput" />
+        <label style="display: flex; align-items: center; gap: var(--space-1); font-size: var(--font-size-sm); cursor: pointer;">
+            <input type="checkbox" @bind="_autoScroll" /> Auto-scroll
+        </label>
+        <button class="btn btn-secondary btn-sm" @onclick="ClearLive">
+            <TsakIcon Name="trash" Size="14" /> Clear
+        </button>
+        <span class="text-xs text-secondary" style="margin-left: auto;">
+            @_entries.Count / @(_bufferCapacity ?? 0) buffered
+        </span>
+    </div>
+
+    @* Log entries *@
+    <div class="card" style="padding: 0; flex: 1; min-height: 0; display: flex; flex-direction: column;">
+        <div id="logScrollContainer" style="flex: 1; overflow-y: auto; font-family: var(--font-mono); font-size: var(--font-size-xs);">
+            @if (FilteredEntries.Length == 0)
+            {
+                <div class="empty-state" style="padding: var(--space-6);">
+                    <TsakIcon Name="terminal" Size="32" />
+                    <p class="text-secondary">No log entries</p>
+                </div>
+            }
+            else
+            {
+                <table class="table" style="margin: 0; table-layout: fixed; width: 100%;">
+                    <thead>
+                        <tr>
+                            <th style="width: 10%;">Time</th>
+                            <th style="width: 55px;">Level</th>
+                            <th style="width: 60%;">Message</th>
+                            <th style="width: calc(30% - 55px);">Source</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var entry in FilteredEntries)
+                        {
+                            <tr style="@GetRowStyle(entry.Level)">
+                                <td class="mono">@entry.Timestamp.ToString("HH:mm:ss.fff")</td>
+                                <td><TsakBadge Text="@entry.Level" Variant="@GetLevelVariant(entry.Level)" ShowDot="false" /></td>
+                                <td style="word-break: break-word; white-space: pre-wrap;">
+                                    @entry.Message
+                                    @if (!string.IsNullOrEmpty(entry.Exception))
+                                    {
+                                        <pre style="margin-top: var(--space-1); color: var(--status-error); font-size: inherit;">@entry.Exception</pre>
+                                    }
+                                </td>
+                                <td class="text-secondary" style="word-break: break-all;">@(ShortenSource(entry.Source))</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+    </div>
+}
+else
+{
+    @* Files tab *@
+    @if (_filesLoading)
+    {
+        <div class="empty-state">
+            <div class="spinner spinner-lg"></div>
+            <p>Loading log files…</p>
+        </div>
+    }
+    else if (_logFiles is { Length: > 0 })
+    {
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title"><TsakIcon Name="archive" Size="16" /> Log Files</span>
+            </div>
+            <TsakGrid Items="_logFiles" T="LogFileInfo">
+                <HeaderContent>
+                    <th>Filename</th>
+                    <th style="width: 120px;">Size</th>
+                    <th style="width: 180px;">Last Modified</th>
+                    <th style="width: 100px;">Download</th>
+                </HeaderContent>
+                <RowContent>
+                    <td class="mono text-sm">@context.Name</td>
+                    <td class="text-sm">@FormatSize(context.Size)</td>
+                    <td class="text-sm">@context.LastModified.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                    <td>
+                        <a class="btn btn-secondary btn-sm"
+                           href="@($"api/proxy/{NodeId}/logs/download/{context.Name}")"
+                           target="_blank" download>
+                            <TsakIcon Name="download" Size="14" /> ZIP
+                        </a>
+                    </td>
+                </RowContent>
+            </TsakGrid>
+        </div>
+    }
+    else
+    {
+        <div class="empty-state">
+            <TsakIcon Name="archive" Size="48" />
+            <p class="text-secondary">No log files available on this node</p>
+        </div>
+    }
+}
+
+</div>
+
+@code {
+    [Parameter] public string NodeId { get; set; } = "";
+
+    private string _activeTab = "live";
+    private string _levelFilter = "";
+    private string _searchText = "";
+    private bool _autoScroll = true;
+
+    // Live state
+    private readonly List<LogEntry> _entries = new();
+    private long _lastId = -1;
+    private int? _bufferCapacity;
+    private bool _shouldScroll;
+
+    // Files state
+    private LogFileInfo[]? _logFiles;
+    private bool _filesLoading;
+
+    private PeriodicTimer? _timer;
+    private CancellationTokenSource? _cts;
+
+    private LogEntry[] FilteredEntries
+    {
+        get
+        {
+            IEnumerable<LogEntry> source = _entries;
+            if (!string.IsNullOrEmpty(_levelFilter))
+                source = source.Where(e => string.Equals(e.Level, _levelFilter, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrEmpty(_searchText))
+                source = source.Where(e =>
+                    e.Message.Contains(_searchText, StringComparison.OrdinalIgnoreCase) ||
+                    (e.Source?.Contains(_searchText, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                    (e.Exception?.Contains(_searchText, StringComparison.OrdinalIgnoreCase) ?? false));
+            return source.ToArray();
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await FetchIncremental();
+        _cts = new CancellationTokenSource();
+        _ = PollLoop(_cts.Token);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_shouldScroll)
+        {
+            _shouldScroll = false;
+            await JS.InvokeVoidAsync("tsakLogs.autoScroll", "logScrollContainer");
+        }
+    }
+
+    private async Task PollLoop(CancellationToken ct)
+    {
+        _timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
+        while (await _timer.WaitForNextTickAsync(ct))
+        {
+            if (_activeTab == "live")
+            {
+                await FetchIncremental();
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+    }
+
+    private async Task FetchIncremental()
+    {
+        var client = NodeProvider.GetClient(NodeId);
+        if (client is null) return;
+
+        try
+        {
+            var response = await client.GetLogsAsync(afterId: _lastId, limit: 500);
+            if (response is not { Available: true, Entries: { } entries }) return;
+
+            _bufferCapacity = response.BufferCapacity;
+
+            if (entries.Length > 0)
+            {
+                _entries.AddRange(entries);
+                _lastId = entries[^1].Id;
+                _shouldScroll = _autoScroll;
+
+                // Trim to buffer capacity (sliding window)
+                var cap = _bufferCapacity ?? 2000;
+                if (_entries.Count > cap)
+                    _entries.RemoveRange(0, _entries.Count - cap);
+            }
+        }
+        catch { }
+    }
+
+    private async Task RefreshLive()
+    {
+        if (_activeTab == "live")
+            await FetchIncremental();
+        else
+            await LoadFiles();
+    }
+
+    private void ClearLive()
+    {
+        _entries.Clear();
+        // Keep _lastId so we only get new entries from now
+    }
+
+    private async Task SwitchToFiles()
+    {
+        _activeTab = "files";
+        await LoadFiles();
+    }
+
+    private async Task LoadFiles()
+    {
+        var client = NodeProvider.GetClient(NodeId);
+        if (client is null) return;
+
+        _filesLoading = true;
+        try
+        {
+            var response = await client.GetLogFilesAsync();
+            _logFiles = response is { Available: true } ? response.Files : [];
+        }
+        catch { _logFiles = []; }
+        _filesLoading = false;
+    }
+
+    private static string GetLevelVariant(string level) => level switch
+    {
+        "VRB" => "muted",
+        "DBG" => "muted",
+        "INF" => "online",
+        "WRN" => "warning",
+        "ERR" => "error",
+        "FTL" => "error",
+        _ => "muted"
+    };
+
+    private static string GetRowStyle(string level) => level switch
+    {
+        "WRN" => "background: rgba(var(--warning-rgb, 255,171,0), 0.06);",
+        "ERR" or "FTL" => "background: rgba(var(--error-rgb, 255,68,68), 0.08);",
+        _ => ""
+    };
+
+    private static string ShortenSource(string? source)
+    {
+        if (string.IsNullOrEmpty(source)) return "—";
+        // Show last two segments: "redb.Tsak.Core.Services.TsakCoordinator" → "Services.TsakCoordinator"
+        var parts = source.Split('.');
+        return parts.Length > 2 ? string.Join('.', parts[^2..]) : source;
+    }
+
+    private static string FormatSize(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F1} KB";
+        return $"{bytes / (1024.0 * 1024.0):F1} MB";
+    }
+
+    public void Dispose()
+    {
+        _cts?.Cancel();
+        _cts?.Dispose();
+        _timer?.Dispose();
+    }
+}

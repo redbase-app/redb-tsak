@@ -1,0 +1,116 @@
+@* Embeddable lifecycle event feed for Dashboard or standalone use. *@
+@using redb.Tsak.Client
+@using redb.Tsak.Contracts
+
+@if (_events is not null)
+{
+    <div class="card" style="margin-bottom: var(--space-4);">
+        <div class="card-header">
+            <span class="card-title">
+                <TsakIcon Name="clock" Size="16" /> Lifecycle Events
+                @if (!string.IsNullOrEmpty(NodeLabel))
+                {
+                    <span class="text-secondary text-sm" style="font-weight: 400;">— @NodeLabel</span>
+                }
+            </span>
+            <div style="display: flex; gap: var(--space-2); align-items: center;">
+                <select class="input" style="width: 140px; padding: 2px 6px; font-size: 0.75rem;" @bind="_typeFilter">
+                    <option value="">All types</option>
+                    @foreach (var t in Enum.GetValues<LifecycleEventType>())
+                    {
+                        <option value="@t">@t</option>
+                    }
+                </select>
+                <select class="input" style="width: 140px; padding: 2px 6px; font-size: 0.75rem;" @bind="_contextFilter">
+                    <option value="">All contexts</option>
+                    @foreach (var ctx in _contextNames)
+                    {
+                        <option value="@ctx">@ctx</option>
+                    }
+                </select>
+            </div>
+        </div>
+
+        @if (FilteredEvents.Length > 0)
+        {
+            <div style="max-height: 300px; overflow-y: auto;">
+            <TsakGrid Items="FilteredEvents" T="LifecycleEvent" PageSize="10">
+                <HeaderContent>
+                    <th>Timestamp</th>
+                    <th>Type</th>
+                    <th>Context</th>
+                    <th>Route</th>
+                    <th>Details</th>
+                </HeaderContent>
+                <RowContent>
+                    <td class="text-sm">@context.Timestamp.ToString("HH:mm:ss")</td>
+                    <td><TsakBadge Text="@context.EventType.ToString()" Variant="@GetEventBadge(context.EventType)" ShowDot="false" /></td>
+                    <td class="text-sm">@context.ContextName</td>
+                    <td class="mono text-xs">@(context.RouteId ?? "—")</td>
+                    <td class="text-xs text-secondary" style="max-width: 250px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="@context.Details">@(context.Details ?? "—")</td>
+                </RowContent>
+            </TsakGrid>
+            </div>
+        }
+        else
+        {
+            <p class="text-secondary text-sm" style="text-align: center; padding: var(--space-3);">No lifecycle events</p>
+        }
+    </div>
+}
+
+@code {
+    [Parameter] public TsakApiClient? Client { get; set; }
+    [Parameter] public int Limit { get; set; } = 20;
+    [Parameter] public string? NodeLabel { get; set; }
+
+    private LifecycleEvent[]? _events;
+    private string _typeFilter = "";
+    private string _contextFilter = "";
+
+    private string[] _contextNames => _events?
+        .Select(e => e.ContextName)
+        .Distinct().OrderBy(n => n).ToArray() ?? [];
+
+    private LifecycleEvent[] FilteredEvents
+    {
+        get
+        {
+            if (_events is null) return [];
+            IEnumerable<LifecycleEvent> result = _events;
+            if (!string.IsNullOrEmpty(_typeFilter) && Enum.TryParse<LifecycleEventType>(_typeFilter, out var t))
+                result = result.Where(e => e.EventType == t);
+            if (!string.IsNullOrEmpty(_contextFilter))
+                result = result.Where(e => e.ContextName == _contextFilter);
+            return result.ToArray();
+        }
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await LoadEvents();
+    }
+
+    public async Task RefreshAsync()
+    {
+        await LoadEvents();
+        StateHasChanged();
+    }
+
+    private async Task LoadEvents()
+    {
+        if (Client is null) return;
+        try { _events = await Client.GetLifecycleEventsAsync(limit: Limit); }
+        catch { /* lifecycle may not be available */ }
+    }
+
+    private static string GetEventBadge(LifecycleEventType type) => type switch
+    {
+        LifecycleEventType.RouteStarted or LifecycleEventType.ContextStarted => "online",
+        LifecycleEventType.RouteStopped or LifecycleEventType.ContextStopped or LifecycleEventType.ContextRemoved => "offline",
+        LifecycleEventType.RouteErrored => "error",
+        LifecycleEventType.RouteSuspended or LifecycleEventType.ExchangeTimedOut => "warning",
+        LifecycleEventType.ExchangeHung or LifecycleEventType.WatchdogAutoRestart => "error",
+        _ => "info"
+    };
+}

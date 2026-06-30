@@ -1,0 +1,416 @@
+@page "/node/{NodeId}/endpoints"
+@inject INodeClientProvider NodeProvider
+@inject NavigationManager Nav
+@inject ToastService Toast
+@using redb.Tsak.Client
+@using redb.Tsak.Contracts
+@using redb.Tsak.Web.Components.Shared
+@implements IDisposable
+
+<TsakPageHeader Title="Endpoints" Description="Route endpoints and telemetry" RefreshInterval="10s" OnRefresh="Refresh">
+    <Actions>
+        <select class="input" style="width: 140px; padding: 4px 8px; font-size: 0.8rem;" @bind="_typeFilter">
+            <option value="All">All types</option>
+            @foreach (var type in AvailableTypes)
+            {
+                <option value="@type">@type</option>
+            }
+        </select>
+    </Actions>
+</TsakPageHeader>
+
+@if (_loading)
+{
+    <div class="empty-state">
+        <div class="spinner spinner-lg"></div>
+        <p>Loading endpoints…</p>
+    </div>
+}
+else if (_contexts is { Length: > 0 })
+{
+    @* Stat cards *@
+    <div class="grid-stats">
+        <TsakCard Title="Total" Icon="zap" Value="@TotalEndpoints.ToString()" />
+        <TsakCard Title="Active" Icon="check-circle"
+                  Value="@ActiveEndpoints.ToString()"
+                  ValueStyle="color: var(--status-online)" />
+        <TsakCard Title="With Errors" Icon="alert-triangle"
+                  Value="@ErrorEndpoints.ToString()"
+                  ValueStyle="@(ErrorEndpoints > 0 ? "color: var(--status-error)" : "")" />
+        <TsakCard Title="Messages" Icon="mail" Value="@FormatNumber(TotalMessages)" />
+        <TsakCard Title="Throughput" Icon="activity" Value="@($"{TotalThroughput:F1}/s")" />
+        <TsakCard Title="Consumers / Producers" Icon="users">
+            <span class="card-value">@ConsumerCount / @ProducerCount</span>
+        </TsakCard>
+    </div>
+
+    @* Context groups *@
+    @foreach (var ctx in _contexts.Where(c => !c.IsAnonymous).OrderBy(c => c.Name))
+    {
+        var filteredEndpoints = FilterEndpoints(ctx.Endpoints);
+        if (_typeFilter != "All" && filteredEndpoints.Length == 0) { continue; }
+
+        <div class="card" style="margin-bottom: var(--space-4);">
+            <div class="card-header" style="cursor: pointer; user-select: none;" @onclick="() => ToggleCollapse(ctx.Name)">
+                <span class="card-title" style="display: flex; align-items: center; gap: var(--space-2);">
+                    <TsakIcon Name="@(_collapsed.Contains(ctx.Name) ? "chevron-right" : "chevron-down")" Size="14" />
+                    @ctx.Name
+                    <span class="text-secondary text-sm" style="font-weight: 400;">
+                        (@filteredEndpoints.Length endpoints)
+                    </span>
+                </span>
+                <TsakBadge Text="@ctx.Status" Variant="@GetContextBadge(ctx.Status)" />
+            </div>
+
+            @if (!_collapsed.Contains(ctx.Name))
+            {
+                <div style="padding: 0 var(--space-4) var(--space-4);">
+                    @if (filteredEndpoints.Length > 0)
+                    {
+                        <h4 style="margin: var(--space-4) 0 var(--space-2); font-size: 0.85rem; color: var(--text-secondary);">
+                            <TsakIcon Name="zap" Size="14" /> Endpoints
+                        </h4>
+                        <TsakGrid Items="filteredEndpoints" T="TsakEndpointInfo" OnRowClick="OnEndpointClick">
+                            <HeaderContent>
+                                <th>URI</th>
+                                <th>Type</th>
+                                <th>Role</th>
+                                <th>In / Out</th>
+                                <th>Errors</th>
+                                <th>Throughput</th>
+                                <th>Health</th>
+                                <th>Last Activity</th>
+                                <th>Uptime</th>
+                            </HeaderContent>
+                            <RowContent>
+                                <td class="mono text-xs text-secondary" style="max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="@context.Uri">@context.Uri</td>
+                                <td><TsakBadge Text="@GetEndpointType(context.Scheme)" Variant="@GetTypeBadgeVariant(context.Scheme)" ShowDot="false" /></td>
+                                <td class="text-sm">@GetRoleLabel(context)</td>
+                                <td class="mono text-sm">@FormatNumber(context.MessagesIn) / @FormatNumber(context.MessagesOut)</td>
+                                <td class="mono text-sm" style="@(context.Errors > 0 ? "color: var(--status-error)" : "")">@context.Errors</td>
+                                <td class="mono text-sm">@($"{context.ThroughputPerSecond:F1}/s")</td>
+                                <td><TsakBadge Text="@context.HealthStatus" Variant="@GetHealthBadge(context.HealthStatus)" /></td>
+                                <td class="text-xs">@FormatTimeAgo(context.LastActivity)</td>
+                                <td class="text-xs">@FormatUptime(context.Uptime)</td>
+                            </RowContent>
+                        </TsakGrid>
+                    }
+                    else if (_typeFilter != "All")
+                    {
+                        <p class="text-secondary text-sm" style="padding: var(--space-2);">No endpoints matching filter "@_typeFilter"</p>
+                    }
+                </div>
+            }
+        </div>
+    }
+}
+else
+{
+    <div class="empty-state">
+        <TsakIcon Name="zap" Size="48" />
+        <p>No endpoints on this node</p>
+    </div>
+}
+
+@* Detail modal *@
+@if (_selectedEndpoint is not null)
+{
+    <div class="modal-overlay" @onclick="CloseModal">
+        <div class="modal" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h3>Endpoint Details</h3>
+                <button class="btn btn-ghost btn-sm" @onclick="CloseModal">
+                    <TsakIcon Name="x" Size="16" />
+                </button>
+            </div>
+            <div class="modal-body">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4);">
+                    @* General Info *@
+                    <div class="card" style="margin: 0;">
+                        <div class="card-header"><span class="card-title">General</span></div>
+                        <table style="width: 100%;">
+                            <tbody>
+                                <tr><td class="text-secondary" style="width: 120px;">URI</td><td class="mono text-xs" style="word-break: break-all;">@_selectedEndpoint.Uri</td></tr>
+                                <tr><td class="text-secondary">Type</td><td><TsakBadge Text="@GetEndpointType(_selectedEndpoint.Scheme)" Variant="@GetTypeBadgeVariant(_selectedEndpoint.Scheme)" ShowDot="false" /></td></tr>
+                                <tr><td class="text-secondary">Role</td><td>@GetRoleLabel(_selectedEndpoint)</td></tr>
+                                <tr><td class="text-secondary">Context</td><td class="mono text-sm">@_selectedContext</td></tr>
+                                <tr><td class="text-secondary">Health</td><td><TsakBadge Text="@_selectedEndpoint.HealthStatus" Variant="@GetHealthBadge(_selectedEndpoint.HealthStatus)" /> @if (!string.IsNullOrEmpty(_selectedEndpoint.HealthReason) && _selectedEndpoint.HealthStatus != "Healthy") { <span class="text-xs text-secondary" style="margin-left: 8px;">@_selectedEndpoint.HealthReason</span> }</td></tr>
+                                <tr><td class="text-secondary">Started</td><td class="text-sm">@(_selectedEndpoint.StartedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "—")</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    @* Performance *@
+                    <div class="card" style="margin: 0;">
+                        <div class="card-header"><span class="card-title">Performance</span></div>
+                        <table style="width: 100%;">
+                            <tbody>
+                                <tr><td class="text-secondary" style="width: 140px;">Messages In</td><td class="mono">@_selectedEndpoint.MessagesIn.ToString("N0")</td></tr>
+                                <tr><td class="text-secondary">Messages Out</td><td class="mono">@_selectedEndpoint.MessagesOut.ToString("N0")</td></tr>
+                                <tr><td class="text-secondary">Bytes In</td><td class="mono">@FormatBytes(_selectedEndpoint.BytesIn)</td></tr>
+                                <tr><td class="text-secondary">Throughput</td><td class="mono">@($"{_selectedEndpoint.ThroughputPerSecond:F2}/s")</td></tr>
+                                <tr><td class="text-secondary">Avg Processing</td><td class="mono">@FormatDuration(_selectedEndpoint.AverageProcessingTime)</td></tr>
+                                <tr><td class="text-secondary">Uptime</td><td class="mono">@FormatUptime(_selectedEndpoint.Uptime)</td></tr>
+                                <tr><td class="text-secondary">Last Activity</td><td class="text-sm">@(_selectedEndpoint.LastActivity?.ToString("yyyy-MM-dd HH:mm:ss") ?? "—")</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                @* Errors section *@
+                @if (_selectedEndpoint.Errors > 0 || _selectedEndpoint.LastErrorMessage is not null)
+                {
+                    <div class="card" style="margin: var(--space-4) 0 0;">
+                        <div class="card-header">
+                            <span class="card-title">Errors</span>
+                            <TsakBadge Text="@_selectedEndpoint.Errors.ToString()" Variant="@(_selectedEndpoint.Errors > 0 ? "error" : "online")" ShowDot="false" />
+                        </div>
+                        <table style="width: 100%;">
+                            <tbody>
+                                <tr><td class="text-secondary" style="width: 140px;">Error Count</td><td class="mono" style="color: var(--status-error);">@_selectedEndpoint.Errors</td></tr>
+                                @if (_selectedEndpoint.LastErrorTime is not null)
+                                {
+                                    <tr><td class="text-secondary">Last Error Time</td><td class="text-sm">@_selectedEndpoint.LastErrorTime?.ToString("yyyy-MM-dd HH:mm:ss")</td></tr>
+                                }
+                                @if (_selectedEndpoint.LastErrorMessage is not null)
+                                {
+                                    <tr><td class="text-secondary">Last Error</td><td class="mono text-xs" style="color: var(--status-error); word-break: break-all;">@_selectedEndpoint.LastErrorMessage</td></tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+
+                @* Warnings section *@
+                @if (_selectedEndpoint.Warnings > 0 || _selectedEndpoint.LastWarningMessage is not null)
+                {
+                    <div class="card" style="margin: var(--space-4) 0 0;">
+                        <div class="card-header">
+                            <span class="card-title">Warnings</span>
+                            <TsakBadge Text="@_selectedEndpoint.Warnings.ToString()" Variant="warning" ShowDot="false" />
+                        </div>
+                        <table style="width: 100%;">
+                            <tbody>
+                                <tr><td class="text-secondary" style="width: 140px;">Warning Count</td><td class="mono" style="color: var(--status-warning);">@_selectedEndpoint.Warnings</td></tr>
+                                @if (_selectedEndpoint.LastWarningTime is not null)
+                                {
+                                    <tr><td class="text-secondary">Last Warning Time</td><td class="text-sm">@_selectedEndpoint.LastWarningTime?.ToString("yyyy-MM-dd HH:mm:ss")</td></tr>
+                                }
+                                @if (_selectedEndpoint.LastWarningMessage is not null)
+                                {
+                                    <tr><td class="text-secondary">Last Warning</td><td class="mono text-xs" style="color: var(--status-warning); word-break: break-all;">@_selectedEndpoint.LastWarningMessage</td></tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public string NodeId { get; set; } = "";
+
+    private bool _loading = true;
+    private ContextDetail[]? _contexts;
+    private string _typeFilter = "All";
+    private readonly HashSet<string> _collapsed = new();
+
+    // Modal
+    private TsakEndpointInfo? _selectedEndpoint;
+    private string? _selectedContext;
+
+    // Polling
+    private PeriodicTimer? _timer;
+    private CancellationTokenSource? _cts;
+
+    // Computed stats
+    private int TotalEndpoints => _contexts?.Sum(c => c.Endpoints.Length) ?? 0;
+    private int ActiveEndpoints => _contexts?
+        .Where(c => c.Status is "Running" or "Started")
+        .Sum(c => c.Endpoints.Length) ?? 0;
+    private int ErrorEndpoints => _contexts?.Sum(c => c.Endpoints.Count(e => e.Errors > 0)) ?? 0;
+    private long TotalMessages => _contexts?.Sum(c =>
+        c.Endpoints.Sum(e => e.MessagesIn + e.MessagesOut)) ?? 0;
+    private double TotalThroughput => _contexts?.Sum(c =>
+        c.Endpoints.Sum(e => e.ThroughputPerSecond)) ?? 0;
+    private int ConsumerCount => _contexts?.Sum(c => c.Endpoints.Count(e => e.IsConsumer)) ?? 0;
+    private int ProducerCount => _contexts?.Sum(c => c.Endpoints.Count(e => e.IsProducer)) ?? 0;
+
+    private string[] AvailableTypes => _contexts?
+        .SelectMany(c => c.Endpoints.Select(e => GetEndpointType(e.Scheme)))
+        .Distinct().OrderBy(t => t).ToArray() ?? [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+        _cts = new CancellationTokenSource();
+        _ = PollLoop(_cts.Token);
+    }
+
+    private async Task PollLoop(CancellationToken ct)
+    {
+        _timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
+        while (await _timer.WaitForNextTickAsync(ct))
+        {
+            await LoadData();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task LoadData()
+    {
+        var client = NodeProvider.GetClient(NodeId);
+        if (client is null) { _loading = false; return; }
+
+        try
+        {
+            var summaries = await client.ListContextsAsync();
+            var details = new List<ContextDetail>(summaries.Length);
+            foreach (var s in summaries)
+            {
+                try { details.Add(await client.GetContextAsync(s.Name)); }
+                catch { /* skip failing contexts */ }
+            }
+            _contexts = details.ToArray();
+        }
+        catch { /* retain previous data on error */ }
+        _loading = false;
+    }
+
+    private async Task Refresh()
+    {
+        await LoadData();
+    }
+
+    private TsakEndpointInfo[] FilterEndpoints(TsakEndpointInfo[] endpoints)
+    {
+        if (_typeFilter == "All") return endpoints;
+        return endpoints.Where(e => GetEndpointType(e.Scheme) == _typeFilter).ToArray();
+    }
+
+    private void ToggleCollapse(string name)
+    {
+        if (!_collapsed.Remove(name))
+            _collapsed.Add(name);
+    }
+
+    private void OnEndpointClick(TsakEndpointInfo endpoint)
+    {
+        _selectedEndpoint = endpoint;
+        // Find context for this endpoint
+        _selectedContext = _contexts?
+            .FirstOrDefault(c => c.Endpoints.Any(e => e.Uri == endpoint.Uri))?.Name;
+    }
+
+    private void CloseModal() { _selectedEndpoint = null; _selectedContext = null; }
+
+    // Type classification (from lt.tsak pattern, extended for redb.Route types)
+    private static string GetEndpointType(string? scheme) => scheme?.ToLowerInvariant() switch
+    {
+        "direct" => "Direct",
+        "rabbitmq" => "RabbitMQ",
+        "kafka" => "Kafka",
+        "cron" => "Cron",
+        "timer" => "Timer",
+        "http" or "https" => "HTTP",
+        "redis" => "Redis",
+        "mqtt" => "MQTT",
+        "grpc" => "gRPC",
+        "seda" => "SEDA",
+        "file" => "File",
+        "sql" or "mssql" or "postgres" => "SQL",
+        "tcp" => "TCP",
+        "validator" => "Validator",
+        null or "" => "Unknown",
+        var s => char.ToUpper(s[0]) + s[1..]
+    };
+
+    private static string GetTypeBadgeVariant(string? scheme) => scheme?.ToLowerInvariant() switch
+    {
+        "direct" or "seda" => "info",
+        "rabbitmq" => "warning",
+        "kafka" => "info",
+        "cron" or "timer" => "online",
+        "http" or "https" or "grpc" => "error",
+        "redis" or "mqtt" => "warning",
+        "sql" or "mssql" or "postgres" => "info",
+        "tcp" => "error",
+        _ => "offline"
+    };
+
+    private static string GetContextBadge(string status) => status switch
+    {
+        "Started" or "Running" => "online",
+        "Stopped" => "offline",
+        "Faulted" => "error",
+        _ => "warning"
+    };
+
+    private static string GetHealthBadge(string status) => status switch
+    {
+        "Healthy" => "online",
+        "Warning" => "warning",
+        "Critical" or "Failed" => "error",
+        _ => "offline"
+    };
+
+    private static string GetRoleLabel(TsakEndpointInfo ep) =>
+        ep.IsConsumer && ep.IsProducer ? "Both"
+        : ep.IsConsumer ? "Consumer"
+        : "Producer";
+
+    private static string FormatUptime(TimeSpan uptime)
+    {
+        if (uptime == TimeSpan.Zero) return "—";
+        if (uptime.TotalDays >= 1) return $"{(int)uptime.TotalDays}d {uptime.Hours}h";
+        if (uptime.TotalHours >= 1) return $"{(int)uptime.TotalHours}h {uptime.Minutes}m";
+        if (uptime.TotalMinutes >= 1) return $"{(int)uptime.TotalMinutes}m {uptime.Seconds}s";
+        return $"{uptime.Seconds}s";
+    }
+
+    private static string FormatTimeAgo(DateTimeOffset? timestamp)
+    {
+        if (timestamp is null) return "—";
+        var diff = DateTimeOffset.UtcNow - timestamp.Value;
+        if (diff.TotalSeconds < 60) return $"{(int)diff.TotalSeconds}s ago";
+        if (diff.TotalMinutes < 60) return $"{(int)diff.TotalMinutes}m ago";
+        if (diff.TotalHours < 24) return $"{(int)diff.TotalHours}h ago";
+        return $"{(int)diff.TotalDays}d ago";
+    }
+
+    private static string FormatNumber(long num)
+    {
+        if (num == 0) return "0";
+        if (num < 1_000) return num.ToString();
+        if (num < 1_000_000) return $"{num / 1_000.0:F1}K";
+        if (num < 1_000_000_000) return $"{num / 1_000_000.0:F1}M";
+        return $"{num / 1_000_000_000.0:F1}B";
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes == 0) return "0 B";
+        if (bytes < 1024) return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F1} KB";
+        if (bytes < 1024 * 1024 * 1024) return $"{bytes / (1024.0 * 1024):F1} MB";
+        return $"{bytes / (1024.0 * 1024 * 1024):F1} GB";
+    }
+
+    private static string FormatDuration(TimeSpan duration)
+    {
+        if (duration == TimeSpan.Zero) return "—";
+        if (duration.TotalMilliseconds < 1) return $"{duration.TotalMicroseconds:F0}µs";
+        if (duration.TotalSeconds < 1) return $"{duration.TotalMilliseconds:F1}ms";
+        if (duration.TotalMinutes < 1) return $"{duration.TotalSeconds:F1}s";
+        return $"{(int)duration.TotalMinutes}m {duration.Seconds}s";
+    }
+
+    public void Dispose()
+    {
+        _cts?.Cancel();
+        _cts?.Dispose();
+        _timer?.Dispose();
+    }
+}

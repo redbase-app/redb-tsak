@@ -1,0 +1,11 @@
+@inject IAuthService Auth
+
+@if (!AdminOnly || Auth.IsAdmin)
+{
+    @ChildContent
+}
+
+@code {
+    [Parameter] public bool AdminOnly { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+}

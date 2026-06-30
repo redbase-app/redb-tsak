@@ -1,0 +1,60 @@
+@* Toast notification service component. Place once in TsakShell. *@
+
+@if (_toasts.Count > 0)
+{
+    <div class="toast-container">
+        @foreach (var toast in _toasts)
+        {
+            <div class="toast toast-@toast.Level" @key="toast.Id">
+                <TsakIcon Name="@GetIcon(toast.Level)" Size="16" />
+                <span>@toast.Message</span>
+                <button class="toast-close" @onclick="() => Dismiss(toast.Id)">
+                    <TsakIcon Name="x" Size="14" />
+                </button>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private readonly List<ToastItem> _toasts = new();
+    private int _nextId;
+
+    public void Show(string message, string level = "info", int durationMs = 4000)
+    {
+        var toast = new ToastItem(++_nextId, message, level);
+        _toasts.Add(toast);
+        InvokeAsync(StateHasChanged);
+
+        if (durationMs > 0)
+        {
+            _ = AutoDismiss(toast.Id, durationMs);
+        }
+    }
+
+    public void Success(string message) => Show(message, "success");
+    public void Error(string message) => Show(message, "error", 8000);
+    public void Warning(string message) => Show(message, "warning", 6000);
+
+    private async Task AutoDismiss(int id, int ms)
+    {
+        await Task.Delay(ms);
+        Dismiss(id);
+    }
+
+    private void Dismiss(int id)
+    {
+        _toasts.RemoveAll(t => t.Id == id);
+        InvokeAsync(StateHasChanged);
+    }
+
+    private static string GetIcon(string level) => level switch
+    {
+        "success" => "check-circle",
+        "error" => "x-circle",
+        "warning" => "alert-triangle",
+        _ => "info"
+    };
+
+    private record ToastItem(int Id, string Message, string Level);
+}

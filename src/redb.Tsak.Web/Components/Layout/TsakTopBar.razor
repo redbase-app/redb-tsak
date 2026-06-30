@@ -1,0 +1,59 @@
+@inject IAuthService Auth
+@inject INodeClientProvider NodeProvider
+@inject IJSRuntime JS
+
+<header class="topbar">
+    <div class="topbar-left">
+        <h1 class="topbar-title">@GetPageTitle()</h1>
+    </div>
+    <div class="topbar-right">
+        @if (NodeProvider.Topology is { } topo)
+        {
+            <div class="topbar-cluster">
+                <TsakIcon Name="cluster" Size="14" />
+                <span>@topo.ClusterName</span>
+                <TsakBadge Text="@($"{topo.Nodes.Count(n => n.IsAlive)} / {topo.Nodes.Count}")" Variant="online" />
+            </div>
+        }
+        <button class="btn btn-icon btn-ghost" @onclick="ToggleTheme" title="Toggle theme">
+            <TsakIcon Name="@_themeIcon" Size="18" />
+        </button>
+        <span class="text-sm text-secondary">@Auth.DisplayName</span>
+        <TsakBadge Text="@(Auth.Role ?? "—")" Variant="@(Auth.IsAdmin ? "online" : "info")" ShowDot="false" />
+        <button class="btn btn-ghost btn-sm" @onclick="Logout">
+            <TsakIcon Name="logout" Size="16" />
+            <span>Logout</span>
+        </button>
+    </div>
+</header>
+
+@code {
+    private string _themeIcon = "sun";
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            var theme = await JS.InvokeAsync<string>("tsakTheme.get");
+            _themeIcon = theme == "dark" ? "sun" : "moon";
+            StateHasChanged();
+        }
+    }
+
+    private async Task ToggleTheme()
+    {
+        var newTheme = await JS.InvokeAsync<string>("tsakTheme.toggle");
+        _themeIcon = newTheme == "dark" ? "sun" : "moon";
+    }
+
+    private void Logout()
+    {
+        Auth.Logout();
+    }
+
+    private string GetPageTitle()
+    {
+        // Simple page title from URL
+        return "Dashboard";
+    }
+}

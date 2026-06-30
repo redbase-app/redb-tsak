@@ -1,0 +1,25 @@
+@inherits ErrorBoundaryBase
+
+@if (CurrentException is not null)
+{
+    <div class="error-boundary">
+        <TsakIcon Name="alert-circle" Size="48" />
+        <h2>Something went wrong</h2>
+        <p class="text-secondary">An unexpected error occurred. Try refreshing the page.</p>
+        <pre>@CurrentException.Message</pre>
+        <button class="btn btn-secondary" style="margin-top: var(--space-4);" @onclick="Recover">
+            <TsakIcon Name="refresh" Size="14" /> Try again
+        </button>
+    </div>
+}
+else
+{
+    @ChildContent
+}
+
+@code {
+    protected override Task OnErrorAsync(Exception exception)
+    {
+        return Task.CompletedTask;
+    }
+}

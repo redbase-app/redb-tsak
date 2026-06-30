@@ -1,0 +1,349 @@
+@page "/"
+@inject INodeClientProvider NodeProvider
+@inject NavigationManager Nav
+@using redb.Tsak.Client
+@using redb.Tsak.Contracts
+@implements IDisposable
+
+<TsakPageHeader Title="Dashboard" Description="Cluster overview and health at a glance"
+                RefreshInterval="10s" OnRefresh="Refresh" />
+
+@if (_loading)
+{
+    <div class="empty-state">
+        <div class="spinner spinner-lg"></div>
+        <p>Loading cluster data…</p>
+    </div>
+}
+else if (_topology is not null)
+{
+    <div class="grid-stats">
+        <TsakCard Title="Total nodes" Icon="server" Value="@_topology.Nodes.Count.ToString()" />
+        <TsakCard Title="Online" Icon="check-circle" ValueStyle="color: var(--status-online)">
+            <div style="display: flex; align-items: center; gap: var(--space-2);">
+                <span class="card-value" style="color: var(--status-online)">@_onlineCount</span>
+                @if (_onlineHistory.Count > 1)
+                {
+                    <TsakSparkline Data="@_onlineHistory.ToArray()" Color="var(--status-online)" />
+                }
+            </div>
+        </TsakCard>
+        <TsakCard Title="Groups" Icon="cluster" Value="@_topology.Groups.Count.ToString()" />
+        <TsakCard Title="Assignments" Icon="package" Value="@_topology.Assignments.Count.ToString()" />
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); margin-bottom: var(--space-6);">
+        @if (_topology.Leader is { } leader)
+        {
+            <TsakCard Title="Leader">
+                <HeaderExtra>
+                    <TsakBadge Text="Active" Variant="online" />
+                </HeaderExtra>
+                <ChildContent>
+                    <table>
+                        <tbody>
+                            <tr>
+                                <td class="text-secondary" style="width: 140px;">Node</td>
+                                <td class="mono">@leader.NodeId</td>
+                            </tr>
+                            <tr>
+                                <td class="text-secondary">Epoch</td>
+                                <td class="mono">@leader.Epoch</td>
+                            </tr>
+                            <tr>
+                                <td class="text-secondary">Acquired</td>
+                                <td>@leader.AcquiredAt.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                            </tr>
+                            <tr>
+                                <td class="text-secondary">Expires</td>
+                                <td>@leader.ExpiresAt.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </ChildContent>
+            </TsakCard>
+        }
+
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Node Status</span>
+            </div>
+            <div style="height: 180px;">
+                <TsakChart @ref="_donutChart" ChartId="dashboard-status" Height="180" />
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <span class="card-title">Nodes</span>
+        </div>
+        <TsakGrid Items="_topology.Nodes" T="NodeInfo" OnRowClick="((NodeInfo n) => NavigateToNode(n.NodeId))">
+            <HeaderContent>
+                <th>Node</th>
+                <th>Hostname</th>
+                <th>Group</th>
+                <th>Status</th>
+                <th>Heartbeat</th>
+                <th>Version</th>
+            </HeaderContent>
+            <RowContent>
+                <td class="mono text-sm">@context.NodeId</td>
+                <td>@context.Hostname</td>
+                <td>@context.GroupName</td>
+                <td>
+                    <TsakBadge Text="@context.Status.ToString()" Variant="@GetStatusBadge(context)" />
+                </td>
+                <td class="text-sm">@FormatAgo(context.LastHeartbeat)</td>
+                <td class="mono text-sm">@context.Version</td>
+            </RowContent>
+        </TsakGrid>
+    </div>
+
+    @* ── Route & Watchdog Section (per-node) ───────────────── *@
+    @if (_topology.Nodes.Any(n => n.IsAlive))
+    {
+        <div style="margin-top: var(--space-4);">
+            <div style="display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-3);">
+                <h3 class="text-lg font-semibold">Node Dashboard</h3>
+                <select class="input" style="width: 220px; padding: 4px 8px; font-size: 0.8rem;" @bind="SelectedNodeId">
+                    @foreach (var n in _topology.Nodes.Where(n => n.IsAlive))
+                    {
+                        <option value="@n.NodeId">@n.NodeId (@n.Hostname)</option>
+                    }
+                </select>
+            </div>
+
+            @if (_dashboard is not null)
+            {
+                <div class="grid-stats">
+                    <TsakCard Title="Total In-Flight" Icon="activity"
+                              Value="@_dashboard.TotalInflight.ToString()"
+                              ValueStyle="@(_dashboard.TotalInflight > 0 ? "color: var(--primary)" : "")" />
+                    <TsakCard Title="Contexts" Icon="route"
+                              Value="@($"{_dashboard.RunningContexts}/{_dashboard.TotalContexts}")" />
+                    <TsakCard Title="Watchdog Alerts" Icon="shield"
+                              ValueStyle="@(_dashboard.ActiveAlerts.Count > 0 ? "color: var(--status-error)" : "")">
+                        <div style="display: flex; align-items: center; gap: var(--space-2);">
+                            <span class="card-value" style="@(_dashboard.ActiveAlerts.Count > 0 ? "color: var(--status-error)" : "")">
+                                @_dashboard.ActiveAlerts.Count
+                            </span>
+                            @if (_dashboard.ActiveAlerts.Count > 0)
+                            {
+                                <TsakBadge Text="Alert" Variant="error" />
+                            }
+                        </div>
+                    </TsakCard>
+                    @if (_dashboard.SystemMetrics is { } sm)
+                    {
+                        <TsakCard Title="CPU / Memory" Icon="cpu">
+                            <span class="card-value">@($"{sm.CpuPercent:F0}%") / @($"{sm.MemoryMB:F0}MB")</span>
+                        </TsakCard>
+                    }
+                </div>
+
+                @* Top Busiest Routes *@
+                @if (_dashboard.BusiestRoutes.Count > 0)
+                {
+                    <div class="card" style="margin-bottom: var(--space-4);">
+                        <div class="card-header">
+                            <span class="card-title"><TsakIcon Name="activity" Size="16" /> Top Busiest Routes <span class="text-secondary text-sm" style="font-weight: 400;">— @_selectedNodeId</span></span>
+                        </div>
+                        <TsakGrid Items="_dashboard.BusiestRoutes" T="RouteMetricsSummary">
+                            <HeaderContent>
+                                <th>Route</th>
+                                <th>Status</th>
+                                <th>Messages</th>
+                                <th>Throughput</th>
+                                <th>Inflight</th>
+                            </HeaderContent>
+                            <RowContent>
+                                <td class="mono text-sm">@context.RouteId</td>
+                                <td><TsakBadge Text="@context.Status" Variant="@GetRouteBadge(context.Status)" ShowDot="false" /></td>
+                                <td class="mono text-sm">@context.MessagesProcessed</td>
+                                <td class="mono text-sm">@($"{context.ThroughputPerSecond:F1}/s")</td>
+                                <td class="mono text-sm">@context.InflightCount</td>
+                            </RowContent>
+                        </TsakGrid>
+                    </div>
+                }
+
+                @* Top Error Routes *@
+                @if (_dashboard.ErrorProneRoutes.Count > 0)
+                {
+                    <div class="card" style="margin-bottom: var(--space-4);">
+                        <div class="card-header">
+                            <span class="card-title" style="color: var(--status-error);">
+                                <TsakIcon Name="alert-triangle" Size="16" /> Error-Prone Routes <span class="text-secondary text-sm" style="font-weight: 400;">— @_selectedNodeId</span>
+                            </span>
+                        </div>
+                        <TsakGrid Items="_dashboard.ErrorProneRoutes" T="RouteMetricsSummary">
+                            <HeaderContent>
+                                <th>Route</th>
+                                <th>Errors</th>
+                                <th>Last Error</th>
+                                <th>Last Error Time</th>
+                            </HeaderContent>
+                            <RowContent>
+                                <td class="mono text-sm">@context.RouteId</td>
+                                <td class="mono text-sm" style="color: var(--status-error);">@context.Errors</td>
+                                <td class="text-xs text-secondary" style="max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                                    @(context.LastError ?? "—")
+                                </td>
+                                <td class="text-sm">@(context.LastErrorTime?.ToString("HH:mm:ss") ?? "—")</td>
+                            </RowContent>
+                        </TsakGrid>
+                    </div>
+                }
+            }
+
+            @* Watchdog & Lifecycle panels *@
+            <WatchdogPanel @ref="_watchdogPanel" Client="_selectedClient" ShowActions="false" NodeLabel="@_selectedNodeId" />
+            <LifecyclePanel @ref="_lifecyclePanel" Client="_selectedClient" Limit="10" NodeLabel="@_selectedNodeId" />
+        </div>
+    }
+}
+
+@code {
+    private ClusterTopology? _topology;
+    private bool _loading = true;
+    private int _onlineCount;
+    private TsakChart? _donutChart;
+    private PeriodicTimer? _timer;
+    private CancellationTokenSource? _cts;
+    private readonly List<double> _onlineHistory = new();
+
+    // Per-node dashboard
+    private string _selectedNodeId = "";
+    private TsakApiClient? _selectedClient;
+    private DashboardSnapshot? _dashboard;
+    private WatchdogPanel? _watchdogPanel;
+    private LifecyclePanel? _lifecyclePanel;
+
+    private string SelectedNodeId
+    {
+        get => _selectedNodeId;
+        set
+        {
+            if (_selectedNodeId == value) return;
+            _selectedNodeId = value;
+            _selectedClient = string.IsNullOrEmpty(value) ? null : NodeProvider.GetClient(value);
+            _ = LoadNodeDashboard();
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+        _cts = new CancellationTokenSource();
+        _ = PollLoop(_cts.Token);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && _topology is not null)
+            await UpdateDonutChart();
+    }
+
+    private async Task PollLoop(CancellationToken ct)
+    {
+        _timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
+        while (await _timer.WaitForNextTickAsync(ct))
+        {
+            await LoadData();
+            await UpdateDonutChart();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task LoadData()
+    {
+        _loading = true;
+        _topology = await NodeProvider.LoadTopologyAsync(forceRefresh: true);
+        _onlineCount = _topology.Nodes.Count(n => n.IsAlive);
+
+        _onlineHistory.Add(_onlineCount);
+        if (_onlineHistory.Count > 20)
+            _onlineHistory.RemoveAt(0);
+
+        // Auto-select first online node if none selected
+        if (string.IsNullOrEmpty(_selectedNodeId))
+        {
+            var firstAlive = _topology.Nodes.FirstOrDefault(n => n.IsAlive);
+            if (firstAlive is not null)
+            {
+                _selectedNodeId = firstAlive.NodeId;
+                _selectedClient = NodeProvider.GetClient(firstAlive.NodeId);
+            }
+        }
+
+        await LoadNodeDashboard();
+        _loading = false;
+    }
+
+    private async Task LoadNodeDashboard()
+    {
+        if (_selectedClient is null) { _dashboard = null; return; }
+        try { _dashboard = await _selectedClient.GetDashboardAsync(); }
+        catch { _dashboard = null; }
+
+        if (_watchdogPanel is not null) await _watchdogPanel.RefreshAsync();
+        if (_lifecyclePanel is not null) await _lifecyclePanel.RefreshAsync();
+    }
+
+    private async Task Refresh()
+    {
+        await LoadData();
+        await UpdateDonutChart();
+    }
+
+    private async Task UpdateDonutChart()
+    {
+        if (_donutChart is null || _topology is null) return;
+
+        var online = _topology.Nodes.Count(n => n.IsAlive);
+        var offline = _topology.Nodes.Count(n => n.Status == NodeStatus.Offline);
+        var dead = _topology.Nodes.Count(n => n.Status == NodeStatus.Dead);
+        var stale = _topology.Nodes.Count(n => n.Status == NodeStatus.Online && !n.IsAlive);
+
+        await _donutChart.CreateDonutAsync(
+            ["Online", "Stale", "Offline", "Dead"],
+            [(double)online, (double)stale, (double)offline, (double)dead],
+            ["#22c55e", "#f59e0b", "#6b7280", "#ef4444"]);
+    }
+
+    private static string GetStatusBadge(NodeInfo node) => node.Status switch
+    {
+        NodeStatus.Online when node.IsAlive => "online",
+        NodeStatus.Online => "warning",
+        NodeStatus.Offline => "offline",
+        NodeStatus.Dead => "error",
+        _ => "offline"
+    };
+
+    private static string FormatAgo(DateTimeOffset timestamp)
+    {
+        var diff = DateTimeOffset.UtcNow - timestamp;
+        if (diff.TotalSeconds < 60) return $"{(int)diff.TotalSeconds}s ago";
+        if (diff.TotalMinutes < 60) return $"{(int)diff.TotalMinutes}m ago";
+        if (diff.TotalHours < 24) return $"{(int)diff.TotalHours}h ago";
+        return $"{(int)diff.TotalDays}d ago";
+    }
+
+    public void Dispose()
+    {
+        _cts?.Cancel();
+        _cts?.Dispose();
+        _timer?.Dispose();
+    }
+
+    private void NavigateToNode(string nodeId) => Nav.NavigateTo($"node/{nodeId}");
+
+    private static string GetRouteBadge(string status) => status switch
+    {
+        "Started" => "online",
+        "Stopped" => "offline",
+        "Suspended" => "warning",
+        _ => "offline"
+    };
+}

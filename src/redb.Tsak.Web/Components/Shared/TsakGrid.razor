@@ -1,0 +1,139 @@
+@* Generic data grid with sorting, filtering, and pagination. *@
+@typeparam T
+
+@if (Items is null || !Items.Any())
+{
+    @if (EmptyContent is not null)
+    {
+        @EmptyContent
+    }
+    else
+    {
+        <div class="empty-state">
+            <TsakIcon Name="database" Size="48" />
+            <h2>No data</h2>
+        </div>
+    }
+}
+else
+{
+    @if (Filterable)
+    {
+        <div style="margin-bottom: var(--space-3);">
+            <input class="input" style="max-width: 300px;" placeholder="Filter…"
+                   @bind="_filterText" @bind:event="oninput" @bind:after="ApplyFilter" />
+        </div>
+    }
+
+    <div style="overflow-x: auto;">
+        <table>
+            <thead>
+                <tr>
+                    @HeaderContent
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var item in PagedItems)
+                {
+                    <tr class="@(OnRowClick.HasDelegate ? "grid-row-clickable" : "")"
+                        @onclick="() => OnRowClick.InvokeAsync(item)">
+                        @RowContent(item)
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    @if (PageSize > 0 && TotalPages > 1)
+    {
+        <div class="grid-pager">
+            <button class="btn btn-ghost btn-sm" disabled="@(_page <= 1)" @onclick="() => GoToPage(_page - 1)">
+                ‹ Prev
+            </button>
+            <span class="text-sm text-secondary">Page @_page / @TotalPages (@_filteredItems.Count items)</span>
+            <button class="btn btn-ghost btn-sm" disabled="@(_page >= TotalPages)" @onclick="() => GoToPage(_page + 1)">
+                Next ›
+            </button>
+        </div>
+    }
+}
+
+@code {
+    [Parameter, EditorRequired] public IEnumerable<T>? Items { get; set; }
+    [Parameter, EditorRequired] public RenderFragment? HeaderContent { get; set; }
+    [Parameter, EditorRequired] public RenderFragment<T> RowContent { get; set; } = default!;
+    [Parameter] public RenderFragment? EmptyContent { get; set; }
+    [Parameter] public int PageSize { get; set; }
+    [Parameter] public bool Filterable { get; set; }
+    [Parameter] public Func<T, string>? FilterSelector { get; set; }
+    [Parameter] public EventCallback<T> OnRowClick { get; set; }
+
+    private string _filterText = "";
+    private int _page = 1;
+    private List<T> _filteredItems = new();
+    private string? _sortColumn;
+    private bool _sortAsc = true;
+    private Func<T, IComparable>? _sortSelector;
+
+    private int TotalPages => PageSize > 0 ? Math.Max(1, (int)Math.Ceiling(_filteredItems.Count / (double)PageSize)) : 1;
+
+    private IEnumerable<T> PagedItems =>
+        PageSize > 0 ? _filteredItems.Skip((_page - 1) * PageSize).Take(PageSize) : _filteredItems;
+
+    protected override void OnParametersSet()
+    {
+        ApplyFilter();
+    }
+
+    public void Sort(string column, Func<T, IComparable> selector)
+    {
+        if (_sortColumn == column)
+            _sortAsc = !_sortAsc;
+        else
+        {
+            _sortColumn = column;
+            _sortAsc = true;
+        }
+        _sortSelector = selector;
+        ApplySort();
+        StateHasChanged();
+    }
+
+    public string SortIndicator(string column) =>
+        _sortColumn != column ? "" : _sortAsc ? " ↑" : " ↓";
+
+    private void ApplyFilter()
+    {
+        if (Items is null)
+        {
+            _filteredItems = new();
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_filterText) || FilterSelector is null)
+            _filteredItems = Items.ToList();
+        else
+        {
+            var term = _filterText;
+            _filteredItems = Items
+                .Where(i => FilterSelector(i).Contains(term, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
+
+        ApplySort();
+        _page = 1;
+    }
+
+    private void ApplySort()
+    {
+        if (_sortSelector is null) return;
+        _filteredItems = _sortAsc
+            ? _filteredItems.OrderBy(_sortSelector).ToList()
+            : _filteredItems.OrderByDescending(_sortSelector).ToList();
+    }
+
+    private void GoToPage(int page)
+    {
+        _page = Math.Clamp(page, 1, TotalPages);
+    }
+}

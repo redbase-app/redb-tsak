@@ -1,0 +1,17 @@
+@using Microsoft.AspNetCore.Components.Routing
+
+<Router AppAssembly="typeof(Program).Assembly">
+    <Found Context="routeData">
+        <RouteView RouteData="routeData" DefaultLayout="typeof(TsakShell)" />
+        <FocusOnNavigate RouteData="routeData" Selector="h1" />
+    </Found>
+    <NotFound>
+        <LayoutView Layout="typeof(TsakShell)">
+            <div class="empty-state">
+                <TsakIcon Name="alert-triangle" Size="48" />
+                <h2>Page not found</h2>
+                <p class="text-secondary">The requested page does not exist.</p>
+            </div>
+        </LayoutView>
+    </NotFound>
+</Router>

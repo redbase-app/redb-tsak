@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>redb.Tsak — Dashboard</title>
+    <base href="@(Environment.GetEnvironmentVariable("ASPNETCORE_PATHBASE") ?? "")/" />
+    <link rel="stylesheet" href="css/app.css" />
+    <script src="js/theme.js"></script>
+    <HeadOutlet @rendermode="@RenderMode.InteractiveServer" />
+</head>
+<body>
+    <Routes @rendermode="@RenderMode.InteractiveServer" />
+
+    <script src="_framework/blazor.web.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <script src="js/charts.js"></script>
+    <script src="js/logs.js"></script>
+</body>
+</html>

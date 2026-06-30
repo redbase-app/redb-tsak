@@ -1,0 +1,47 @@
+@* Inline SVG sparkline — no Chart.js dependency *@
+
+@if (Data.Length > 1)
+{
+    <svg width="@Width" height="@Height" viewBox="0 0 @Width @Height" class="sparkline" style="display: inline-block; vertical-align: middle;">
+        <polyline
+            fill="none"
+            stroke="@Color"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            points="@GetPoints()" />
+    </svg>
+}
+
+@code {
+    [Parameter] public double[] Data { get; set; } = [];
+    [Parameter] public int Width { get; set; } = 80;
+    [Parameter] public int Height { get; set; } = 24;
+    [Parameter] public string Color { get; set; } = "var(--primary)";
+
+    private string GetPoints()
+    {
+        if (Data.Length < 2) return "";
+
+        var min = Data.Min();
+        var max = Data.Max();
+        var range = max - min;
+        if (range == 0) range = 1;
+
+        var padding = 2;
+        var w = Width - padding * 2;
+        var h = Height - padding * 2;
+        var step = (double)w / (Data.Length - 1);
+
+        var points = new System.Text.StringBuilder();
+        for (var i = 0; i < Data.Length; i++)
+        {
+            var x = padding + i * step;
+            var y = padding + h - (Data[i] - min) / range * h;
+            if (i > 0) points.Append(' ');
+            points.Append($"{x:F1},{y:F1}");
+        }
+
+        return points.ToString();
+    }
+}
