@@ -1,0 +1,2 @@
+# Drop Tsak module .tpkg files (or unpacked module folders) here.
+# The hot-reload service in TsakHost will load them automatically.

@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/redb.Tsak.Client/redb.Tsak.Client.csproj" />
+    <Project Path="src/redb.Tsak.Contracts/redb.Tsak.Contracts.csproj" />
+    <Project Path="src/redb.Tsak.CLI/redb.Tsak.CLI.csproj" />
+    <Project Path="src/redb.Tsak.Core/redb.Tsak.Core.csproj" />
+    <Project Path="src/redb.Tsak.Worker/redb.Tsak.Worker.csproj" />
+  </Folder>
+</Solution>

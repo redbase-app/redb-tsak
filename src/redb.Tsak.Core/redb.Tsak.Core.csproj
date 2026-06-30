@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Kernel of redb.Tsak — runtime container for redb.Route contexts. Provides hot-reload module loading, REST management API, scheduler, monitoring, security and pluggable cluster bootstrap.</Description>
+    <PackageTags>redb;tsak;runtime;route;esb;hot-reload;quartz;cluster;rest;management</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Quartz\Scripts\tables_postgres.sql" LogicalName="QuartzSchema.Postgres" />
+    <EmbeddedResource Include="Quartz\Scripts\tables_sqlServer.sql" LogicalName="QuartzSchema.SqlServer" />
+    <EmbeddedResource Include="Quartz\Scripts\tables_sqlite.sql" LogicalName="QuartzSchema.Sqlite" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Serilog" Version="4.2.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.3" />
+    <PackageReference Include="Quartz.Extensions.DependencyInjection" Version="3.16.0" />
+    <PackageReference Include="Quartz.Extensions.Hosting" Version="3.16.0" />
+    <PackageReference Include="Quartz.Serialization.Json" Version="3.16.0" />
+    <!-- OpenTelemetry stable line 1.15 → 1.16 fixes the OTLP exporter CVEs:
+         GHSA-4625-4j76-fww9 + GHSA-mr8r-92fq-pj8p + GHSA-q834-8qmm-v933 (NU1902).
+         The two -beta packages don't ship a 1.16.0-beta yet (latest is 1.15.1-beta.1);
+         keep them on the newest available beta. -->
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.16.0" />
+    <PackageReference Include="OpenTelemetry.Exporter.Prometheus.HttpListener" Version="1.15.1-beta.1" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.16.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Process" Version="1.15.1-beta.1" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.15.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\redb.Tsak.Contracts\redb.Tsak.Contracts.csproj" />
+    <PackageReference Include="redb.Core" Version="3.2.0" />
+    <PackageReference Include="redb.Core.Pro" Version="3.2.0" />
+    <PackageReference Include="redb.Route.Core" Version="3.2.0" />
+    <PackageReference Include="redb.Route.Http" Version="3.2.0" />
+    <PackageReference Include="redb.Route.Quartz" Version="3.2.0" />
+    <PackageReference Include="redb.Postgres" Version="3.2.0" />
+    <PackageReference Include="redb.Postgres.Pro" Version="3.2.0" />
+    <PackageReference Include="redb.MSSql" Version="3.2.0" />
+    <PackageReference Include="redb.MSSql.Pro" Version="3.2.0" />
+    <PackageReference Include="redb.SQLite" Version="3.2.1" />
+    <PackageReference Include="redb.SQLite.Pro" Version="3.2.1" />
+  </ItemGroup>
+
+</Project>
+

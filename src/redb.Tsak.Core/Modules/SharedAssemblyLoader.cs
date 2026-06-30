@@ -1,0 +1,296 @@
+using System.Collections.Concurrent;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Runtime.Loader;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using redb.Tsak.Core.Services;
+
+namespace redb.Tsak.Core.Modules;
+
+/// <summary>
+/// Loads assemblies from the shared layer (<c>Libs/shared/</c>) into the Default ALC.
+/// These assemblies (connectors, shared models) become available to all module contexts
+/// via <c>RouteContextExtensions.AddComponents()</c>.
+/// Tracks file timestamps for change detection during hot-reload scans.
+/// </summary>
+public sealed class SharedAssemblyLoader
+{
+    private readonly ILogger<SharedAssemblyLoader> _logger;
+    private readonly string _sharedPath;
+    private readonly List<Assembly> _loadedAssemblies = [];
+    private readonly ConcurrentDictionary<string, DateTime> _fileTimestamps = new(StringComparer.OrdinalIgnoreCase);
+    private bool _resolvingHandlerRegistered;
+
+    public SharedAssemblyLoader(
+        ILogger<SharedAssemblyLoader> logger,
+        IOptions<HotReloadOptions> options)
+    {
+        _logger = logger;
+        var configuredPath = options.Value.SharedPath ?? "Libs/shared";
+        // Resolve relative paths against AppContext.BaseDirectory (bin output),
+        // not CWD — so Libs/shared works for both dotnet run and deployed scenarios
+        _sharedPath = Path.IsPathRooted(configuredPath)
+            ? configuredPath
+            : Path.Combine(AppContext.BaseDirectory, configuredPath);
+    }
+
+    /// <summary>Assemblies currently loaded from the shared layer.</summary>
+    public IReadOnlyList<Assembly> LoadedAssemblies => _loadedAssemblies;
+
+    /// <summary>Resolved absolute path to the shared directory.</summary>
+    public string SharedPath => _sharedPath;
+
+    /// <summary>
+    /// Loads all DLLs from the shared directory into the Default ALC.
+    /// Registers a <c>Default.Resolving</c> handler to probe the shared path
+    /// for transitive dependencies.
+    /// Safe to call multiple times — skips already-loaded files.
+    /// </summary>
+    /// <returns>Number of newly loaded assemblies.</returns>
+    public int LoadSharedAssemblies()
+    {
+        var fullPath = Path.GetFullPath(_sharedPath);
+        if (!Directory.Exists(fullPath))
+        {
+            _logger.LogDebug("Shared path {Path} does not exist, skipping", fullPath);
+            return 0;
+        }
+
+        RegisterResolvingHandler(fullPath);
+
+        // Prepare native lib dirs for per-assembly resolvers
+        var nativeDirs = GetNativeLibraryDirs(fullPath);
+
+        var dllFiles = Directory.GetFiles(fullPath, "*.dll");
+        var loaded = 0;
+
+        foreach (var dll in dllFiles)
+        {
+            if (_fileTimestamps.ContainsKey(dll))
+                continue;
+
+            try
+            {
+                var bytes = File.ReadAllBytes(dll);
+                var assembly = AssemblyLoadContext.Default.LoadFromStream(new MemoryStream(bytes));
+                _loadedAssemblies.Add(assembly);
+                _fileTimestamps[dll] = File.GetLastWriteTimeUtc(dll);
+                loaded++;
+
+                // Track in centralized registry so package/bare-DLL loaders
+                // reuse this instance instead of loading a duplicate
+                LoadedAssemblyTracker.Track(assembly);
+
+                // Register native library resolver for this assembly
+                if (nativeDirs.Count > 0)
+                    RegisterNativeResolverForAssembly(assembly, nativeDirs);
+
+                _logger.LogInformation("Loaded shared assembly {Name} from {Path}",
+                    assembly.GetName().Name, dll);
+            }
+            catch (FileLoadException ex)
+            {
+                // Version/identity mismatch — check if the runtime already provides this assembly.
+                _fileTimestamps[dll] = File.GetLastWriteTimeUtc(dll);
+                var asmName = Path.GetFileNameWithoutExtension(dll);
+                var alreadyLoaded = AssemblyLoadContext.Default.Assemblies
+                    .Any(a => string.Equals(a.GetName().Name, asmName, StringComparison.OrdinalIgnoreCase));
+
+                if (alreadyLoaded)
+                {
+                    // Runtime already has this assembly — the shared/ copy is redundant.
+                    // Remove it from shared/ to avoid noise on next startup.
+                    _logger.LogInformation(
+                        "Shared assembly {Name} conflicts with runtime version — runtime copy will be used. " +
+                        "Consider removing {Path} from shared/ (run build-shared.ps1 -Clean)",
+                        asmName, dll);
+                }
+                else
+                {
+                    // Assembly is NOT available from runtime and failed to load — real error.
+                    _logger.LogError(ex,
+                        "Failed to load shared assembly {Path} — version conflict and no runtime fallback available",
+                        dll);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to load shared assembly {Path}", dll);
+            }
+        }
+
+        if (loaded > 0)
+            _logger.LogInformation("Loaded {Count} shared assemblies from {Path}", loaded, fullPath);
+
+        return loaded;
+    }
+
+    /// <summary>
+    /// Checks if any shared DLLs have changed (added, updated, or removed) since last load.
+    /// </summary>
+    /// <returns>True if changes detected; caller should trigger full context restart.</returns>
+    public bool DetectChanges()
+    {
+        var fullPath = Path.GetFullPath(_sharedPath);
+        if (!Directory.Exists(fullPath))
+            return _fileTimestamps.Count > 0; // directory removed = change
+
+        var currentFiles = new HashSet<string>(
+            Directory.GetFiles(fullPath, "*.dll"),
+            StringComparer.OrdinalIgnoreCase);
+
+        // Check for new or modified files
+        foreach (var dll in currentFiles)
+        {
+            var lastWrite = File.GetLastWriteTimeUtc(dll);
+            if (!_fileTimestamps.TryGetValue(dll, out var tracked) || tracked != lastWrite)
+                return true;
+        }
+
+        // Check for removed files
+        foreach (var tracked in _fileTimestamps.Keys)
+        {
+            if (!currentFiles.Contains(tracked))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Reloads all shared assemblies. Since Default ALC can't unload,
+    /// this replaces the assembly list and timestamps. Old assemblies remain in memory
+    /// until process restart.
+    /// </summary>
+    /// <returns>Number of assemblies in the new load.</returns>
+    public int ReloadSharedAssemblies()
+    {
+        _loadedAssemblies.Clear();
+        _fileTimestamps.Clear();
+
+        _logger.LogInformation("Reloading shared assemblies from {Path}", _sharedPath);
+        return LoadSharedAssemblies();
+    }
+
+    private void RegisterResolvingHandler(string fullSharedPath)
+    {
+        if (_resolvingHandlerRegistered)
+            return;
+
+        // Ensure the centralized tracker resolver is registered first —
+        // it handles byte-loaded assemblies from packages and bare DLLs.
+        LoadedAssemblyTracker.EnsureResolverRegistered();
+
+        AssemblyLoadContext.Default.Resolving += (ctx, name) =>
+        {
+            // LoadedAssemblyTracker's handler runs first (registered earlier via EnsureResolverRegistered).
+            // This handler covers: (a) shared/ transitive deps not yet loaded, and
+            // (b) version-tolerant forwarding for higher-version references.
+
+            // 1. Try loading from the shared/ directory (transitive deps not yet loaded)
+            if (name.Name is not null)
+            {
+                var candidate = Path.Combine(fullSharedPath, name.Name + ".dll");
+                if (File.Exists(candidate))
+                {
+                    try
+                    {
+                        var bytes = File.ReadAllBytes(candidate);
+                        var loaded = AssemblyLoadContext.Default.LoadFromStream(new MemoryStream(bytes));
+                        LoadedAssemblyTracker.Track(loaded);
+                        return loaded;
+                    }
+                    catch (FileLoadException)
+                    {
+                        // Version/identity mismatch — fall through to runtime fallback below
+                    }
+                }
+            }
+
+            // 2. Fallback: if a NuGet package (e.g. Elastic 8.x) references a higher version
+            //    of a framework assembly (e.g. System.Text.Json v10) than the current runtime
+            //    provides, the runtime won't auto-resolve it. Return the already-loaded lower
+            //    version so it works via version-tolerant forwarding.
+            var already = ctx.Assemblies
+                .FirstOrDefault(a => string.Equals(a.GetName().Name, name.Name, StringComparison.OrdinalIgnoreCase));
+            if (already != null)
+            {
+                _logger.LogDebug(
+                    "Assembly {Name} v{Requested} not found — forwarding to already-loaded v{Loaded}",
+                    name.Name, name.Version, already.GetName().Version);
+                return already;
+            }
+
+            return null;
+        };
+
+        _resolvingHandlerRegistered = true;
+        _logger.LogDebug("Registered Default ALC resolving handler for {Path}", fullSharedPath);
+    }
+
+    private static List<string> GetNativeLibraryDirs(string fullSharedPath)
+    {
+        var runtimesPath = Path.Combine(fullSharedPath, "runtimes");
+        if (!Directory.Exists(runtimesPath))
+            return [];
+
+        var rid = RuntimeInformation.RuntimeIdentifier;
+        var nativeDirs = new List<string>();
+
+        // Exact RID first (e.g. win-x64, linux-x64)
+        var exactDir = Path.Combine(runtimesPath, rid, "native");
+        if (Directory.Exists(exactDir))
+            nativeDirs.Add(exactDir);
+
+        // Fallback: OS-only RID (e.g. win, linux, osx)
+        var osOnly = rid.Contains('-') ? rid[..rid.IndexOf('-')] : rid;
+        var osDir = Path.Combine(runtimesPath, osOnly, "native");
+        if (Directory.Exists(osDir) && !nativeDirs.Contains(osDir))
+            nativeDirs.Add(osDir);
+
+        return nativeDirs;
+    }
+
+    /// <summary>
+    /// Registers a native library resolver for a loaded shared assembly so its P/Invoke calls
+    /// can find native libraries in Libs/shared/runtimes/{rid}/native/.
+    /// </summary>
+    internal void RegisterNativeResolverForAssembly(Assembly assembly, List<string> nativeDirs)
+    {
+        try
+        {
+            NativeLibrary.SetDllImportResolver(assembly, (name, asm, searchPath) =>
+                TryLoadNativeFromShared(name, nativeDirs));
+        }
+        catch (InvalidOperationException)
+        {
+            // Already has a resolver — ignore
+        }
+    }
+
+    private static IntPtr TryLoadNativeFromShared(string libraryName, List<string> nativeDirs)
+    {
+        foreach (var dir in nativeDirs)
+        {
+            // Try exact name, then with platform extension
+            var candidates = new[]
+            {
+                Path.Combine(dir, libraryName),
+                Path.Combine(dir, libraryName + ".dll"),
+                Path.Combine(dir, libraryName + ".so"),
+                Path.Combine(dir, "lib" + libraryName + ".so"),
+                Path.Combine(dir, libraryName + ".dylib"),
+                Path.Combine(dir, "lib" + libraryName + ".dylib"),
+            };
+
+            foreach (var candidate in candidates)
+            {
+                if (NativeLibrary.TryLoad(candidate, out var handle))
+                    return handle;
+            }
+        }
+
+        return IntPtr.Zero;
+    }
+}

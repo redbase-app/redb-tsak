@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>tsak</AssemblyName>
+    <RootNamespace>redb.Tsak.CLI</RootNamespace>
+
+    <!-- Install globally: dotnet tool install -g redb.Tsak.CLI -->
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>tsak</ToolCommandName>
+    <PackageId>redb.Tsak.CLI</PackageId>
+    <Description>CLI tool for redb.Tsak runtime management: contexts, modules, cluster, scheduler, monitoring.</Description>
+    <PackageTags>redb;tsak;cli;runtime;management</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
+    <PackageReference Include="Spectre.Console" Version="0.49.1" />
+    <PackageReference Include="YamlDotNet" Version="16.3.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\redb.Tsak.Client\redb.Tsak.Client.csproj" />
+  </ItemGroup>
+
+</Project>

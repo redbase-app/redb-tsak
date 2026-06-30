@@ -1,0 +1,58 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
+  </PropertyGroup>
+
+  <ItemGroup>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Serilog.AspNetCore" Version="8.0.2" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
+    <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />
+    <PackageReference Include="Serilog.Enrichers.Environment" Version="3.0.1" />
+    <PackageReference Include="Serilog.Enrichers.Process" Version="3.0.0" />
+    <PackageReference Include="Serilog.Enrichers.Thread" Version="4.0.0" />
+
+    <!--
+      Pin Microsoft.IdentityModel.* to 8.4.0 so the host ALC ships the same major version
+      that loaded module .tpkg packages (e.g. redb.Identity.Core.Module → OpenIddict 6.3.0)
+      were compiled against. Without these pins the host transitively brings in a mix of
+      6.35.0 (Protocols/OpenIdConnect) and 8.0.0 (Tokens), and Default-ALC standard probing
+      finds those copies in the host bin BEFORE LoadedAssemblyTracker's Resolving handler
+      fires for the .tpkg's bundled 8.4.0 DLLs — yielding MissingMethodException at runtime
+      (e.g. OpenIddictServerOptions.get_SigningCredentials returns List<MIT 8.4 type> but
+      the loaded MIT is 8.0).
+    -->
+    <PackageReference Include="Microsoft.IdentityModel.Abstractions" Version="8.4.0" />
+    <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" Version="8.4.0" />
+    <PackageReference Include="Microsoft.IdentityModel.Logging" Version="8.4.0" />
+    <PackageReference Include="Microsoft.IdentityModel.Protocols" Version="8.4.0" />
+    <PackageReference Include="Microsoft.IdentityModel.Protocols.OpenIdConnect" Version="8.4.0" />
+    <PackageReference Include="Microsoft.IdentityModel.Tokens" Version="8.4.0" />
+    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.4.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\redb.Tsak.Core\redb.Tsak.Core.csproj" />
+    <PackageReference Include="redb.Tsak.Core.Pro" Version="3.2.0" />    <!-- Connector transports moved to Libs/shared/ — loaded at runtime by SharedAssemblyLoader.
+         Use scripts/build-shared.ps1 to build and copy connectors. -->
+  </ItemGroup>
+
+  <!-- Libs/ holds DEV-only runtime artifacts: hot-reloaded module packages (*.tpkg) and
+       their context.json (deploy-specific, e.g. identity-pg/mssql named instances). These
+       must NEVER ship in the distributable — the SDK auto-includes context.json via the
+       default content glob, which baked it into the published image. Strip everything the
+       SDK pulled from Libs/, then re-add ONLY Libs/shared/ below. -->
+  <ItemGroup>
+    <Content Remove="Libs\**" />
+    <None Remove="Libs\**" />
+  </ItemGroup>
+  <!-- Only Libs/shared/ (shared connector DLLs, built by scripts/build-shared.ps1) is packaged. -->
+  <ItemGroup>
+    <None Include="Libs\shared\**" CopyToOutputDirectory="PreserveNewest" LinkBase="Libs\shared" />
+  </ItemGroup>
+
+</Project>
+

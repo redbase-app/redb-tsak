@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json.schemastore.org/template",
+  "author": "RedBase",
+  "classifications": [ "Worker", "Service", "redb.Tsak", "RedBase" ],
+  "identity": "RedBase.Tsak.Worker.Template",
+  "name": "redb.Tsak Worker Host",
+  "shortName": "tsak-worker",
+  "tags": {
+    "language": "C#",
+    "type": "project"
+  },
+  "sourceName": "TsakHost",
+  "preferNameDirectory": true,
+  "symbols": {
+    "db": {
+      "type": "parameter",
+      "datatype": "choice",
+      "defaultValue": "postgres",
+      "description": "Database provider (used when storage = redb)",
+      "choices": [
+        { "choice": "postgres", "description": "PostgreSQL (via Npgsql)" },
+        { "choice": "mssql",    "description": "Microsoft SQL Server" }
+      ]
+    },
+    "storage": {
+      "type": "parameter",
+      "datatype": "choice",
+      "defaultValue": "redb",
+      "description": "State store backing",
+      "choices": [
+        { "choice": "redb",     "description": "Persistent state in REDB EAV (recommended)" },
+        { "choice": "inmemory", "description": "In-memory only (state lost on restart)" }
+      ]
+    },
+    "pro": {
+      "type": "parameter",
+      "datatype": "bool",
+      "defaultValue": "false",
+      "description": "Enable Pro features (cluster, EAV key store, audit)"
+    },
+    "UsePostgres": {
+      "type": "computed",
+      "value": "(db == \"postgres\")"
+    },
+    "UseMsSql": {
+      "type": "computed",
+      "value": "(db == \"mssql\")"
+    },
+    "UseRedbStorage": {
+      "type": "computed",
+      "value": "(storage == \"redb\")"
+    }
+  },
+  "sources": [
+    {
+      "modifiers": [
+        {
+          "condition": "(!pro)",
+          "exclude": [ "**/*.pro.cs" ]
+        }
+      ]
+    }
+  ]
+}

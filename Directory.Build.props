@@ -1,0 +1,36 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Version>3.2.0</Version>
+    <PackageVersion>3.2.0</PackageVersion>
+    <Authors>RedBase</Authors>
+    <Company>RedBase</Company>
+    <Product>redb.Tsak</Product>
+    <Description>Runtime container for redb.Route contexts with management API</Description>
+    <Copyright>Copyright (c) 2024-2026 RedBase</Copyright>
+    <PackageProjectUrl>https://redbase.app</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/redbase-app/redb-tsak</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+  </PropertyGroup>
+  <!--
+    Default to Apache-2.0 for OSS Tsak projects (any project NOT ending with .Pro).
+    Pro projects override below with the commercial license file.
+  -->
+  <PropertyGroup Condition="!$(MSBuildProjectName.EndsWith('.Pro'))">
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+  </PropertyGroup>
+  <PropertyGroup Condition="$(MSBuildProjectName.EndsWith('.Pro'))">
+    <PackageLicenseFile>LICENSE-PRO.txt</PackageLicenseFile>
+  </PropertyGroup>
+  <!-- Pack LICENSE and NOTICE into every nupkg (Apache 2.0 В§ 4 attribution).
+       For Pro packages, also pack the commercial LICENSE-PRO.txt from repo root. -->
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)LICENSE" Pack="true" PackagePath="\" Visible="false" Condition="Exists('$(MSBuildThisFileDirectory)LICENSE') AND '$(IsPackable)' != 'false'" />
+    <None Include="$(MSBuildThisFileDirectory)NOTICE" Pack="true" PackagePath="\" Visible="false" Condition="Exists('$(MSBuildThisFileDirectory)NOTICE') AND '$(IsPackable)' != 'false'" />
+    <None Include="$(MSBuildThisFileDirectory)..\LICENSE-PRO.txt" Pack="true" PackagePath="\" Visible="false" Condition="Exists('$(MSBuildThisFileDirectory)..\LICENSE-PRO.txt') AND $(MSBuildProjectName.EndsWith('.Pro')) AND '$(IsPackable)' != 'false'" />
+  </ItemGroup>
+  <!-- Strong-name signing for Pro assemblies (shared with main repo). -->
+  <Import Project="$(MSBuildThisFileDirectory)..\Directory.Build.Pro.props" Condition="Exists('$(MSBuildThisFileDirectory)..\Directory.Build.Pro.props')" />
+</Project>
