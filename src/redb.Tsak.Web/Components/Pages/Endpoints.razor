@@ -45,7 +45,9 @@ else if (_contexts is { Length: > 0 })
     </div>
 
     @* Context groups *@
-    @foreach (var ctx in _contexts.Where(c => !c.IsAnonymous).OrderBy(c => c.Name))
+    @* Show every context (incl. anonymous _dyn_ modules) so the list matches the stat
+       cards and the other pages, which never hid them. *@
+    @foreach (var ctx in _contexts.OrderBy(c => c.Name))
     {
         var filteredEndpoints = FilterEndpoints(ctx.Endpoints);
         if (_typeFilter != "All" && filteredEndpoints.Length == 0) { continue; }

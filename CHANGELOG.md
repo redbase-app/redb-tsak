@@ -27,6 +27,33 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [3.2.1] — 2026-07-02
+
+### Fixed
+
+#### `redb.Tsak.Web` — Endpoints page hid anonymous contexts while still counting them
+
+The Endpoints dashboard page filtered the context list with `!c.IsAnonymous`, so a
+module loaded without an explicit `ContextName` — which runs in an anonymous `_dyn_`
+context — never appeared in the list, even though its endpoints were still tallied in
+the **Total / Active / Consumers** stat cards. The visible rows therefore disagreed
+with the counts. The filter is removed: every context now renders, matching both the
+stat cards and the other dashboard pages (which never hid anonymous contexts). To
+control a module's display name, give it a stable `ContextName` via
+`{Module}.config.json`.
+
+#### Standalone archive — Web UI started on port 5000 instead of the documented 8080
+
+The release archive's `sanitize-appsettings.ps1` blanks the Web `Kestrel` section,
+and the generated `start-web` / `start-stack` scripts set no `ASPNETCORE_URLS`, so the
+standalone dashboard fell back to ASP.NET Core's default `http://localhost:5000` — while
+`README.txt` (and the Docker images, which set `ASPNETCORE_URLS=http://+:8080`) advertise
+**8080**. The `build-archives.ps1` script generators now default the Web process to
+`http://localhost:8080` (respecting a pre-set `ASPNETCORE_URLS`); the Worker still binds
+`9090` from its own config. No change to the Docker images.
+
+---
+
 ## [3.2.0] — 2026-06-29
 
 > **Why the bump.** Tracks redb.Route 3.2.0 (hosted connector set), adds a
