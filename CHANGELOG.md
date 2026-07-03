@@ -27,6 +27,51 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [3.2.2] — 2026-07-03
+
+> **Why the bump.** Rebuilds the redb.Tsak distribution (Docker images + standalone
+> archives) on top of **`redb.Route.RabbitMQ` 3.2.2**, which fixes two production bugs in
+> the RabbitMQ connector and adds a consumer option. The Tsak binary version moves
+> **3.2.0 → 3.2.2** (3.2.1 was a Web/dashboard + archive-only fix that never rebuilt the
+> binary distribution). No Tsak API or configuration changed — this is a connector refresh
+> plus a full image/archive re-release.
+
+### Changed
+
+#### Bundled connectors — `redb.Route.RabbitMQ` refreshed to 3.2.2
+
+The RabbitMQ connector shipped in the shared-assembly layer
+(`redb.Tsak.Worker/Libs/shared/`, built from source by `scripts/build-shared.ps1` /
+`publish/scripts/build-shared-multitfm.ps1`) was **3.2.0**. It is rebuilt to **3.2.2**,
+which brings:
+
+- **Consumer dispatch concurrency actually works.** The connector previously created every
+  channel with the AMQP consumer-dispatch concurrency pinned to `1` (a `RabbitMQ.Client`
+  7.2.1 `CreateChannelOptions` ctor-default trap), so a RabbitMQ route processed messages
+  strictly one at a time regardless of `ConcurrentConsumers`. `ConcurrentConsumers(N)` is now
+  the single knob for consumer parallelism — up to **N** messages processed concurrently.
+  **Behaviour note:** a module whose RabbitMQ route sets `ConcurrentConsumers(N > 1)` now runs
+  genuinely concurrently, so per-queue ordering is no longer preserved on that route and its
+  pipeline must be thread-safe. Routes at the default `1` stay serial, unchanged.
+- **No more AMQP channel leak on per-route Stop/Start.** Suspending/resuming a single RabbitMQ
+  route from the dashboard (or via the management API) previously leaked one idle channel per
+  cycle; the connector now releases its consume channel on stop.
+- **New `AutoAck` consumer option** (default off) — broker-side auto-acknowledge / at-most-once,
+  the RabbitMQ analogue of the Kafka `EnableAutoCommit` option.
+
+See the `redb.Route` CHANGELOG `[3.2.2]` for the connector-level details. Every other bundled
+connector is unchanged.
+
+### Released
+
+- Docker images `redb-tsak-worker` / `redb-tsak-web` / `redb-tsak-stack` at **3.2.2** (.NET 9;
+  tags `:3.2.2-net9`, `:3.2.2`, `:latest`), pushed to `ghcr.io/redbase-app` and cosign-signed.
+- Standalone archives `redb-tsak-3.2.2-linux-x64.tar.gz` / `redb-tsak-3.2.2-win-x64.zip` with
+  `checksums.txt` and per-archive cosign `.bundle` signatures, attached to the `v3.2.2` GitHub
+  release. The bundled route connectors are .NET 9 (same as 3.2.0).
+
+---
+
 ## [3.2.1] — 2026-07-02
 
 ### Fixed
