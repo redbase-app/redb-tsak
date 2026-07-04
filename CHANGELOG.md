@@ -59,8 +59,16 @@ which brings:
 - **New `AutoAck` consumer option** (default off) — broker-side auto-acknowledge / at-most-once,
   the RabbitMQ analogue of the Kafka `EnableAutoCommit` option.
 
-See the `redb.Route` CHANGELOG `[3.2.2]` for the connector-level details. Every other bundled
-connector is unchanged.
+See the `redb.Route` CHANGELOG `[3.2.2]` for the connector-level details.
+
+#### Re-release — bundled `redb.Route.Amqp` / `redb.Route.IbmMq` refreshed to 3.2.1
+
+The `3.2.2` images and archives were **rebuilt and re-published (same version)** to fold in the
+**Amqp 3.2.1** and **IbmMq 3.2.1** hotfix: `ConcurrentConsumers(N)` on those two transports was a
+no-op (a dead semaphore on a serial receive loop) and now runs **N real competing consumers**.
+Same behaviour note as RabbitMQ above — `N > 1` processes concurrently (per-destination ordering
+not preserved; default `1` stays serial); IBM MQ topics clamp to a single subscriber. Every other
+bundled connector is unchanged. See the `redb.Route` CHANGELOG for details.
 
 ### Released
 
