@@ -1,0 +1,74 @@
+# redb.Tsak Worker — Kubernetes Deployment
+#
+# Wires the three auth-exempt health probes to the matching K8s probe types,
+# enables the Prometheus exporter (:9464) and (optionally) OTLP trace export to
+# Jaeger/a collector. Adjust image, replicas, resources and the Redb connection
+# string for your environment.
+#
+# NOTE: probe paths are /api/health/* (the auth-exempt prefix) — NOT
+# /api/system/health/*. The latter is the auth-gated rich aggregate.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redb-tsak-worker
+  namespace: redb
+  labels:
+    app.kubernetes.io/name: redb-tsak-worker
+    app.kubernetes.io/part-of: redb-tsak
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redb-tsak-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redb-tsak-worker
+        app.kubernetes.io/part-of: redb-tsak
+      annotations:
+        # Plain (non-Operator) Prometheus discovery. Metrics are served from the facade
+        # on the API port (9090) at /metrics — no separate metrics port. If you run the
+        # Prometheus Operator, prefer the ServiceMonitor in servicemonitor.yaml.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      # Tsak deregisters from the cluster and drains contexts on SIGTERM. Give it
+      # headroom: set Tsak:Shutdown:TimeoutSeconds to terminationGracePeriodSeconds - 5.
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: worker
+          image: ghcr.io/redbase-app/redb-tsak-worker:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 9090 }   # REST API + /metrics (Prometheus)
+            # Note: the OTel scrape listener binds loopback :9464 inside the pod and is
+            # proxied out via /metrics on 9090 — no separate containerPort to expose.
+          env:
+            # ── Observability ──
+            - { name: Tsak__Metrics__Prometheus__Enabled, value: "true" }
+            - { name: Tsak__Metrics__Prometheus__Port,    value: "9464" }
+            # Traces → Jaeger (native OTLP). Flip Enabled to "true" to turn on.
+            - { name: Tsak__Tracing__Otlp__Enabled,  value: "false" }
+            - { name: Tsak__Tracing__Otlp__Endpoint, value: "http://jaeger-collector.observability.svc:4317" }
+            - { name: Tsak__Tracing__Otlp__Protocol, value: "grpc" }
+            # ── Graceful shutdown (= terminationGracePeriodSeconds - 5) ──
+            - { name: Tsak__Shutdown__TimeoutSeconds, value: "55" }
+            # ── Redb connection (use a Secret in real deployments) ──
+            # - name: Tsak__Redb__ConnectionString
+            #   valueFrom: { secretKeyRef: { name: redb-tsak-secrets, key: redb-conn } }
+          startupProbe:
+            httpGet: { path: /api/health/startup, port: http }
+            failureThreshold: 30
+            periodSeconds: 4            # up to 120s to boot
+          livenessProbe:
+            httpGet: { path: /api/health/live, port: http }
+            periodSeconds: 10
+            failureThreshold: 3         # ~30s before pod restart
+          readinessProbe:
+            httpGet: { path: /api/health/ready, port: http }
+            periodSeconds: 5
+            failureThreshold: 2         # ~10s before removal from endpoints
+          resources:
+            requests: { cpu: "250m", memory: "256Mi" }
+            limits:   { cpu: "2",    memory: "1Gi" }

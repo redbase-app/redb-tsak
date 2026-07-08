@@ -12,7 +12,9 @@ namespace redb.Tsak.Core.Controllers;
 [Route("/api/users")]
 public class UsersController : RedbController
 {
-    private IUserProvider GetProvider() => Context.GetRedbService().UserProvider;
+    // Per-request scoped IRedbService (own connection) — NOT the captive singleton, which would
+    // share one non-thread-safe connection across concurrent requests.
+    private IUserProvider GetProvider() => this.Redb().UserProvider;
 
     [HttpGet("")]
     public async Task<object> ListUsers()

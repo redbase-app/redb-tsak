@@ -101,7 +101,9 @@ public static class ServiceCollectionExtensions
         var provider = configuration["Tsak:Redb:Provider"]?.ToLowerInvariant();
         if (string.IsNullOrEmpty(provider))
             return;
-        var usePro = configuration.GetValue<bool>("Tsak:Redb:UsePro");
+        // Default to Pro (the Pro redb tier is free): absent Tsak:Redb:UsePro ⇒ Pro. Set it to false
+        // explicitly to run the Free tier.
+        var usePro = configuration.GetValue("Tsak:Redb:UsePro", true);
         var connectionString = provider switch
         {
             "mssql" or "sqlserver" => configuration.GetConnectionString("MSSql"),
@@ -333,52 +335,65 @@ public static class ServiceCollectionExtensions
     private static void ConfigureQuartz(IServiceCollection services, IConfiguration configuration)
     {
         var quartzSection = configuration.GetSection("Quartz");
-        if (!quartzSection.Exists())
-            return;
-
-        services.Configure<QuartzOptions>(quartzSection);
-
-        // Auto-inject connection string and driver delegate from redb config
-        // when AdoJobStore is used without explicit Quartz data source settings
-        var jobStoreType = configuration["Quartz:quartz.jobStore.type"] ?? "";
-        if (jobStoreType.Contains("AdoJobStore", StringComparison.OrdinalIgnoreCase))
+        if (quartzSection.Exists())
         {
-            var explicitCs = configuration["Quartz:quartz.dataSource.default.connectionString"];
-            if (string.IsNullOrEmpty(explicitCs))
-            {
-                var provider = configuration["Tsak:Redb:Provider"]?.ToLowerInvariant();
-                // Per-provider Quartz AdoJobStore mapping — same set of providers as redb storage.
-                var (csName, qProvider, qDelegate) = provider switch
-                {
-                    "mssql" or "sqlserver" => ("MSSql",  "SqlServer",        "Quartz.Impl.AdoJobStore.SqlServerDelegate, Quartz"),
-                    "sqlite"               => ("Sqlite", "SQLite-Microsoft", "Quartz.Impl.AdoJobStore.SQLiteDelegate, Quartz"),
-                    _                      => ("Postgres", "Npgsql",         "Quartz.Impl.AdoJobStore.PostgreSQLDelegate, Quartz"),
-                };
-                var connStr = configuration.GetConnectionString(csName);
+            services.Configure<QuartzOptions>(quartzSection);
 
-                if (!string.IsNullOrEmpty(connStr))
+            // Auto-inject connection string and driver delegate from redb config
+            // when AdoJobStore is used without explicit Quartz data source settings
+            var jobStoreType = configuration["Quartz:quartz.jobStore.type"] ?? "";
+            if (jobStoreType.Contains("AdoJobStore", StringComparison.OrdinalIgnoreCase))
+            {
+                var explicitCs = configuration["Quartz:quartz.dataSource.default.connectionString"];
+                if (string.IsNullOrEmpty(explicitCs))
                 {
-                    services.PostConfigure<QuartzOptions>(opts =>
+                    var provider = configuration["Tsak:Redb:Provider"]?.ToLowerInvariant();
+                    // Per-provider Quartz AdoJobStore mapping — same set of providers as redb storage.
+                    var (csName, qProvider, qDelegate) = provider switch
                     {
-                        opts["quartz.dataSource.default.connectionString"] = connStr;
-                        opts["quartz.dataSource.default.provider"] = qProvider;
-                        opts.TryAdd("quartz.jobStore.dataSource", "default");
-                        opts.TryAdd("quartz.jobStore.tablePrefix", "QRTZ_");
-                        opts.TryAdd("quartz.serializer.type", "newtonsoft");
-                        opts.TryAdd("quartz.jobStore.driverDelegateType", qDelegate);
-                    });
+                        "mssql" or "sqlserver" => ("MSSql",  "SqlServer",        "Quartz.Impl.AdoJobStore.SqlServerDelegate, Quartz"),
+                        "sqlite"               => ("Sqlite", "SQLite-Microsoft", "Quartz.Impl.AdoJobStore.SQLiteDelegate, Quartz"),
+                        _                      => ("Postgres", "Npgsql",         "Quartz.Impl.AdoJobStore.PostgreSQLDelegate, Quartz"),
+                    };
+                    var connStr = configuration.GetConnectionString(csName);
+
+                    if (!string.IsNullOrEmpty(connStr))
+                    {
+                        services.PostConfigure<QuartzOptions>(opts =>
+                        {
+                            opts["quartz.dataSource.default.connectionString"] = connStr;
+                            opts["quartz.dataSource.default.provider"] = qProvider;
+                            opts.TryAdd("quartz.jobStore.dataSource", "default");
+                            opts.TryAdd("quartz.jobStore.tablePrefix", "QRTZ_");
+                            opts.TryAdd("quartz.serializer.type", "newtonsoft");
+                            opts.TryAdd("quartz.jobStore.driverDelegateType", qDelegate);
+                        });
+                    }
                 }
             }
         }
+        else
+        {
+            // No `Quartz` config section — still stand up a shared IN-MEMORY scheduler. Tsak must ALWAYS
+            // hand out one IScheduler so every RouteContext resolves the SAME instance: the `_system`
+            // management API context (which backs the dashboard scheduler page) AND the business contexts
+            // running cron routes. Without this, a cron consumer finds no injected scheduler and
+            // self-creates a per-context RAMJobStore (see redb.Route.Quartz QuartzConsumerBase) that the
+            // `_system` context cannot see — so the dashboard shows no jobs even though the route runs.
+            // RAMJobStore is Quartz's default; set it explicitly for clarity (non-persistent, single node).
+            services.Configure<QuartzOptions>(opts =>
+                opts.TryAdd("quartz.jobStore.type", "Quartz.Simpl.RAMJobStore, Quartz"));
+        }
 
-        // Schema initializer must run before QuartzHostedService validates tables.
-        // Hosted services start sequentially in registration order.
+        // Schema initializer must run before QuartzHostedService validates tables (it no-ops unless
+        // AdoJobStore is configured). Hosted services start sequentially in registration order.
         services.AddSingleton<IHostedService, QuartzSchemaInitializer>();
 
         services.AddQuartz();
         services.AddQuartzHostedService(q => q.WaitForJobsToComplete = true);
 
-        // Register IScheduler singleton like lt.tsak pattern
+        // Register the IScheduler singleton ALWAYS (RAM by default, AdoJobStore/DB when configured) so
+        // TsakContextManager injects one shared scheduler into every context — including `_system`.
         services.AddSingleton(provider =>
             provider.GetRequiredService<ISchedulerFactory>()
                 .GetScheduler().GetAwaiter().GetResult());

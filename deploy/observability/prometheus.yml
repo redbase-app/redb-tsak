@@ -1,0 +1,15 @@
+# Prometheus scrape config for the local redb.Tsak stack.
+# The Tsak Worker exposes /metrics on its facade (the management API port 9090) —
+# no separate metrics port and no Windows URL ACL needed.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: redb-tsak-worker
+    metrics_path: /metrics
+    static_configs:
+      # Worker on the host (Docker Desktop maps host.docker.internal → host).
+      # If the Worker runs as a container on this compose network, replace with
+      # its service name + API port, e.g. ["worker:9090"].
+      - targets: ["host.docker.internal:9090"]

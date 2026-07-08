@@ -1,0 +1,172 @@
+{
+  "__comment": "redb.Tsak — route + runtime overview. Metric names match the OTel Prometheus exporter (OpenTelemetry.Exporter.Prometheus.HttpListener 1.15): counters carry the unit + _total suffix (redb_route_exchanges_processed_exchanges_total), the histogram is _milliseconds. Import into Grafana and pick your Prometheus datasource.",
+  "title": "redb.Tsak — Routes & Runtime",
+  "uid": "redb-tsak-overview",
+  "tags": ["redb", "tsak", "redb.route"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "type": "datasource",
+        "name": "datasource",
+        "label": "Prometheus",
+        "query": "prometheus",
+        "refresh": 1,
+        "hide": 0,
+        "current": {}
+      },
+      {
+        "type": "query",
+        "name": "route",
+        "label": "Route",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": "label_values(redb_route_exchanges_processed_exchanges_total, redb_route_id)",
+        "includeAll": true,
+        "multi": true,
+        "refresh": 2,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Throughput (total)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "ops", "decimals": 1 }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(redb_route_exchanges_processed_exchanges_total[$__rate_interval]))" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Error ratio",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "decimals": 2,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 5 } ] }
+        }, "overrides": []
+      },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "100 * sum(rate(redb_route_exchanges_failed_exchanges_total[$__rate_interval])) / clamp_min(sum(rate(redb_route_exchanges_processed_exchanges_total[$__rate_interval])), 1)" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "In-flight exchanges",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(redb_route_exchanges_inflight_exchanges)" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "p95 latency",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "ms", "decimals": 1 }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.95, sum(rate(redb_route_exchange_duration_milliseconds_bucket[$__rate_interval])) by (le))" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Exchanges processed — by route (ops)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (redb_route_id) (rate(redb_route_exchanges_processed_exchanges_total{redb_route_id=~\"$route\"}[$__rate_interval]))",
+          "legendFormat": "{{redb_route_id}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Exchanges failed — by route (ops)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (redb_route_id) (rate(redb_route_exchanges_failed_exchanges_total{redb_route_id=~\"$route\"}[$__rate_interval]))",
+          "legendFormat": "{{redb_route_id}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Exchange duration percentiles (ms)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "fieldConfig": { "defaults": { "unit": "ms", "custom": { "fillOpacity": 0, "showPoints": "never" } }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.50, sum(rate(redb_route_exchange_duration_milliseconds_bucket[$__rate_interval])) by (le))", "legendFormat": "p50" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.95, sum(rate(redb_route_exchange_duration_milliseconds_bucket[$__rate_interval])) by (le))", "legendFormat": "p95" },
+        { "refId": "C", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.99, sum(rate(redb_route_exchange_duration_milliseconds_bucket[$__rate_interval])) by (le))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Process CPU (cores) & working set",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "fieldConfig": {
+        "defaults": { "custom": { "fillOpacity": 10, "showPoints": "never" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "working set" },
+            "properties": [ { "id": "unit", "value": "decbytes" }, { "id": "custom.axisPlacement", "value": "right" } ] },
+          { "matcher": { "id": "byName", "options": "cpu cores" },
+            "properties": [ { "id": "unit", "value": "short" } ] }
+        ]
+      },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(process_cpu_time_seconds_total[$__rate_interval]))", "legendFormat": "cpu cores" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(process_memory_usage_bytes)", "legendFormat": "working set" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": ".NET GC collections (by generation)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (gc_heap_generation) (rate(dotnet_gc_collections_total[$__rate_interval]))",
+          "legendFormat": "{{gc_heap_generation}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": ".NET thread pool",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 22 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 0, "showPoints": "never" } }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(dotnet_thread_pool_thread_count_total)", "legendFormat": "threads" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(dotnet_thread_pool_queue_length_total)", "legendFormat": "queue length" }
+      ]
+    }
+  ]
+}

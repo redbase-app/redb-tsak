@@ -27,6 +27,31 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [3.3.0] — 2026-07-09
+
+### Added
+- **Amazon SQS + SNS connector (`redb.Route.Sqs`)** available to bundle — `sqs://` (queue) and
+  `sns://` (topic) endpoints for tsak routes. Wired into the distribution at release.
+- **Telegram Bot connector (`redb.Route.Telegram`)** available to bundle — `telegram://` long-polling
+  consumer + send/document/photo/edit/delete/answer producer (429 rate-limit handling, parseMode,
+  inline/reply keyboards, webhook unpack) for tsak routes. Wired into the distribution at release.
+
+### Fixed
+- **`redb.Tsak.Core` — the dashboard scheduler page now shows cron jobs even without a `Quartz` config
+  section.** Tsak now **always** hands out one shared `IScheduler` (falling back to an in-memory
+  `RAMJobStore` when no `Quartz` section is configured), injected into every route context. Previously,
+  with no `Quartz` section Tsak registered no scheduler, so a cron route's consumer self-created a
+  *per-context* in-memory scheduler that the management API's `_system` context could not see — the
+  scheduler page showed nothing even though the route ran and was listed. No clustering or database is
+  required for a single node; `AdoJobStore` remains the way to persist and share jobs across processes /
+  cluster nodes. (Standalone `redb.Route` — no Tsak host — is unchanged: the Quartz consumer still
+  self-creates its own scheduler when the host provides none.)
+- **`redb.Tsak.Core` — Users admin API (`UsersController`) now uses a per-request scoped
+  `IRedbService`.** It previously resolved `Context.GetRedbService()` — the shared captive singleton
+  (one non-thread-safe connection) — so concurrent admin requests could contend and fail with
+  *"A command is already in progress"*. It now resolves the per-request instance via
+  `controller.Redb()` (redb.Route.Core 3.3.0), giving each request its own connection.
+
 ## [3.2.2] — 2026-07-03
 
 > **Why the bump.** Rebuilds the redb.Tsak distribution (Docker images + standalone

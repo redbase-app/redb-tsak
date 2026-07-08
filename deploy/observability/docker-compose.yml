@@ -1,0 +1,47 @@
+# Local observability stack for redb.Tsak — Prometheus + Grafana + Jaeger.
+#
+# Assumes the Tsak Worker runs on the HOST with:
+#   Tsak:Metrics:Prometheus:Enabled = true   (exporter on :9464)
+#   Tsak:Tracing:Otlp:Enabled       = true   (traces → http://localhost:4317)
+#
+# Bring up:   docker compose up -d
+#   Grafana   → http://localhost:3000  (anon admin, dashboard auto-provisioned)
+#   Prometheus→ http://localhost:9090
+#   Jaeger UI → http://localhost:16686
+name: redb-tsak-observability
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: redb-tsak-prometheus
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    # Host 9091 (NOT 9090) — Tsak's management API uses 9090. Inside the compose
+    # network Prometheus stays on 9090, so the Grafana datasource is unaffected.
+    ports: ["9091:9090"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # lets Prometheus scrape the host's :9464
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: redb-tsak-grafana
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_USERS_DEFAULT_THEME=dark
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/redb-tsak-dashboard.json:/var/lib/grafana/dashboards/redb-tsak-dashboard.json:ro
+    ports: ["3000:3000"]
+    depends_on: [prometheus]
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: redb-tsak-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC  (Tsak default endpoint)
+      - "4318:4318"     # OTLP HTTP

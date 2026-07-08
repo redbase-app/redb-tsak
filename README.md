@@ -96,7 +96,7 @@ public static class InitRoute
 }
 ```
 
-For the routing DSL itself (transports, EIP patterns, expressions, transactional pipelines, OnException, error handling), see the [redb.Route README](https://github.com/redbase-app/redb-route). Everything below in this document is about the **container**.
+For the routing DSL itself (transports, EIP patterns, expressions, transactional pipelines, OnException, error handling), see the [redb.Route README](https://github.com/redbase-app/redb-route). Everything below in this document is about the **container**. redb.Route now includes an Amazon **SQS + SNS** connector (`redb.Route.Sqs`) and a **Telegram Bot** connector (`redb.Route.Telegram`) — both bundled into the Tsak distribution at release.
 
 ---
 

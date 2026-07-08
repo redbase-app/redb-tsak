@@ -13,16 +13,18 @@ Published to `ghcr.io/redbase-app/` (public, cosign-signed):
 
 | Image | What it is | Ports |
 |-------|------------|-------|
-| `redb-tsak-worker:3.2.0` | Process-automation runtime (route contexts, modules, cluster). | `9090` (management/REST API) |
-| `redb-tsak-web:3.2.0` | Blazor dashboard (monitoring, routes, logs). Talks to a worker. | `8080` |
-| `redb-tsak-stack:3.2.0` | Worker **+** dashboard in one container (supervisord). | `9090`, `8080` |
+| `redb-tsak-worker:3.2.2` | Process-automation runtime (route contexts, modules, cluster). | `9090` (management/REST API) |
+| `redb-tsak-web:3.2.2` | Blazor dashboard (monitoring, routes, logs). Talks to a worker. | `8080` |
+| `redb-tsak-stack:3.2.2` | Worker **+** dashboard in one container (supervisord). | `9090`, `8080` |
 
-Tags: `:3.2.0` (= `:3.2.0-net9`, recommended), `:3.2.0-net8` / `-net10` (worker only), `:latest`.
+Tags: `:3.2.2` (= `:3.2.2-net9`), `:latest`. The worker, web and stack images run on .NET 9;
+the standalone archives additionally bundle the shared route connectors for net8 / net9 / net10
+so user modules (`.tpkg`) can target any of the three.
 Pro features (cluster, advanced storage) activate from a **license JWT** in config; without
 one the container runs the OSS feature set.
 
 ```bash
-docker pull ghcr.io/redbase-app/redb-tsak-stack:3.2.0
+docker pull ghcr.io/redbase-app/redb-tsak-stack:3.2.2
 ```
 
 ---
@@ -31,7 +33,7 @@ docker pull ghcr.io/redbase-app/redb-tsak-stack:3.2.0
 
 ```bash
 # Stack (worker + dashboard) — boots as a Pro trial on embedded SQLite, one-node cluster.
-docker run --rm -p 9090:9090 -p 8080:8080 ghcr.io/redbase-app/redb-tsak-stack:3.2.0
+docker run --rm -p 9090:9090 -p 8080:8080 ghcr.io/redbase-app/redb-tsak-stack:3.2.2
 # dashboard:  http://localhost:8080   (login admin / admin)
 # REST API:   http://localhost:9090/api/health/live
 ```
@@ -59,7 +61,7 @@ docker run -p 9090:9090 \
   -e ConnectionStrings__Postgres="Host=pg;Port=5432;Username=tsak;Password=secret;Database=redb" \
   -e Tsak__Redb__License__0="<your-license-jwt>" \
   -v tsak_data:/app  \
-  ghcr.io/redbase-app/redb-tsak-worker:3.2.0
+  ghcr.io/redbase-app/redb-tsak-worker:3.2.2
 ```
 
 > SQLite file: mount a volume to persist `redb.db` (it's written in the worker's working dir,
@@ -187,7 +189,7 @@ The dashboard (Web / Stack) is a **Blazor Server** app on port `8080`.
 docker run -p 8080:8080 \
   -e Tsak__Web__AdminLogin=admin \
   -e Tsak__Web__AdminPassword='CHANGE_ME' \
-  ghcr.io/redbase-app/redb-tsak-stack:3.2.0
+  ghcr.io/redbase-app/redb-tsak-stack:3.2.2
 ```
 
 ### Dashboard config (`Tsak:Web` + `Kestrel`)
@@ -275,7 +277,7 @@ Modules are hot-deployable `.tpkg` packages. The worker scans **`Tsak:Modules:As
 ```yaml
 services:
   worker:
-    image: ghcr.io/redbase-app/redb-tsak-stack:3.2.0
+    image: ghcr.io/redbase-app/redb-tsak-stack:3.2.2
     environment:
       - Tsak__Modules__AssemblyPaths__0=/app/worker/modules
     volumes:
@@ -294,7 +296,7 @@ worker loads it without a restart.
 ```yaml
 services:
   tsak:
-    image: ghcr.io/redbase-app/redb-tsak-stack:3.2.0
+    image: ghcr.io/redbase-app/redb-tsak-stack:3.2.2
     ports:
       - "9090:9090"      # management / REST API
       - "8080:8080"      # dashboard
@@ -313,7 +315,7 @@ volumes:
 ```yaml
 services:
   worker:
-    image: ghcr.io/redbase-app/redb-tsak-worker:3.2.0
+    image: ghcr.io/redbase-app/redb-tsak-worker:3.2.2
     ports: ["9090:9090"]
     environment:
       - Tsak__Redb__Provider=postgres
@@ -338,7 +340,7 @@ docker compose up -d
 ## 9. License activation
 
 ```bash
-docker run -e Tsak__Redb__License__0="eyJhbGci...your-jwt..." ghcr.io/redbase-app/redb-tsak-worker:3.2.0
+docker run -e Tsak__Redb__License__0="eyJhbGci...your-jwt..." ghcr.io/redbase-app/redb-tsak-worker:3.2.2
 ```
 
 The images ship a **time-limited trial** key so Pro/cluster work out of the box for evaluation.
@@ -353,7 +355,7 @@ cosign **public key** (`cosign.pub`) is attached to each [GitHub Release](https:
 
 ```bash
 # grab cosign.pub from the release assets, then:
-cosign verify --key cosign.pub ghcr.io/redbase-app/redb-tsak-worker:3.2.0
+cosign verify --key cosign.pub ghcr.io/redbase-app/redb-tsak-worker:3.2.2
 ```
 
 ---
