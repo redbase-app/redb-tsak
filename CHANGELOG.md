@@ -27,6 +27,25 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [3.3.1] — 2026-07-10
+
+> **Why the bump.** Rebuilds the redb.Tsak distribution (Docker images + standalone archives)
+> on top of **redb.Route 3.3.1**, which fixes header ↔ property round-tripping across five connectors
+> and adds fluent `string` overloads. No `redb.Tsak.Core` code changes — this is a distribution rebuild
+> so bundled tsak routes pick up the connector fixes. Binary version moves **3.3.0 → 3.3.1**.
+
+### Changed
+- Bundled connectors updated to **redb.Route 3.3.1**:
+  - **RabbitMQ / AMQP** — full AMQP property ↔ header round-trip (a consume→produce hop carries
+    CorrelationId, ReplyTo, Priority, Timestamp, …); standard properties use their bare well-known
+    names, the `redbRmq.*` / `redbAmqp.*` prefix stays for delivery/transport metadata.
+  - **IBM MQ** — standard, JMS-equivalent MQMD fields forward from headers by default; raw MQMD
+    fields stay behind `MqmdWriteEnabled`.
+  - **Redis** — prefixed `StreamFields` header; **Azure Service Bus** — batch send now sets native +
+    application properties.
+  - **Fluent DSL** — `string` overloads on expression-first builders (RabbitMQ, Sftp, Ftp, File,
+    MqttNet, Kafka, Redis, Http): `.Host("localhost")` compiles and `${...}` still interpolates.
+
 ## [3.3.0] — 2026-07-09
 
 ### Added
