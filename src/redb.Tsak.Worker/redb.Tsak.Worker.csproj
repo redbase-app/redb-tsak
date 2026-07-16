@@ -36,7 +36,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\redb.Tsak.Core\redb.Tsak.Core.csproj" />
-    <PackageReference Include="redb.Tsak.Core.Pro" Version="3.3.1" />    <!-- Connector transports moved to Libs/shared/ — loaded at runtime by SharedAssemblyLoader.
+    <PackageReference Include="redb.Tsak.Core.Pro" Version="3.3.3" />    <!-- Connector transports moved to Libs/shared/ — loaded at runtime by SharedAssemblyLoader.
          Use scripts/build-shared.ps1 to build and copy connectors. -->
   </ItemGroup>
 

@@ -14,8 +14,8 @@ Published to `ghcr.io/redbase-app/` (public, cosign-signed):
 | Image | What it is | Ports |
 |-------|------------|-------|
 | `redb-tsak-worker:3.2.2` | Process-automation runtime (route contexts, modules, cluster). | `9090` (management/REST API) |
-| `redb-tsak-web:3.2.2` | Blazor dashboard (monitoring, routes, logs). Talks to a worker. | `8080` |
-| `redb-tsak-stack:3.2.2` | Worker **+** dashboard in one container (supervisord). | `9090`, `8080` |
+| `redb-tsak-web:3.2.2` | Blazor dashboard (monitoring, routes, logs). Talks to a worker. | `8085` |
+| `redb-tsak-stack:3.2.2` | Worker **+** dashboard in one container (supervisord). | `9090`, `8085` |
 
 Tags: `:3.2.2` (= `:3.2.2-net9`), `:latest`. The worker, web and stack images run on .NET 9;
 the standalone archives additionally bundle the shared route connectors for net8 / net9 / net10
@@ -33,8 +33,8 @@ docker pull ghcr.io/redbase-app/redb-tsak-stack:3.2.2
 
 ```bash
 # Stack (worker + dashboard) — boots as a Pro trial on embedded SQLite, one-node cluster.
-docker run --rm -p 9090:9090 -p 8080:8080 ghcr.io/redbase-app/redb-tsak-stack:3.2.2
-# dashboard:  http://localhost:8080   (login admin / admin)
+docker run --rm -p 9090:9090 -p 8085:8085 ghcr.io/redbase-app/redb-tsak-stack:3.2.2
+# dashboard:  http://localhost:8085   (login admin / admin)
 # REST API:   http://localhost:9090/api/health/live
 ```
 
@@ -176,7 +176,7 @@ These feed any OTLP collector (Jaeger/Tempo) and a Prometheus scrape of `<host>:
 
 ## 5. Dashboard & passwords
 
-The dashboard (Web / Stack) is a **Blazor Server** app on port `8080`.
+The dashboard (Web / Stack) is a **Blazor Server** app on port `8085`.
 
 | Secret | Key | Default in image | Change in prod? |
 |--------|-----|------------------|-----------------|
@@ -186,7 +186,7 @@ The dashboard (Web / Stack) is a **Blazor Server** app on port `8080`.
 | Pro license | `Tsak:Redb:License:0` | bundled trial | replace with your own for prod |
 
 ```bash
-docker run -p 8080:8080 \
+docker run -p 8085:8085 \
   -e Tsak__Web__AdminLogin=admin \
   -e Tsak__Web__AdminPassword='CHANGE_ME' \
   ghcr.io/redbase-app/redb-tsak-stack:3.2.2
@@ -200,7 +200,7 @@ docker run -p 8080:8080 \
 | `Tsak:Web:Mode` | `standalone` | How the dashboard finds workers: `standalone` (fixed list) or `cluster` (auto-discover via the redb store). |
 | `Tsak:Web:Nodes[]` | — | **standalone mode:** explicit worker list — each `{ Id, Url, ApiKey }`. `ApiKey` must match a worker `Tsak:Auth:Keys` entry. |
 | `Tsak:Web:ServiceApiKey` | *(stripped)* | **cluster mode:** the key the dashboard uses to call workers' management API (worker validates its SHA-256 against `Tsak:Auth:Keys`). |
-| `Kestrel:Endpoints:Http:Url` | `:8080` (in image) | Dashboard bind URL (the image already binds `:8080`). |
+| `Kestrel:Endpoints:Http:Url` | `:8085` (in image) | Dashboard bind URL (the image already binds `:8085`). |
 | `Kestrel:Endpoints:Https:Url` | — | Optional HTTPS bind (provide a cert). |
 | `ASPNETCORE_PATHBASE` | — | Serve under a sub-path, e.g. `/tsak` (see below). |
 
@@ -232,7 +232,7 @@ container and proxy that path:
 
 ```nginx
 location /tsak/ {
-    proxy_pass http://tsak-container:8080;
+    proxy_pass http://tsak-container:8085;
     proxy_http_version 1.1;
     proxy_set_header Upgrade    $http_upgrade;   # <-- required for Blazor
     proxy_set_header Connection "upgrade";        # <-- required for Blazor
@@ -299,7 +299,7 @@ services:
     image: ghcr.io/redbase-app/redb-tsak-stack:3.2.2
     ports:
       - "9090:9090"      # management / REST API
-      - "8080:8080"      # dashboard
+      - "8085:8085"      # dashboard
     environment:
       - Tsak__Web__AdminPassword=CHANGE_ME
     volumes:

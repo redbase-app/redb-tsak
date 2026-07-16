@@ -27,6 +27,21 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [3.3.3] — 2026-07-15
+
+> **Why the bump.** **No functional changes to redb.Tsak.** Rebuilds the distribution (Docker images +
+> standalone archives) on top of **redb.Route 3.3.3** and **redb.Core 3.3.3**.
+>
+> Two reasons:
+> 1. **`redb.Core` 3.3.3 fixes schema init under a non-superuser database owner.** Tsak depends on redb
+>    storage, so a Tsak deployment on a least-privilege database could not initialize its schema on
+>    first start. Rebuilding is the only way that fix reaches Tsak users.
+> 2. **One number for the ecosystem.** The family had drifted (core 3.3.0, Route/Tsak 3.3.1,
+>    Route.Sql/Sqs 3.3.2). From 3.3.3 redb core, redb.Route and redb.Tsak all ship the same number, so
+>    a Tsak image no longer needs a compatibility table to say which Route it carries.
+>
+> The version jumps 3.3.1 → 3.3.3 (no 3.3.2 for Tsak) to land on that shared number.
+
 ## [3.3.1] — 2026-07-10
 
 > **Why the bump.** Rebuilds the redb.Tsak distribution (Docker images + standalone archives)
@@ -35,6 +50,11 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > so bundled tsak routes pick up the connector fixes. Binary version moves **3.3.0 → 3.3.1**.
 
 ### Changed
+- **Dashboard default port 8080 → 8085.** The Web UI / Stack image bound the widely-used port `8080`
+  by default (frequent dev-machine conflict); it now binds **`8085`** — images (`ASPNETCORE_URLS`,
+  `EXPOSE`), stack supervisord, archive start scripts, and example compose defaults
+  (`${WEB_PORT:-8085}:8085`). Worker port (`9090`) unchanged; override via `WEB_PORT` /
+  `ASPNETCORE_URLS`.
 - Bundled connectors updated to **redb.Route 3.3.1**:
   - **RabbitMQ / AMQP** — full AMQP property ↔ header round-trip (a consume→produce hop carries
     CorrelationId, ReplyTo, Priority, Timestamp, …); standard properties use their bare well-known

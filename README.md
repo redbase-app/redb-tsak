@@ -21,13 +21,13 @@
 | | |
 |---|---|
 | **Module-based deployment** | Drop a `.dll` into `Libs/` — Tsak loads it, builds an `IRouteContext`, starts the routes. Update the DLL — Tsak hot-swaps it without dropping a single in-flight message in other contexts. |
-| **Three deployment modes** | `Standalone` (in-memory, no DB) · `Single-node + redb` (durable EAV state) · `Cluster` (leader election + automatic context redistribution across nodes). |
+| **Three deployment modes** | `Standalone` (in-memory, no DB) · `Single-node + redb` (durable RTTI-storage state) · `Cluster` (leader election + automatic context redistribution across nodes). |
 | **Three API modes** | `Full` (REST API + management) · `Headless` (zero ports, embedded use) · `Readonly` (only `GET` endpoints — perfect for monitoring sidecars). |
 | **5-layer configuration** | Module ships defaults. DevOps overrides. Config hot-reloads. No code changes, no restarts. |
 | **Built-in observability** | Per-process metrics (CPU/RAM/threads/GC, 12h history), per-route metrics (count/error rate/latency), ring-buffer logs, OpenTelemetry traces, optional Prometheus scrape. |
 | **Watchdog** | Detects suspected and hung routes. Optionally auto-restarts them. |
 | **Quartz scheduler** | Built-in `IScheduler` injected into every context. `RAMJobStore` standalone, `AdoJobStore` cluster-safe — schema auto-created on first start. |
-| **Security** | API Key + HMAC-SHA256 + roles + expiry + revocation. Constant-time comparison. EAV-backed key store. Optional user binding (disabled user → key dies). |
+| **Security** | API Key + HMAC-SHA256 + roles + expiry + revocation. Constant-time comparison. redb-backed key store. Optional user binding (disabled user → key dies). |
 | **Module isolation** | Per-module `AssemblyLoadContext` — dependencies don't conflict between modules. |
 | **Clients ready to ship** | Typed C# `ITsakApiClient`, 30-command `tsak` CLI with profiles and JSON output, Blazor Server dashboard. |
 
@@ -148,7 +148,7 @@ For the routing DSL itself (transports, EIP patterns, expressions, transactional
                                   │
                                   ▼
                 ┌─────────────────────────────────┐
-                │  redb EAV (Postgres or MSSQL)   │
+                │  redb (Postgres or MSSQL)   │
                 │  - API keys (RedbApiKeyStore)   │
                 │  - Cluster topology (Tree)      │
                 │  - Lifecycle events             │
@@ -238,25 +238,25 @@ docker run -d --name tsak \
 
 # Stack (Worker + Web UI in one container, like rabbitmq:management)
 docker run -d --name tsak \
-  -p 9090:9090 -p 8080:8080 \
+  -p 9090:9090 -p 8085:8085 \
   -v $PWD/Libs:/app/worker/Libs \
   ghcr.io/redbase-app/redb-tsak-stack:latest
-# UI: http://localhost:8080  ·  REST: http://localhost:9090
+# UI: http://localhost:8085  ·  REST: http://localhost:9090
 ```
 
 | Image | Contains | Size | Ports |
 |---|---|---|---|
 | `ghcr.io/redbase-app/redb-tsak-worker` | Worker (REST + cluster) | ~360 MB | `9090` |
-| `ghcr.io/redbase-app/redb-tsak-web`    | Standalone Web UI       | ~250 MB | `8080` |
-| `ghcr.io/redbase-app/redb-tsak-stack`  | Worker + Web (supervisord) | ~430 MB | `9090`, `8080` |
+| `ghcr.io/redbase-app/redb-tsak-web`    | Standalone Web UI       | ~250 MB | `8085` |
+| `ghcr.io/redbase-app/redb-tsak-stack`  | Worker + Web (supervisord) | ~430 MB | `9090`, `8085` |
 
 Tags: `latest`, `<version>` (e.g. `2.0.0`), `<version>-net9` (Worker also `-net8`, `-net10`).
 
-**With PostgreSQL (durable EAV state, multi-node, cluster):**
+**With PostgreSQL (durable RTTI-storage state, multi-node, cluster):**
 
 ```bash
 docker run -d --name tsak \
-  -p 9090:9090 -p 8080:8080 \
+  -p 9090:9090 -p 8085:8085 \
   -v $PWD/Libs:/app/worker/Libs \
   -e ConnectionStrings__Postgres="Host=pg;Port=5432;Database=redb;Username=postgres;Password=postgres" \
   ghcr.io/redbase-app/redb-tsak-stack:latest
@@ -279,7 +279,7 @@ Each archive bundles `worker/`, `web/`, `cli/`, all 20 Route connectors in `work
 curl -LO https://github.com/redbase-app/redb-tsak/releases/latest/download/redb-tsak-2.0.2-linux-x64.tar.gz
 tar xzf redb-tsak-2.0.2-linux-x64.tar.gz
 cd redb-tsak-2.0.2-linux-x64
-./scripts/start-stack.sh   # worker on :9090, web on :8080
+./scripts/start-stack.sh   # worker on :9090, web on :8085
 ```
 
 ### Verifying signatures (recommended)
@@ -781,7 +781,7 @@ Full reference: [CONFIG_GUIDE.md](CONFIG_GUIDE.md).
 | Group | Endpoints | Purpose |
 |---|---:|---|
 | `/api/auth` | 3 | Create / list / revoke API keys |
-| `/api/users` | 5 | User CRUD (Pro feature, EAV-backed) |
+| `/api/users` | 5 | User CRUD (Pro feature, redb-backed) |
 | `/api/contexts` | 7 | List / get / start / stop / restart / reset-route-states / remove |
 | `/api/routes` | 6 | List / get / start / stop / force-stop / inflight per route |
 | `/api/modules` | 3 | List / get / remove loaded modules |
@@ -897,7 +897,7 @@ A separate Blazor Server process (`redb.Tsak.Web`) — works in two modes:
 | Mode | Storage | Node discovery |
 |---|---|---|
 | **Standalone** | None | Static node list in `appsettings.json` |
-| **Cluster** | Required (Postgres / MSSQL) | Discovered dynamically from EAV cluster topology |
+| **Cluster** | Required (Postgres / MSSQL) | Discovered dynamically from redb cluster topology |
 
 ### Pages
 
@@ -912,7 +912,7 @@ A separate Blazor Server process (`redb.Tsak.Web`) — works in two modes:
 | **Watchdog** | Suspected and hung route alerts with manual stop/restart actions. |
 | **Logs** | Searchable ring-buffer log viewer with level filter and tail mode. |
 | **Auth** | API key management UI — create, revoke (with confirmation). |
-| **Login** | Credential-based dashboard access (cluster mode = EAV users; standalone = config). |
+| **Login** | Credential-based dashboard access (cluster mode = redb users; standalone = config). |
 
 ### Custom design system
 
@@ -928,13 +928,13 @@ Enable with `Tsak:Cluster:Enabled = true` and a Postgres/MSSQL connection string
 
 ### What you get
 
-- **Leader election** — distributed lock in redb EAV with TTL and epoch fencing. A new leader is elected automatically when the current one dies or loses its lock.
+- **Leader election** — distributed lock in redb with TTL and epoch fencing. A new leader is elected automatically when the current one dies or loses its lock.
 - **Node registry** — each worker registers itself with periodic heartbeats. Dead nodes are evicted after `DeadNodeTimeoutSeconds`.
 - **Automatic context assignment** — the leader distributes contexts across live nodes (currently `round-robin`; weighted strategies on the roadmap). Contexts are reassigned automatically when nodes join or leave.
 - **Rolling hot-reload** — module updates roll across nodes in sequence, never updating multiple nodes concurrently.
 - **Cluster-wide diagnostics** — `tsak cluster overview` aggregates state from every node.
 
-### Topology in EAV
+### Topology in redb
 
 Stored as a polymorphic 3-level tree using `redb.Tree` (so it shows up nicely in any redb-aware tool):
 
@@ -972,10 +972,10 @@ Cluster operations (assignment, leader change, rebalance) mutate this tree atomi
 
 All cluster coordination is hidden behind interfaces in `redb.Tsak.Core.Pro`:
 
-| Interface | Default implementation (redb EAV) | Drop-in alternative |
+| Interface | Default implementation (redb) | Drop-in alternative |
 |---|---|---|
-| `ILeaderElection` | `RedbLeaderElection` (epoch-fenced lock in EAV) | `KubernetesLeaderElection` (Lease API), `EtcdLeaderElection`, ZK |
-| `IDistributedLock` | `RedbDistributedLock` (TTL row in EAV) | `RedisDistributedLock`, `KubernetesLeaseLock` |
+| `ILeaderElection` | `RedbLeaderElection` (epoch-fenced lock in redb) | `KubernetesLeaderElection` (Lease API), `EtcdLeaderElection`, ZK |
+| `IDistributedLock` | `RedbDistributedLock` (TTL row in redb) | `RedisDistributedLock`, `KubernetesLeaseLock` |
 | `INodeRegistry` | `RedbNodeRegistry` (heartbeat rows) | `KubernetesPodRegistry` (label selector), Consul |
 | `IClusterCoordinator` | `ClusterCoordinator` (background loop) | implementation owns the loop |
 | `IClusterBootstrap` | `RedbClusterBootstrap` | bootstrap from K8s ConfigMap |
@@ -989,7 +989,7 @@ builder.Services
     .AddTsakCluster(builder.Configuration);                     // everything else stays
 ```
 
-This is the design path for native Kubernetes integration without ever touching redb EAV for coordination — handy when the cluster runs against an external operational database that you do not want to use as a synchronization primitive.
+This is the design path for native Kubernetes integration without ever touching redb for coordination — handy when the cluster runs against an external operational database that you do not want to use as a synchronization primitive.
 
 ---
 
@@ -1082,8 +1082,8 @@ Every start / stop / error event is also persisted by `LifecycleAuditService` an
 | Mode | API keys | Modules | Cluster | State | Use case |
 |---|---|---|---|---|---|
 | **InMemory** | `ConfigApiKeyStore` (read-only, from `appsettings`) | In-process registry | Not supported | Lost on restart | Dev, CI, embedded scenarios |
-| **Redb (Postgres)** | `RedbApiKeyStore` (EAV, runtime CRUD) | Persistent | Supported | Survives restart | Single-node production, lightweight clusters |
-| **Redb (MSSQL)** | `RedbApiKeyStore` (EAV, runtime CRUD) | Persistent | Supported | Survives restart | Single-node production, MSSQL shops |
+| **Redb (Postgres)** | `RedbApiKeyStore` (redb, runtime CRUD) | Persistent | Supported | Survives restart | Single-node production, lightweight clusters |
+| **Redb (MSSQL)** | `RedbApiKeyStore` (redb, runtime CRUD) | Persistent | Supported | Survives restart | Single-node production, MSSQL shops |
 
 Switch modes with one config setting:
 
@@ -1091,7 +1091,7 @@ Switch modes with one config setting:
 { "Tsak": { "Storage": { "Type": "Redb" }, "Redb": { "Provider": "postgres" } } }
 ```
 
-When `UsePro = true`, [redb.Core.Pro](https://github.com/redbase-app/redb) is enabled — gives you EAV change tracking (faster writes), distributed locking primitives, and the cluster topology features.
+When `UsePro = true`, [redb.Core.Pro](https://github.com/redbase-app/redb) is enabled — gives you redb change tracking (faster writes), distributed locking primitives, and the cluster topology features.
 
 ---
 
@@ -1274,7 +1274,7 @@ For HA and horizontal scaling. Same `appsettings` on every node, only `NodeId` a
 }
 ```
 
-Start three workers. They'll discover each other through the shared EAV store, elect a leader, distribute your modules, and roll updates without downtime.
+Start three workers. They'll discover each other through the shared redb store, elect a leader, distribute your modules, and roll updates without downtime.
 
 ---
 
@@ -1287,8 +1287,8 @@ Pre-built images are published to GitHub Container Registry for every release �
 | Image | Best for | Default ports |
 |---|---|---|
 | `ghcr.io/redbase-app/redb-tsak-worker` | Headless workers (k8s `Deployment`/`StatefulSet`), one process per pod | `9090` (REST) |
-| `ghcr.io/redbase-app/redb-tsak-web`    | Separate management UI pod talking to a worker cluster | `8080` |
-| `ghcr.io/redbase-app/redb-tsak-stack`  | Single-host install (Worker + Web in one container, like `rabbitmq:management`) | `9090`, `8080` |
+| `ghcr.io/redbase-app/redb-tsak-web`    | Separate management UI pod talking to a worker cluster | `8085` |
+| `ghcr.io/redbase-app/redb-tsak-stack`  | Single-host install (Worker + Web in one container, like `rabbitmq:management`) | `9090`, `8085` |
 
 Available tags:
 - `latest`, `<version>` — net9 build (default).
@@ -1318,7 +1318,7 @@ Ready-to-use compose files are shipped in [`publish/docker/`](publish/docker/) �
 | `compose.worker.yml` | Worker only |
 | `compose.web.yml`    | Web only (talks to an existing worker) |
 | `compose.stack.yml`  | Worker + Web in one container |
-| `compose.full.yml`   | Stack + PostgreSQL (durable EAV, single-node) |
+| `compose.full.yml`   | Stack + PostgreSQL (durable RTTI storage, single-node) |
 
 Each has a matching `compose.*.env.example` — copy to `.env` and fill in.
 
@@ -1417,7 +1417,7 @@ Set `Tsak:Metrics:Prometheus:Enabled = true` to expose `/metrics` on the facade 
 
 ### Native cluster integration
 
-All coordination interfaces (`ILeaderElection`, `IDistributedLock`, `INodeRegistry`, `IClusterCoordinator`, `IClusterBootstrap`, `IAssignmentManager`) are pluggable — see [Pluggable cluster backends](#pluggable-cluster-backends). A Kubernetes-native Lease implementation (`KubernetesLeaderElection`) can be dropped in without touching redb EAV for coordination, leaving redb only for module / lifecycle / API key state.
+All coordination interfaces (`ILeaderElection`, `IDistributedLock`, `INodeRegistry`, `IClusterCoordinator`, `IClusterBootstrap`, `IAssignmentManager`) are pluggable — see [Pluggable cluster backends](#pluggable-cluster-backends). A Kubernetes-native Lease implementation (`KubernetesLeaderElection`) can be dropped in without touching redb for coordination, leaving redb only for module / lifecycle / API key state.
 
 ---
 
@@ -1448,7 +1448,7 @@ All 9 phases are complete and merged. See [STATUS.md](STATUS.md) for the per-pha
 | 3 | Cluster (leader election, registry, assignment) | Done | 9 |
 | 4 | Hot Reload (collectible ALC, rolling update, rollback) | Done | 25 |
 | 5 | Monitoring (metrics, health, logs, watchdog) | Done | 50 |
-| 6 | REST API & Auth (12 controllers, EAV key store) | Done | 42 |
+| 6 | REST API & Auth (12 controllers, redb key store) | Done | 42 |
 | 7 | Quartz Scheduler (DI, schema initializer, controller) | Done | 30 |
 | 8A | CLI (30 commands, profiles, JSON) | Done | 64 |
 | 8B | Web UI (Blazor Server, 10 pages, design system) | Done | — |
@@ -1478,7 +1478,7 @@ The old context drains (existing exchanges complete). The new context starts in 
 Yes — `IAssignmentManager` is the extensibility point. The `round-robin` strategy is the only one shipped today; weighted strategies are on the roadmap.
 
 **Does Tsak support multi-region clusters?**
-Out of the box, no. The cluster coordination assumes low-latency access to the shared EAV database. For multi-region, run one cluster per region and federate above the Tsak layer (e.g. via `redb.Route.RabbitMQ` shovels).
+Out of the box, no. The cluster coordination assumes low-latency access to the shared redb database. For multi-region, run one cluster per region and federate above the Tsak layer (e.g. via `redb.Route.RabbitMQ` shovels).
 
 **Why a custom design system instead of Bootstrap or MUI?**
 The dashboard is small and focused. Custom CSS keeps the bundle tiny, eliminates a major source of UI churn (vendor breaking changes), and gives full control over theming. CSS variables enable dark/light themes with no JS.
@@ -1504,7 +1504,7 @@ See [docs/](docs/) for design notes on each.
 ## Part of
 
 - [redb.Route](https://github.com/redbase-app/redb-route) — ESB & EIP framework for .NET (the routing engine Tsak hosts)
-- [redb.Core / redb.Core.Pro](https://github.com/redbase-app/redb) — EAV storage backend (the persistence layer Tsak uses)
+- [redb.Core / redb.Core.Pro](https://github.com/redbase-app/redb) — RTTI storage backend (the persistence layer Tsak uses)
 - [RedBase](https://github.com/redbase-app) — full ecosystem
 
 ---
