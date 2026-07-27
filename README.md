@@ -282,7 +282,7 @@ Each archive bundles `worker/`, `web/`, `cli/`, the Route connectors **and the r
 
 The Tsak binary is deliberately thin: only `redb.Tsak.*` (+ `redb.Licensing`) live in the app bin. The **redb.\* framework and providers** (`redb.Core(.Pro)`, `redb.Route.*`, `redb.Postgres/MSSql/SQLite (.Pro)`) and every Route connector live in **`worker/Libs/shared/`**, byte-loaded at startup before any redb type is touched.
 
-- **Patch a library without rebuilding Tsak.** A binary-compatible fix of a redb leaf/provider/connector — or a new beta connector — is delivered by dropping its DLL into `worker/Libs/shared/`. No host rebuild, no archive re-spin. Use `scripts/refresh-shared.ps1` `-Lib <name> -SharedDir <archive>/worker/Libs/shared`, then re-zip / re-cosign the archive.
+- **Patch a library without rebuilding Tsak.** A binary-compatible fix of a redb leaf/provider/connector — or a new beta connector — is delivered by dropping its DLL into `worker/Libs/shared/`. No host rebuild, no archive re-spin. Use [`scripts/refresh-shared.ps1`](scripts/refresh-shared.ps1) `-Lib <name> -SharedDir <archive>/worker/Libs/shared`, then re-zip / re-cosign the archive.
 - **Fail-fast + compat-gate.** A missing/corrupt framework DLL aborts startup with a precise message rather than failing later under load; the shared redb.\* **minor** must match the archive's Tsak minor (patches may differ) or startup is refused.
 - **What's loaded, really.** `GET /api/system/assemblies` (admin) reports every loaded assembly with its version and origin (shared / bin / runtime).
 

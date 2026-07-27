@@ -1,174 +1,234 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-    Builds redb.Route connector projects and stages their DLLs into
-    src/redb.Tsak.Worker/Libs/shared/ — the shared assembly layer that
-    SharedAssemblyLoader reads at Worker start-up.
+    Builds Route connector (and optionally framework) projects and copies their DLLs
+    into the shared assembly layer that SharedAssemblyLoader reads at runtime.
 
-.DESCRIPTION
-    For each connector listed in $connectors this script runs
-    `dotnet publish` to resolve all transitive dependencies (including
-    NuGet packages and native runtimes such as librdkafka), then copies
-    the resulting DLLs into Libs/shared/, skipping any assembly that:
+    Single source of truth for the connector/framework list: scripts/shared-manifest.psd1.
+    This one script covers BOTH modes (the old build-shared-multitfm.ps1 is gone):
 
-      - is already present in the Worker output (avoids version conflicts)
-      - belongs to the .NET shared framework (system assemblies must not
-        be overridden inside an AssemblyLoadContext)
+      * DEV mode (default, no -OutRoot):
+          - output: src/redb.Tsak.Worker/Libs/shared
+          - single TFM (net9.0), Configuration=Debug
+          - filters out DLLs already present in Worker bin AND in the .NET shared framework
+          - hard-fails (exit 1) if any connector fails to build
 
-    Any native libraries under runtimes/ (e.g. librdkafka) are copied
-    verbatim so platform-specific binaries are preserved.
-
-.PARAMETER RouteSrc
-    Path to a checkout of https://github.com/redbase-app/redb-route
-    pointing at its src/ directory. Default: ..\redb-route\src
-    (assumes redb-route is cloned next to redb-tsak).
+      * PUBLISH mode (-OutRoot given):
+          - output: <OutRoot>/shared-<tfm-without-dots>   (e.g. shared-net90) per TFM
+          - one dir per -Tfms entry, Configuration=Release (pass -Configuration Release)
+          - filters out DLLs already present in the .NET shared framework only
+            (no single Worker bin exists at multi-TFM publish time)
+          - tolerates per-TFM build failures (tracked as "incompatible"), never hard-fails
 
 .PARAMETER Configuration
-    Build configuration (Debug/Release). Default: Debug.
+    Build configuration. Default: Debug (dev). Publish pipeline passes Release.
 
-.PARAMETER Connectors
-    Override the list of Route connector projects to build.
-    Default: all stock connectors (RabbitMQ, Kafka, Sql, ...).
+.PARAMETER Tfms
+    Target framework monikers. Default: net9.0. Publish may pass e.g. net8.0,net9.0.
+
+.PARAMETER OutRoot
+    When set, switches to PUBLISH mode and writes shared-<tfm> dirs under this root
+    (e.g. publish/staging). When empty, DEV mode writes to Worker/Libs/shared.
+
+.PARAMETER IncludeFramework
+    Also build the Framework section from the manifest (redb.Core/Route.Core/providers).
+    Dormant for stage A (composition unchanged) — used from stage B onward when framework
+    moves out of bin into shared.
+
+.PARAMETER Only
+    Build only the specified project(s). Matched case-insensitively against the full id
+    or its tail (e.g. "IbmMq" matches "redb.Route.IbmMq").
 
 .PARAMETER Clean
-    Remove the existing Libs/shared/ directory before staging.
+    Clean the output directory/directories before copying.
 
 .EXAMPLE
     ./scripts/build-shared.ps1
-    ./scripts/build-shared.ps1 -RouteSrc D:\src\redb-route\src -Configuration Release
-    ./scripts/build-shared.ps1 -Connectors redb.Route.RabbitMQ,redb.Route.Kafka
+    ./scripts/build-shared.ps1 -Clean -Only IbmMq,RabbitMQ
+    ./scripts/build-shared.ps1 -Configuration Release -Tfms net8.0,net9.0 -OutRoot publish/staging
 #>
 param(
-    [string]$RouteSrc = "",
     [string]$Configuration = "Debug",
-    [string[]]$Connectors = @(),
-    [switch]$Clean
+    [string[]]$Tfms = @('net9.0'),
+    [string]$OutRoot = "",
+    [switch]$IncludeFramework,
+    [switch]$Clean,
+    [string[]]$Only = @(),
+    # Where the redb.Route / redb core sources live. Empty = monorepo layout (../../redb.Route/src).
+    # The public redb-tsak repository is standalone, so there this points at a separate clone of
+    # https://github.com/redbase-app/redb-route — e.g. -RouteSrc ..\redb-route
+    # This parameter is why there is no second, "public" copy of this script: a copy drifted for
+    # three weeks and shipped a version that could not stage the framework at all.
+    [string]$RouteSrc = ""
 )
 
 $ErrorActionPreference = "Stop"
-Set-StrictMode -Version Latest
 
-# Repository root = parent of scripts/
-$repoRoot = Split-Path -Parent $PSScriptRoot
+# pwsh -File passes "-Tfms net8.0,net9.0" / "-Only a,b" as a single element — normalize.
+$Tfms = @($Tfms | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
+$Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 
-# Resolve Route source directory
-if (-not $RouteSrc) {
-    $RouteSrc = Join-Path (Split-Path $repoRoot -Parent) "redb-route\src"
+$scriptDir = $PSScriptRoot                              # redb.Tsak/scripts
+$tsakRoot  = Split-Path -Parent $scriptDir             # redb.Tsak
+$repoRoot  = Split-Path -Parent $tsakRoot              # csharp/redb
+
+# Route sources: monorepo layout by default; -RouteSrc for a standalone checkout. Accept either
+# the repo root of redb-route or its src/ directly — telling a user which one to pass is a support
+# question nobody should have to ask.
+if ([string]::IsNullOrWhiteSpace($RouteSrc)) {
+    $routeRoot = Join-Path (Join-Path $repoRoot "redb.Route") "src"
+} else {
+    $routeRoot = (Resolve-Path $RouteSrc).Path
+    if (-not (Test-Path (Join-Path $routeRoot "redb.Route"))) {
+        $nested = Join-Path $routeRoot "src"
+        if (Test-Path (Join-Path $nested "redb.Route")) { $routeRoot = $nested }
+    }
 }
-if (-not (Test-Path $RouteSrc)) {
-    Write-Host "ERROR: Route source directory not found: $RouteSrc" -ForegroundColor Red
-    Write-Host "Clone https://github.com/redbase-app/redb-route next to redb-tsak," -ForegroundColor Yellow
-    Write-Host "or pass -RouteSrc <path-to-redb-route\src>." -ForegroundColor Yellow
-    exit 1
-}
-
-if ($Connectors.Count -eq 0) {
-    $Connectors = @(
-        "redb.Route.RabbitMQ"
-        "redb.Route.Amqp"
-        "redb.Route.AzureServiceBus"
-        "redb.Route.Controllers"
-        "redb.Route.Elasticsearch"
-        "redb.Route.Firebase"
-        "redb.Route.Grpc"
-        "redb.Route.Kafka"
-        "redb.Route.Ldap"
-        "redb.Route.Sql"
-        "redb.Route.File"
-        "redb.Route.Ftp"
-        "redb.Route.GenericFile"
-        "redb.Route.Redis"
-        "redb.Route.S3"
-        "redb.Route.SignalR"
-        "redb.Route.Tcp"
-        "redb.Route.Validation.Adapters"
-        "redb.Route.WebSocket"
-        "redb.Route.MqttNet"
-        "redb.Route.Mail"
-        "redb.Route.Sftp"
-        "redb.Route.IbmMq"
-        "redb.Route.Llm.Abstractions"
-        "redb.Route.Llm"
-        "redb.Route.Llm.Tools"
-        "redb.Route.Llm.Mcp"
-        "redb.Route.Exec"
-        "redb.Route.Sqs"
-        "redb.Route.Telegram"
-    )
+if (-not (Test-Path $routeRoot)) {
+    throw "Route sources not found: $routeRoot. Pass -RouteSrc <path to a redb-route checkout>."
 }
 
-$tfm        = "net9.0"
-$tfmVersion = $tfm -replace '^net',''
-$workerProj = Join-Path $repoRoot "src\redb.Tsak.Worker\redb.Tsak.Worker.csproj"
-$workerBin  = Join-Path $repoRoot "src\redb.Tsak.Worker\bin\$Configuration\$tfm"
-$sharedDir  = Join-Path $repoRoot "src\redb.Tsak.Worker\Libs\shared"
+$publishMode = -not [string]::IsNullOrWhiteSpace($OutRoot)
 
-# Locate the actual .NET shared framework so we never override system DLLs
+# ---- Load the manifest (single source of truth) ----
+$manifestPath = Join-Path $scriptDir "shared-manifest.psd1"
+if (-not (Test-Path $manifestPath)) { throw "Manifest not found: $manifestPath" }
+$manifest = Import-PowerShellDataFile -Path $manifestPath
+
+$projects = @($manifest.Connectors)
+if ($IncludeFramework) {
+    # Additive, de-duplicated (a name can appear only once even if both sections list it).
+    $projects = @($projects + $manifest.Framework) | Select-Object -Unique
+}
+
+# ---- Apply -Only filter ----
+if ($Only.Count -gt 0) {
+    $filtered = @()
+    foreach ($pat in $Only) {
+        $m = $projects | Where-Object { $_ -ieq $pat -or $_ -ieq "redb.Route.$pat" -or $_ -like "*$pat*" }
+        if (-not $m) { Write-Host "WARNING: -Only '$pat' did not match any project" -ForegroundColor Yellow }
+        else { $filtered += $m }
+    }
+    $projects = @($filtered | Select-Object -Unique)
+    if ($projects.Count -eq 0) { Write-Host "Nothing matched -Only; done." -ForegroundColor Yellow; exit 0 }
+}
+
 $dotnetRoot = Split-Path (Get-Command dotnet).Source
-$runtimeDir = Get-ChildItem (Join-Path $dotnetRoot "shared\Microsoft.NETCore.App") -Directory |
-    Where-Object { $_.Name -match "^$([regex]::Escape($tfmVersion))\." } |
-    Sort-Object Name -Descending | Select-Object -First 1 -ExpandProperty FullName
-if (-not $runtimeDir) {
-    Write-Host "WARNING: .NET $tfmVersion runtime directory not found; framework filter disabled" -ForegroundColor Yellow
-    $runtimeDir = "__nonexistent__"
+
+function Get-RuntimeDir([string]$tfm) {
+    $tfmVersion = $tfm -replace '^net', ''            # net9.0 -> 9.0
+    $dir = Get-ChildItem (Join-Path (Join-Path $dotnetRoot "shared") "Microsoft.NETCore.App") -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match "^$([regex]::Escape($tfmVersion))\." } |
+        Sort-Object Name -Descending | Select-Object -First 1 -ExpandProperty FullName
+    if (-not $dir) {
+        Write-Host "WARNING: no .NET $tfmVersion runtime dir, framework filter disabled for $tfm" -ForegroundColor Yellow
+        return "__nonexistent__"
+    }
+    return $dir
+}
+
+# In DEV mode, also filter against the Worker bin (framework/host deps already there).
+$workerBin = $null
+if (-not $publishMode) {
+    $workerBin = Join-Path (Join-Path (Join-Path (Join-Path (Join-Path $tsakRoot "src") "redb.Tsak.Worker") "bin") $Configuration) $Tfms[0]
 }
 
 Write-Host "=== build-shared.ps1 ===" -ForegroundColor Cyan
+Write-Host "Mode:          $(if ($publishMode) { 'PUBLISH' } else { 'DEV' })"
 Write-Host "Configuration: $Configuration"
-Write-Host "Route src    : $RouteSrc"
-Write-Host "Runtime dir  : $runtimeDir"
-Write-Host "Shared dir   : $sharedDir"
+Write-Host "Tfms:          $($Tfms -join ', ')"
+Write-Host "Route root:    $routeRoot"
+Write-Host "IncludeFramework: $IncludeFramework"
 Write-Host ""
 
-if ($Clean -and (Test-Path $sharedDir)) {
-    Write-Host "Cleaning $sharedDir..." -ForegroundColor Yellow
-    Remove-Item -Recurse -Force $sharedDir
+if (-not (Test-Path $routeRoot)) { throw "redb.Route source not found at $routeRoot" }
+
+# Builds one TFM into $sharedDir. Returns @{ Copied=<int>; Incompatible=@(...) }.
+function Build-Tfm([string]$tfm, [string]$sharedDir, [string]$runtimeDir) {
+    if ($Clean -and (Test-Path $sharedDir)) {
+        Write-Host "Cleaning $sharedDir..." -ForegroundColor Yellow
+        Remove-Item -Recurse -Force $sharedDir
+    }
+    if (-not (Test-Path $sharedDir)) { New-Item -ItemType Directory -Path $sharedDir -Force | Out-Null }
+
+    $copied = 0
+    $incompatible = @()
+    foreach ($proj in $projects) {
+        # Connectors live under redb.Route/src/<name>; framework/providers (redb.Core[.Pro],
+        # redb.Postgres[.Pro], redb.MSSql[.Pro], redb.SQLite[.Pro]) live at the repo root.
+        $projPath = Join-Path (Join-Path $routeRoot $proj) "$proj.csproj"
+        if (-not (Test-Path $projPath)) {
+            $projPath = Join-Path (Join-Path $repoRoot $proj) "$proj.csproj"
+        }
+        if (-not (Test-Path $projPath)) {
+            Write-Host "  SKIP $proj (project not found)" -ForegroundColor Yellow
+            continue
+        }
+
+        $tmpPub = Join-Path (Join-Path $env:TEMP "tsak_shared_$tfm") $proj
+        Write-Host "  $proj ($tfm)..." -NoNewline
+        $logFile = Join-Path $env:TEMP "tsak_shared_$tfm`_$proj.log"
+        & dotnet publish $projPath -c $Configuration -f $tfm --nologo -v q -o $tmpPub 2>&1 |
+            Out-File -FilePath $logFile -Encoding UTF8
+        if ($LASTEXITCODE -ne 0) {
+            if ($publishMode) {
+                Write-Host " INCOMPATIBLE" -ForegroundColor Yellow
+                $incompatible += $proj
+                continue
+            } else {
+                Write-Host " FAILED (log: $logFile)" -ForegroundColor Red
+                throw "Build failed for $proj"
+            }
+        }
+        Write-Host " OK" -ForegroundColor Green
+
+        if (Test-Path $tmpPub) {
+            $dlls = Get-ChildItem -Path $tmpPub -Filter "*.dll" | Where-Object {
+                (-not (Test-Path (Join-Path $runtimeDir $_.Name))) -and
+                ($publishMode -or -not (Test-Path (Join-Path $workerBin $_.Name)))
+            }
+            foreach ($dll in $dlls) {
+                Copy-Item $dll.FullName -Destination $sharedDir -Force
+                $copied++
+            }
+            $runtimes = Join-Path $tmpPub "runtimes"
+            if (Test-Path $runtimes) {
+                Copy-Item -Path $runtimes -Destination $sharedDir -Recurse -Force
+            }
+        }
+    }
+    return @{ Copied = $copied; Incompatible = $incompatible }
 }
-if (-not (Test-Path $sharedDir)) {
-    New-Item -ItemType Directory -Path $sharedDir -Force | Out-Null
+
+$summary = @{}
+foreach ($tfm in $Tfms) {
+    if ($publishMode) {
+        Write-Host "===== TFM: $tfm =====" -ForegroundColor Magenta
+        $sharedDir = Join-Path $OutRoot "shared-$($tfm -replace '\.', '')"
+    } else {
+        # Shared DLLs go into the source tree — MSBuild copies them to output via CopyToOutputDirectory.
+        $sharedDir = Join-Path (Join-Path (Join-Path (Join-Path $tsakRoot "src") "redb.Tsak.Worker") "Libs") "shared"
+    }
+    $runtimeDir = Get-RuntimeDir $tfm
+    Write-Host "Shared dir:    $sharedDir"
+    Write-Host "Runtime dir:   $runtimeDir"
+    $summary[$tfm] = Build-Tfm $tfm $sharedDir $runtimeDir
+    Write-Host "  -> $($summary[$tfm].Copied) DLLs in $sharedDir" -ForegroundColor Cyan
+    Write-Host ""
 }
 
-$failed = @()
-$copied = 0
-
-foreach ($connector in $Connectors) {
-    $projPath = Join-Path $RouteSrc "$connector\$connector.csproj"
-    if (-not (Test-Path $projPath)) {
-        Write-Host "  SKIP $connector (project not found at $projPath)" -ForegroundColor Yellow
-        continue
-    }
-
-    $publishDir = Join-Path (Join-Path $env:TEMP "tsak_shared_publish") $connector
-    Write-Host "  Building $connector..." -NoNewline
-    dotnet publish $projPath -c $Configuration -f $tfm --nologo -v q -o $publishDir | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host " FAILED" -ForegroundColor Red
-        $failed += $connector
-        continue
-    }
-    Write-Host " OK" -ForegroundColor Green
-
-    $dlls = Get-ChildItem -Path $publishDir -Filter "*.dll" | Where-Object {
-        -not (Test-Path (Join-Path $workerBin $_.Name)) -and
-        -not (Test-Path (Join-Path $runtimeDir $_.Name))
-    }
-    foreach ($dll in $dlls) {
-        Copy-Item $dll.FullName -Destination $sharedDir -Force
-        $copied++
-    }
-
-    $runtimesDir = Join-Path $publishDir "runtimes"
-    if (Test-Path $runtimesDir) {
-        Copy-Item -Path $runtimesDir -Destination $sharedDir -Recurse -Force
-        Write-Host "    + runtimes/ copied" -ForegroundColor DarkGray
-    }
-}
-
-Write-Host ""
 Write-Host "=== Summary ===" -ForegroundColor Cyan
-Write-Host "Copied $copied DLLs to $sharedDir"
-if ($failed.Count -gt 0) {
-    Write-Host "FAILED: $($failed -join ', ')" -ForegroundColor Red
-    exit 1
+$anyIncompatible = $false
+foreach ($tfm in $Tfms) {
+    $inc = $summary[$tfm].Incompatible
+    if ($inc.Count -gt 0) {
+        $anyIncompatible = $true
+        Write-Host "$tfm incompatible: $($inc -join ', ')" -ForegroundColor Yellow
+    } else {
+        Write-Host "$tfm OK ($($summary[$tfm].Copied) DLLs)" -ForegroundColor Green
+    }
 }
-Write-Host "All connectors built successfully" -ForegroundColor Green
+
+# In DEV mode a failing build already threw. In PUBLISH mode incompatibility is tolerated
+# (matches the old build-shared-multitfm.ps1 behavior) — exit 0 so the pipeline continues.
+Write-Host "Done." -ForegroundColor Green
