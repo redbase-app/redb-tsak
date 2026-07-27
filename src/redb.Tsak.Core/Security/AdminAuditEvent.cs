@@ -54,9 +54,11 @@ public sealed class AdminAuditEvent
 }
 
 /// <summary>
-/// SPI for delivering admin audit events to a sink. Default implementation is
-/// <see cref="LogAdminAuditService"/> (Serilog/ILogger). Pro replaces this with
-/// a redb-backed implementation that persists events to <c>RedbObject</c>s.
+/// SPI for delivering admin audit events to a sink. The effective implementation is
+/// <see cref="RouteAdminAuditService"/>, which persists events into the flat
+/// <c>tsak_audit_log</c> table via the <c>direct://tsak-audit</c> route; it falls back to
+/// <see cref="LogAdminAuditService"/> (a <c>[tsak-audit]</c>-anchored JSON log line) whenever
+/// no database is configured.
 /// <para>
 /// Implementations MUST NOT throw — failures must be logged internally; the audit
 /// pipeline is best-effort and must not affect the primary action result.

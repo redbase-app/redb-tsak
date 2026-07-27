@@ -3,6 +3,19 @@ using System.Text.Json.Serialization;
 namespace redb.Tsak.Contracts;
 
 /// <summary>
+/// Effective (merged, resolved) configuration for this node, from <c>GET /api/system/config</c>.
+/// Flat key → value map over the <c>Tsak:*</c> and <c>ConnectionStrings:*</c> sections, with secrets
+/// redacted. Answers "what settings is this node actually running with" on an incident.
+/// </summary>
+public sealed record EffectiveConfigResult
+{
+    public required bool Available { get; init; }
+    public int RedactedCount { get; init; }
+    public IReadOnlyDictionary<string, string?> Values { get; init; } =
+        new Dictionary<string, string?>();
+}
+
+/// <summary>
 /// Health check states.
 /// </summary>
 [JsonConverter(typeof(JsonStringEnumConverter))]

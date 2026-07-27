@@ -16,7 +16,7 @@
   <ItemGroup>
     <ProjectReference Include="..\redb.Tsak.Client\redb.Tsak.Client.csproj" />
     <ProjectReference Include="..\redb.Tsak.Contracts\redb.Tsak.Contracts.csproj" />
-    <PackageReference Include="redb.Tsak.Web.Pro" Version="3.3.3" />
+    <PackageReference Include="redb.Tsak.Web.Pro" Version="3.4.0" />
   </ItemGroup>
 
 </Project>

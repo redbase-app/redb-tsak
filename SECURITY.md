@@ -57,7 +57,7 @@ Tsak uses API Key authentication with HMAC-SHA256 hashing.
 ### Key Store
 
 - **InMemory mode**: keys are loaded from `Tsak:Auth:Keys` in `appsettings.json` at startup and are read-only at runtime
-- **Redb mode**: `RedbApiKeyStore` stores keys in the EAV database — supports create, list, and revoke at runtime
+- **Redb mode**: `RedbApiKeyStore` stores keys in the redb store — supports create, list, and revoke at runtime
 - 5-minute TTL cache reduces DB reads without significantly widening the revocation window
 
 ### Cluster Security
@@ -65,7 +65,7 @@ Tsak uses API Key authentication with HMAC-SHA256 hashing.
 - Leader election uses a distributed lock with epoch fencing — stale leaders cannot issue commands after losing election
 - Heartbeat-based dead-node detection prevents zombie nodes from holding locks indefinitely
 - Inter-node communication uses the same API Key authentication as external clients
-- Cluster state (topology, assignments) is stored in redb EAV — access requires DB credentials
+- Cluster state (topology, assignments) is stored in the redb store — access requires DB credentials
 
 ### Module Isolation
 
@@ -78,7 +78,7 @@ Tsak uses API Key authentication with HMAC-SHA256 hashing.
 
 - `Tsak:Auth:Secret` (JWT signing key) and connection strings must never be committed to source control
 - Use environment variable overrides or a secrets manager in production
-- See [DEPLOYMENT_SECRETS.md](DEPLOYMENT_SECRETS.md) for the complete secrets management guide
+- See DEPLOYMENT_SECRETS.md for the complete secrets management guide
 
 ---
 
@@ -142,7 +142,7 @@ Tsak Worker's built-in API (`port 9090`) is HTTP only. In production:
 
 - The dashboard uses in-memory session authentication — sessions do not survive a server restart
 - Set strong `AdminLogin` / `AdminPassword` credentials; do not use defaults in production
-- In cluster mode, dashboard credentials are validated against the EAV user store — manage users via the Auth page
+- In cluster mode, dashboard credentials are validated against the redb-backed user store — manage users via the Auth page
 - The dashboard communicates with worker nodes over HTTP — secure that channel with TLS
 
 ### Dependency Modules

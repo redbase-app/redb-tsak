@@ -10,7 +10,7 @@ The dashboard supports two deployment modes, controlled by a single configuratio
 | Mode | `Tsak:Web:Mode` | Database required | Description |
 |------|-----------------|-------------------|-------------|
 | **Standalone** | `"standalone"` (or omitted) | No | Connects to worker nodes directly via HTTP. Node list is defined in config. |
-| **Cluster** | `"cluster"` | Yes | Discovers nodes dynamically from the shared EAV database. Supports multi-node topology, leader election, and group management. |
+| **Cluster** | `"cluster"` | Yes | Discovers nodes dynamically from the shared redb store. Supports multi-node topology, leader election, and group management. |
 
 ## Quick Start
 
@@ -35,7 +35,7 @@ All settings live under the `Tsak:Web` section in `appsettings.json`.
 | `AdminPassword` | `string` | — | Password for dashboard access. Required in both modes. |
 
 In **standalone** mode, credentials are validated directly against these config values.  
-In **cluster** mode, credentials are validated against users stored in the EAV database (seeded from config on first startup).
+In **cluster** mode, credentials are validated against users stored in the redb store (seeded from config on first startup).
 
 > **Important — auth durability:** the admin sign-in state lives **in-memory per Blazor circuit**.
 > After a Web process restart (or a circuit reconnect that lost server state), all admins are
@@ -44,7 +44,7 @@ In **cluster** mode, credentials are validated against users stored in the EAV d
 
 ### Standalone Mode
 
-No database, no EAV — the dashboard talks to worker nodes over HTTP using `TsakApiClient`.
+No database, no redb store — the dashboard talks to worker nodes over HTTP using `TsakApiClient`.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -75,7 +75,7 @@ No database, no EAV — the dashboard talks to worker nodes over HTTP using `Tsa
 
 ### Cluster Mode
 
-Requires a shared database (Postgres or MSSQL). Node topology is discovered from the EAV store. Supports leader election, node groups, module assignments, and automatic dead-node detection.
+Requires a shared database (Postgres or MSSQL). Node topology is discovered from the redb store. Supports leader election, node groups, module assignments, and automatic dead-node detection.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -86,11 +86,11 @@ Requires a shared database (Postgres or MSSQL). Node topology is discovered from
 
 | Section | Description |
 |---------|-------------|
-| `ConnectionStrings:Postgres` or `ConnectionStrings:MSSql` | Database connection string for EAV access. |
+| `ConnectionStrings:Postgres` or `ConnectionStrings:MSSql` | Database connection string for the redb store. |
 | `Tsak:Redb:Provider` | Database provider: `"postgres"` or `"mssql"`. |
 | `Tsak:Redb:UsePro` | Must be `true` for cluster features. |
-| `Tsak:Redb:License` | redb.Core.Pro / Tsak.Cluster license key(s). Single JWT, `\|`-separated string, or JSON array. |
-| `Tsak:Redb:PropsSaveStrategy` | EAV save strategy (e.g. `"ChangeTracking"`). |
+| `Tsak:Redb:License` | **Leave empty on 3.x** — Pro and `tsak.cluster` need no key (free through major 3). Accepts a single JWT, a `\|`-separated string, or a JSON array if a future major requires one. |
+| `Tsak:Redb:PropsSaveStrategy` | Props save strategy (e.g. `"ChangeTracking"`). |
 
 **Example:**
 
@@ -170,7 +170,7 @@ Program.cs
   │
   └── AddTsakWebPro()  (always called, mode check inside)
         └── if Mode == "cluster":
-              ├── ConfigureRedb()           → EAV database access
+              ├── ConfigureRedb()           → redb store access
               ├── ClusterClientProvider     → INodeClientProvider  (overrides standalone)
               └── RedbAuthService           → IAuthService         (overrides standalone)
 ```
@@ -193,7 +193,7 @@ redb.Tsak.Web
   └── redb.Tsak.Web.Pro       (cluster-mode services, interfaces)
         ├── redb.Tsak.Client
         ├── redb.Tsak.Contracts
-        └── redb.Tsak.Core.Pro (EAV, licensing, node registry)
+        └── redb.Tsak.Core.Pro (redb store, licensing, node registry)
 ```
 
 ### UI Features

@@ -17,6 +17,12 @@
     <EmbeddedResource Include="Quartz\Scripts\tables_postgres.sql" LogicalName="QuartzSchema.Postgres" />
     <EmbeddedResource Include="Quartz\Scripts\tables_sqlServer.sql" LogicalName="QuartzSchema.SqlServer" />
     <EmbeddedResource Include="Quartz\Scripts\tables_sqlite.sql" LogicalName="QuartzSchema.Sqlite" />
+    <EmbeddedResource Include="Audit\Scripts\audit_postgres.sql" LogicalName="AuditSchema.Postgres" />
+    <EmbeddedResource Include="Audit\Scripts\audit_sqlServer.sql" LogicalName="AuditSchema.SqlServer" />
+    <EmbeddedResource Include="Audit\Scripts\audit_sqlite.sql" LogicalName="AuditSchema.Sqlite" />
+    <EmbeddedResource Include="Dlq\Scripts\dlq_postgres.sql" LogicalName="DlqSchema.Postgres" />
+    <EmbeddedResource Include="Dlq\Scripts\dlq_sqlServer.sql" LogicalName="DlqSchema.SqlServer" />
+    <EmbeddedResource Include="Dlq\Scripts\dlq_sqlite.sql" LogicalName="DlqSchema.Sqlite" />
   </ItemGroup>
 
   <ItemGroup>
@@ -36,19 +42,30 @@
     <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.15.1" />
   </ItemGroup>
 
+  <!--
+    redb.* framework/providers are compile-time references. Their runtime DLLs are pruned from the
+    Worker's final output (see redb.Tsak.Worker.csproj → PruneSharedFrameworkFromOutput) and served
+    instead from Libs/shared as swappable patch DLLs, byte-loaded by SharedRuntime early-preload.
+    MSBuild metadata (ExcludeAssets/PrivateAssets) can't do this cleanly here: ExcludeAssets=runtime
+    doesn't drop the direct P2P output, and PrivateAssets=all would hide compile assets from
+    consumers that legitimately use redb types (redb.Tsak.Tests, redb.Tsak.Core.Pro). So the removal
+    is an explicit post-build prune keyed by SharedRuntimeBootstrap.FrameworkAssemblies.
+    See docs/SHARED_RUNTIME_PLAN.md (stage B2). redb.Tsak.* stays in the bin.
+  -->
   <ItemGroup>
     <ProjectReference Include="..\redb.Tsak.Contracts\redb.Tsak.Contracts.csproj" />
-    <PackageReference Include="redb.Core" Version="3.3.3" />
-    <PackageReference Include="redb.Core.Pro" Version="3.3.3" />
-    <PackageReference Include="redb.Route.Core" Version="3.3.3" />
-    <PackageReference Include="redb.Route.Http" Version="3.3.3" />
-    <PackageReference Include="redb.Route.Quartz" Version="3.3.3" />
-    <PackageReference Include="redb.Postgres" Version="3.3.3" />
-    <PackageReference Include="redb.Postgres.Pro" Version="3.3.3" />
-    <PackageReference Include="redb.MSSql" Version="3.3.3" />
-    <PackageReference Include="redb.MSSql.Pro" Version="3.3.3" />
-    <PackageReference Include="redb.SQLite" Version="3.3.3" />
-    <PackageReference Include="redb.SQLite.Pro" Version="3.3.3" />
+    <PackageReference Include="redb.Core" Version="3.4.0" />
+    <PackageReference Include="redb.Core.Pro" Version="3.4.0" />
+    <PackageReference Include="redb.Route.Core" Version="3.4.0" />
+    <PackageReference Include="redb.Route.Http" Version="3.4.0" />
+    <PackageReference Include="redb.Route.Quartz" Version="3.4.0" />
+    <ProjectReference Include="..\..\..\redb.Route\src\redb.Route.Sql\redb.Route.Sql.csproj" />
+    <PackageReference Include="redb.Postgres" Version="3.4.0" />
+    <PackageReference Include="redb.Postgres.Pro" Version="3.4.0" />
+    <PackageReference Include="redb.MSSql" Version="3.4.0" />
+    <PackageReference Include="redb.MSSql.Pro" Version="3.4.0" />
+    <PackageReference Include="redb.SQLite" Version="3.4.0" />
+    <PackageReference Include="redb.SQLite.Pro" Version="3.4.0" />
   </ItemGroup>
 
 </Project>

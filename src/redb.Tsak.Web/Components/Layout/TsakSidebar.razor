@@ -67,6 +67,14 @@
                     <TsakIcon Name="terminal" Size="18" />
                     <span>Logs</span>
                 </NavLink>
+                <NavLink class="sidebar-link" href="@($"node/{_activeNodeId}/audit")">
+                    <TsakIcon Name="shield" Size="18" />
+                    <span>Audit</span>
+                </NavLink>
+                <NavLink class="sidebar-link" href="@($"node/{_activeNodeId}/dlq")">
+                    <TsakIcon Name="alert-triangle" Size="18" />
+                    <span>Dead-letter</span>
+                </NavLink>
             </div>
         }
 

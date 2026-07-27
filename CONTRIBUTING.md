@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing to **redb.Tsak** — the runtime container for redb.Route.
 
-> Before contributing, please read the [redb.Route CONTRIBUTING guide](../redb.Route/CONTRIBUTING.md).  
+> Before contributing, please read the redb.Route CONTRIBUTING guide.  
 > The conventions there (coding style, PR process, commit messages) apply here as well.
 
 ---
@@ -30,7 +30,7 @@ When filing an issue include:
 - **Deployment mode**: `InMemory` / `Redb:Postgres` / `Redb:MSSql` / Cluster
 - **.NET version**: `dotnet --version`
 - **Minimal reproduction**:
-  - Relevant `appsettings.json` excerpt (no credentials — see [DEPLOYMENT_SECRETS.md](DEPLOYMENT_SECRETS.md))
+  - Relevant `appsettings.json` excerpt (no credentials — see DEPLOYMENT_SECRETS.md)
   - The `tsak` CLI command or REST call that triggers the bug
   - The module code (stripped down) if module loading is involved
 - **Expected behavior**
@@ -143,7 +143,7 @@ A Tsak module is a plain .NET class library. To contribute module examples:
 2. Ship `manifest.json`, `context.json`, and `{Module}.config.json` alongside the DLL.
 3. Do not assume a specific DB or infrastructure — use `context.json` for defaults so operators can override via Layer 5.
 4. Document the module's routes, transports, and config keys in its own `README.md`.
-5. See [redb.Route.Demo](../redb.Route.Demo/README.md) as a reference implementation.
+5. See redb.Route.Demo as a reference implementation.
 
 ---
 

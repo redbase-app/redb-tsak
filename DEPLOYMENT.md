@@ -32,14 +32,15 @@ docker pull ghcr.io/redbase-app/redb-tsak-stack:3.2.2
 ## 2. Quick start
 
 ```bash
-# Stack (worker + dashboard) — boots as a Pro trial on embedded SQLite, one-node cluster.
+# Stack (worker + dashboard) — full Pro on embedded SQLite, one-node cluster, no key needed.
 docker run --rm -p 9090:9090 -p 8085:8085 ghcr.io/redbase-app/redb-tsak-stack:3.2.2
 # dashboard:  http://localhost:8085   (login admin / admin)
 # REST API:   http://localhost:9090/api/health/live
 ```
 
-The shipped `appsettings.json` boots with **SQLite + the bundled trial license + a one-node
-cluster** (see §6) — zero external dependencies. Override anything via env vars (§4).
+The shipped `appsettings.json` boots with **SQLite + Pro enabled + a one-node cluster** (see §6) —
+zero external dependencies and **no license key**: the whole 3.x line runs Pro free and unrestricted
+(§9). Override anything via env vars (§4).
 
 ---
 
@@ -49,7 +50,7 @@ cluster** (see §6) — zero external dependencies. Override anything via env va
 
 | Mode | Config | Use |
 |------|--------|-----|
-| **SQLite (default)** | `Storage:Type=Redb`, `Redb:Provider=sqlite`, `ConnectionStrings:Sqlite=Data Source=redb.db` | Single box, embedded, Pro trial + one-node cluster out of the box. |
+| **SQLite (default)** | `Storage:Type=Redb`, `Redb:Provider=sqlite`, `ConnectionStrings:Sqlite=Data Source=redb.db` | Single box, embedded, full Pro + one-node cluster out of the box. |
 | **Postgres / MSSql** | `Redb:Provider=postgres\|mssql` + `ConnectionStrings:Postgres\|MSSql` | Multi-node cluster, shared store. |
 | **InMemory** | `Storage:Type=InMemory`, `Redb:Provider=` (empty) | Stateless demo, no Pro/cluster, nothing persists. |
 
@@ -89,8 +90,8 @@ Tsak:Redb:License:0    ->  Tsak__Redb__License__0
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `Redb:Provider` | `sqlite` | redb provider: `sqlite` / `postgres` / `mssql`. |
-| `Redb:UsePro` | `true` | Turn on Pro components (still gated by the license). |
-| `Redb:License` | *(trial JWT)* | Array of license token(s). Replace with your own for prod (§9). |
+| `Redb:UsePro` | `true` | Turn on Pro components. Free and unrestricted on the whole 3.x line. |
+| `Redb:License` | *(empty)* | Array of license token(s). **Leave empty** — 3.x needs no key (§9). |
 | `Redb:PropsSaveStrategy` | `DeleteInsert` | Property write mode: `DeleteInsert` (Free) or `ChangeTracking` (Pro). |
 | `ConnectionStrings:Sqlite` | `Data Source=redb.db` | SQLite file (Provider=sqlite). Persist via a volume. |
 | `ConnectionStrings:Postgres` | — | Npgsql connection string (Provider=postgres). |
@@ -183,7 +184,7 @@ The dashboard (Web / Stack) is a **Blazor Server** app on port `8085`.
 | Dashboard login | `Tsak:Web:AdminLogin` / `Tsak:Web:AdminPassword` | `admin` / `admin` | **Yes** |
 | Management-API auth secret | `Tsak:Auth:Secret` | *(stripped — empty)* | set if `Auth:Enabled=true` |
 | Web→worker service key | `Tsak:Web:ServiceApiKey` | *(stripped)* | set when Web and Worker are separate |
-| Pro license | `Tsak:Redb:License:0` | bundled trial | replace with your own for prod |
+| Pro license | `Tsak:Redb:License:0` | *(empty — none needed)* | no: Pro is free on 3.x (§9) |
 
 ```bash
 docker run -p 8085:8085 \
@@ -250,12 +251,13 @@ problem. Access the dashboard at the path matching `ASPNETCORE_PATHBASE` (e.g. `
 
 The Tsak cluster is **redb-backed** (leader election + heartbeats live in the redb store; this
 is *not* Quartz clustering, which stays off on SQLite). The shipped config already runs it:
-`Tsak:Cluster:Enabled=true` + the bundled trial license (feature `tsak.cluster`, `max_nodes: 3`).
+`Tsak:Cluster:Enabled=true`, and clustering needs no license on 3.x — the `tsak.cluster` feature is
+part of the free window (§9), with no node cap.
 
 So **one worker = a working one-node cluster** (self-elected leader). To scale, run more nodes
 pointing at the **same redb store** (use Postgres/MSSql, §3) with the same
-`ClusterName`/`GroupName` and an empty `NodeId` (each self-assigns); they join automatically up
-to the license `max_nodes`. Run standalone with `Tsak__Cluster__Enabled=false`.
+`ClusterName`/`GroupName` and an empty `NodeId` (each self-assigns); they join automatically, as
+many as you need. Run standalone with `Tsak__Cluster__Enabled=false`.
 
 ---
 
@@ -337,14 +339,23 @@ docker compose up -d
 
 ---
 
-## 9. License activation
+## 9. Licensing — nothing to activate on 3.x
 
-```bash
-docker run -e Tsak__Redb__License__0="eyJhbGci...your-jwt..." ghcr.io/redbase-app/redb-tsak-worker:3.2.2
-```
+**There is no key to buy, request or install.** The entire 3.x line — every minor and patch —
+runs Pro **free and unrestricted**: `redb.*.Pro`, `redb.Tsak.Core.Pro`, the dashboard and
+clustering, in production, with no node cap and no request limit. The images ship with
+`Tsak:Redb:License` **empty**, and that is the correct state — leave it empty.
 
-The images ship a **time-limited trial** key so Pro/cluster work out of the box for evaluation.
-For production, request a key at <https://redbase.app/pro> and set `Tsak:Redb:License`.
+This is enforced in code, not by policy alone: `LicensePolicy.FreeThroughMajor = 3`, and both
+license guards return before any check when the running major is ≤ 3. Licensing re-enables at
+major **4.0** and later; releases you already run stay free forever.
+
+Pro packages are proprietary (closed source) but free of charge. **Larger companies that need the
+Pro sources — for audit, escrow, or to build in-house — can request them; we hand them over.**
+Write to <https://redbase.app/pro>.
+
+> If you inherited a config carrying an old trial JWT, delete it. It is not needed on 3.x, and
+> shipping a JWT in an image is exactly what the release pipeline blocks.
 
 ---
 
@@ -367,4 +378,4 @@ cosign verify --key cosign.pub ghcr.io/redbase-app/redb-tsak-worker:3.2.2
 | Dashboard login button does nothing | Blazor WebSocket not proxied | §5 — add `Upgrade`/`Connection` headers; use the `ASPNETCORE_PATHBASE` path |
 | `failed to ensure schema` / Npgsql connection refused | worker pointed at a Postgres that isn't reachable | check `ConnectionStrings`, or use SQLite (§3) |
 | Connectors missing after mounting a volume | bind-mounted `Libs/` and hid `Libs/shared` | §7 — mount `modules/`, never `Libs/` |
-| `REDB.PRO TRIAL MODE` / 1024 req/day | running on the bundled trial | replace with your own license (§9) |
+| `REDB.PRO TRIAL MODE` / 1024 req/day | you are **not** on a 3.x build — the free window covers major ≤ 3 only | check the assembly version; on 3.x this banner cannot appear (§9) |

@@ -235,6 +235,7 @@ public class RoutesController : RedbController
     // ═════════════════════════════════════════════════════════════════
 
     [HttpPost("/{name}/routes/{routeId}/force-stop")]
+    [RequiresRole(TsakRoles.Admin)] // abandons in-flight work — not an everyday operation
     [AuditAdminAction(ActionName = "ForceStopRoute", TargetParam = "routeId")]
     public async Task<object?> ForceStopRoute(
         [FromRoute("name")] string name,

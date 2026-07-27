@@ -1,4 +1,5 @@
 using System.Reflection;
+using Microsoft.Extensions.Configuration;
 using redb.Route.Controllers;
 using redb.Route.Controllers.Attributes;
 using redb.Tsak.Core.Contracts;
@@ -147,6 +148,91 @@ public class SystemController : RedbController
             MachineName = Environment.MachineName,
             ProcessorCount = Environment.ProcessorCount,
             WorkingSetMb = Environment.WorkingSet / (1024.0 * 1024)
+        };
+    }
+
+    /// <summary>
+    /// Effective (merged, resolved) configuration for this node — the <c>Tsak:*</c> and
+    /// <c>ConnectionStrings:*</c> settings the process is actually running with, flattened and with
+    /// secrets redacted. Answers "what config is this node on" without SSH-ing in. Admin-only: it
+    /// reveals topology (providers, connection hosts, feature flags).
+    /// </summary>
+    [HttpGet("/config")]
+    [RequiresRole(TsakRoles.Admin)]
+    public object GetConfig()
+    {
+        var config = Context.GetService<IConfiguration>();
+        if (config is null)
+            return new Dto.EffectiveConfigResult { Available = false };
+
+        var values = new SortedDictionary<string, string?>(StringComparer.Ordinal);
+        var redacted = 0;
+
+        foreach (var section in new[] { "Tsak", "ConnectionStrings" })
+        {
+            foreach (var kv in config.GetSection(section).AsEnumerable(makePathsRelative: false))
+            {
+                if (kv.Value is null) continue; // structural node, not a leaf value
+                var (value, wasRedacted) = ConfigRedactor.Redact(kv.Key, kv.Value);
+                values[kv.Key] = value;
+                if (wasRedacted) redacted++;
+            }
+        }
+
+        return new Dto.EffectiveConfigResult { Available = true, RedactedCount = redacted, Values = values };
+    }
+
+    /// <summary>
+    /// The assemblies actually loaded in the process — name, version, and where each came from
+    /// (shared layer / app bin / .NET runtime). Since the redb.* framework is byte-loaded from
+    /// Libs/shared its <c>Location</c> is empty, so shared origin is inferred from the shared-layer
+    /// tracker. Answers "which redb is REALLY running" on an incident without SSH-ing in — the
+    /// diagnostic counterpart to the swappable shared layer. Admin-only.
+    /// </summary>
+    [HttpGet("/assemblies")]
+    [RequiresRole(TsakRoles.Admin)]
+    public object GetAssemblies()
+    {
+        var baseDir = AppContext.BaseDirectory;
+        var items = AppDomain.CurrentDomain.GetAssemblies()
+            .Where(a => !a.IsDynamic)
+            .Select(a =>
+            {
+                var name = a.GetName();
+                string location = "";
+                try { location = a.Location; } catch { /* byte-loaded → not supported */ }
+
+                string source;
+                if (Modules.SharedRuntime.IsLoaded(name.Name ?? "") && string.IsNullOrEmpty(location))
+                    source = "shared";                 // byte-loaded from Libs/shared (no Location)
+                else if (string.IsNullOrEmpty(location))
+                    source = "in-memory";
+                else if (location.StartsWith(baseDir, StringComparison.OrdinalIgnoreCase))
+                    source = location.Contains($"{Path.DirectorySeparatorChar}shared{Path.DirectorySeparatorChar}",
+                                 StringComparison.OrdinalIgnoreCase) ? "shared" : "bin";
+                else
+                    source = "runtime";
+
+                return new
+                {
+                    Name = name.Name,
+                    Version = name.Version?.ToString(),
+                    Source = source,
+                    Location = location
+                };
+            })
+            .Where(x => x.Name is not null)
+            .OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var redb = items.Where(x => x.Name!.StartsWith("redb.", StringComparison.OrdinalIgnoreCase))
+                        .ToArray();
+        return new
+        {
+            Count = items.Length,
+            RedbCount = redb.Length,
+            Redb = redb,          // the interesting ones first, at a glance
+            All = items
         };
     }
 }

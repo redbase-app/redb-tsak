@@ -1,21 +1,20 @@
-using redb.Tsak.Contracts;
-
-namespace redb.Tsak.Core.Contracts;
+namespace redb.Tsak.Contracts;
 
 /// <summary>
-/// Per-module health probe SPI. Modules can register an implementation via DI to expose
-/// their own health status into the aggregated <see cref="Monitoring.HealthCheckService"/>
-/// result without coupling to the broader <see cref="IHealthContributor"/> interface
-/// (which has access to the entire <see cref="Monitoring.HealthEvaluation"/> bag).
+/// Per-module health probe SPI. Modules register an implementation via DI to surface their own
+/// status into the aggregated <c>/api/health/{startup,live,ready}</c> endpoints, without coupling
+/// to the host-internal <c>IHealthContributor</c> (which sees the whole evaluation bag).
 /// <para>
-/// This interface is intentionally separate from <see cref="ITsakModule"/> so that adding a
-/// health probe to an existing module is non-breaking — module authors implement this only
-/// when they want to surface module-specific signals.
+/// Lives in <c>redb.Tsak.Contracts</c> — the lightweight contract assembly — precisely so a
+/// module (e.g. redb.Identity) can implement it without taking a compile-time dependency on the
+/// full <c>redb.Tsak.Core</c> host and its transitive graph. <see cref="HealthStatus"/> is the
+/// only type it touches, and it lives here too.
 /// </para>
 /// <para>
 /// Each contributor's status is added to the evaluation under the key <c>"module:{ModuleName}"</c>.
 /// Exceptions thrown from <see cref="CheckHealthAsync"/> are translated to
-/// <see cref="HealthStatus.Unhealthy"/> so a misbehaving probe cannot crash the health endpoint.
+/// <see cref="HealthStatus.Unhealthy"/> by the host so a misbehaving probe cannot crash the
+/// health endpoint.
 /// </para>
 /// </summary>
 public interface IModuleHealthContributor

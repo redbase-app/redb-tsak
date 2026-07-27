@@ -52,7 +52,7 @@ public sealed record ApiKeyCreatedResponse
 | `ClusterRebalanceResponse` | New epoch after rebalance |
 | `ClusterNodeRemovedResponse` | Confirmation of node removal |
 | `NodeStatus` | Enum: `Unknown`, `Active`, `Offline`, `Dead` |
-| `ClusterTopology` | EAV-backed topology map (context → node assignments) |
+| `ClusterTopology` | redb-backed topology map (context → node assignments) |
 
 ### Contexts (`ContextModels.cs`)
 

@@ -70,23 +70,39 @@ else
                     <td>@context.Hostname</td>
                     <td>
                         <TsakBadge Text="@context.Status.ToString()" Variant="@GetBadgeClass(context)" />
+                        @if (context.Cordoned)
+                        {
+                            <TsakBadge Text="cordoned" Variant="warning" ShowDot="false" />
+                        }
                     </td>
                     <td class="mono text-sm">@(string.IsNullOrEmpty(context.ApiEndpoint) ? "—" : context.ApiEndpoint)</td>
                     <td class="text-sm">@context.StartedAt.ToString("yyyy-MM-dd HH:mm")</td>
                     <td class="text-sm">@FormatAgo(context.LastHeartbeat)</td>
                     <td class="text-sm text-secondary">@(string.IsNullOrEmpty(context.Capabilities) ? "—" : context.Capabilities)</td>
                     <td>
-                        @if (context.Status is NodeStatus.Dead or NodeStatus.Offline)
-                        {
-                            <AuthorizedView AdminOnly="true">
-                                <button class="btn btn-sm btn-danger"
-                                        title="Remove node"
+                        <AuthorizedView AdminOnly="true">
+                            @if (context.Status == NodeStatus.Online)
+                            {
+                                @if (context.Cordoned)
+                                {
+                                    <button class="btn btn-sm btn-secondary" title="Uncordon node"
+                                            @onclick="(() => SetCordon(context.NodeId, false))"
+                                            @onclick:stopPropagation="true">Uncordon</button>
+                                }
+                                else
+                                {
+                                    <button class="btn btn-sm btn-secondary" title="Cordon node (drain, no new work)"
+                                            @onclick="(() => SetCordon(context.NodeId, true))"
+                                            @onclick:stopPropagation="true">Cordon</button>
+                                }
+                            }
+                            else if (context.Status is NodeStatus.Dead or NodeStatus.Offline)
+                            {
+                                <button class="btn btn-sm btn-danger" title="Remove node"
                                         @onclick="(() => RemoveNode(context.NodeId))"
-                                        @onclick:stopPropagation="true">
-                                    ✕
-                                </button>
-                            </AuthorizedView>
-                        }
+                                        @onclick:stopPropagation="true">✕</button>
+                            }
+                        </AuthorizedView>
                     </td>
                 </RowContent>
             </TsakGrid>
@@ -175,6 +191,29 @@ else
         if (diff.TotalMinutes < 60) return $"{(int)diff.TotalMinutes}m ago";
         if (diff.TotalHours < 24) return $"{(int)diff.TotalHours}h ago";
         return $"{(int)diff.TotalDays}d ago";
+    }
+
+    private async Task SetCordon(string nodeId, bool cordon)
+    {
+        try
+        {
+            var ok = await NodeProvider.SetCordonedAsync(nodeId, cordon);
+            if (ok)
+            {
+                Toast.Success(cordon
+                    ? $"Node '{nodeId}' cordoned — draining, takes no new work"
+                    : $"Node '{nodeId}' uncordoned");
+                _topology = await NodeProvider.LoadTopologyAsync(forceRefresh: true);
+            }
+            else
+            {
+                Toast.Error($"Node '{nodeId}' not found");
+            }
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Failed: {ex.Message}");
+        }
     }
 
     private async Task RemoveNode(string nodeId)

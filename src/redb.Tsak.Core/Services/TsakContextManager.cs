@@ -63,6 +63,12 @@ public class TsakContextManager : ITsakContextManager
         var loggerFactory = serviceProvider.GetService<ILoggerFactory>();
         var context = new RouteContext(serviceProvider, contextName, loggerFactory);
 
+        // Install the DLQ error handler (Tier-3): a failed exchange carrying a replay checkpoint is
+        // dead-lettered. Resolved from the context's provider (not ctor-injected) to avoid a
+        // TsakContextManager ↔ DlqService circular dependency. No-op for routes without a checkpoint.
+        if (serviceProvider.GetService<Dlq.DlqService>() is { } dlq)
+            context.ErrorHandler = new Dlq.CheckpointDlqHandler(contextName, dlq);
+
         // Register shared components (connectors, shared models) from Libs/shared/
         if (_sharedLoader is { LoadedAssemblies.Count: > 0 })
             context.AddComponents(_sharedLoader.LoadedAssemblies.ToArray());

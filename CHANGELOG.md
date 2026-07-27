@@ -27,6 +27,375 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [3.4.0] — 2026-07-27
+
+Minor bump aligning redb.Tsak with the 3.4.0 ecosystem (redb.Core / redb.Route / redb.Identity).
+Headline: the **shared runtime layer** — redb.* now lives in `Libs/shared` and is swappable without
+rebuilding Tsak. Also: retention sweeps became first-class `cron://` routes.
+
+### Runtime — redb.* framework served from the shared layer (swappable patch DLLs)
+
+**How Tsak lives now:** the redb.* framework and providers (`redb.Core(.Pro)`,
+`redb.Route.Core/Http/Quartz/Sql`, `redb.Postgres/MSSql/SQLite (.Pro)`) no longer ship in the
+application bin — they live in **`Libs/shared/`** alongside the Route connectors and are loaded from
+there at startup. Only `redb.Tsak.*` (+ `redb.Licensing`) stay in the bin. **The payoff:** a
+binary-compatible patch of any redb leaf/provider/connector — or a new beta connector — ships by
+**swapping its DLL in `Libs/shared/`**, with **no rebuild and no re-spin of the Tsak/Identity
+archives**. A framework patch (`3.3.4 → 3.3.5`) is now a file drop, not a release of everything.
+
+- **Early bootstrap.** `SharedRuntime.InstallEarly` runs as the very first statement of the process
+  (`Program.cs`), before any redb type is touched: it installs the shared-layer resolver and
+  **byte-loads** the framework from `Libs/shared` (file never locked → swappable). Reuses the
+  existing `SharedAssemblyLoader` primitives — `LoadedAssemblyTracker` unification (so `.tpkg`
+  modules still see one identity of each redb type), per-assembly native resolver
+  (`runtimes/<rid>/native`, e.g. librdkafka / e_sqlite3), and version-tolerant forwarding.
+- **Out of the bin.** Every redb.\* runtime DLL — the framework/providers **and** the redb.Route.\*
+  that leak in transitively (connectors, `redb.Route.Controllers`, the `redb.Route` umbrella) — is
+  pruned from the Worker output root at build/publish (`redb.Tsak.Worker.csproj`, glob-based); only
+  `redb.Tsak.*` and `redb.Licensing` stay. The framework is byte-loaded early; the rest is served
+  on demand by the shared resolver. `Libs/shared/` copies are untouched. Third-party transitive deps
+  (Npgsql, MailKit) intentionally stay in the bin (stable, resolve from app-base).
+- **Fail-fast.** A missing or corrupt framework DLL in `Libs/shared/` aborts startup **immediately**
+  with a precise message (which assembly, where), instead of a `MissingMethodException` a day later
+  under load. Scoped to the framework set; the lazy transitive tail stays soft.
+- **Compat-gate.** On startup the shared redb.* **minor** is checked against this Tsak build's minor
+  (expected minor derived from `redb.Tsak.Core`'s own version). Patch differences are allowed — that
+  is the whole point — but a minor mismatch, or a mix of minors inside `Libs/shared/`, aborts start.
+- **`GET /api/system/assemblies`** (admin) — what redb is *really* loaded: name, version, and origin
+  (shared / bin / runtime). The diagnostic counterpart to a swappable layer ("which redb is running").
+- **Tooling.** One data manifest (`scripts/shared-manifest.psd1`) + one parameterized
+  `scripts/build-shared.ps1` (dev **and** publish via `-OutRoot`, `-IncludeFramework`) replace the
+  hand-duplicated connector list in the removed `publish/scripts/build-shared-multitfm.ps1`. New
+  **`scripts/refresh-shared.ps1`** rebuilds one library and drops its DLL into a target
+  `Libs/shared/` (dev or an archive's `worker/Libs/shared/`) — the "patch without rebuilding Tsak" flow.
+
+**Ops / build note.** Dev and publish now build the framework into the shared layer:
+`scripts/build-shared.ps1 -IncludeFramework` (publish does this automatically via `publish/build.ps1`).
+Running the Worker without it triggers the fail-fast (the message says exactly what to run).
+
+**Verified.** Framework 0 in bin root / 12 in `Libs/shared`; clean start loads all 12 from shared and
+boots (sqlite Pro, cluster, scheduler); Kafka (+librdkafka), Mail (MailKit), SQLite (e_sqlite3) all
+served from shared and exercised end-to-end; `.tpkg` modules unify; fail-fast negative case aborts
+with a clear error; compat-gate passes; full Tsak suite green.
+
+### Cluster — node cordon / uncordon (Pro)
+
+Planned maintenance without an abrupt failover: **cordon** a node and it keeps its current work but
+takes on no new work and **drains** its route locks to peers; **uncordon** to resume. Previously the
+only options were `rebalance` (redistribute everything) or `remove-node` (hard eviction) — no graceful
+middle state for a rolling upgrade.
+
+- `POST /api/cluster/nodes/{id}/cordon` / `/uncordon` (admin, audited); `GET /api/cluster/nodes` now
+  reports `cordoned`.
+- `TsakNodeProps.Cordoned` (durable, orthogonal to `Status` — a cordoned node stays Online) +
+  `INodeRegistry.SetCordonedAsync`. A process-local `NodeCordonState` mirror, refreshed from the
+  node's own record on each heartbeat, lets the per-route watch loops read the flag cheaply.
+- `ClusteredRoutePolicy`: when the node is cordoned, the watch loop stops acquiring route locks and
+  releases the ones it holds (drain → peers acquire the freed locks). Existing work keeps running
+  until it drains.
+- Client `CordonNodeAsync` / `UncordonNodeAsync`, CLI `tsak cluster cordon|uncordon` (+ a Cordoned
+  column), and the dashboard **Cluster** page (cordoned badge + per-node Cordon/Uncordon buttons).
+
+**Tests.** Controller cordon/uncordon (set/clear, unknown node → 404, disabled → 400).
+
+### Ops — quick wins: effective config, manual job fire, stricter readiness
+
+- **`GET /api/system/config`** (admin) — the effective (merged, resolved) configuration this node is
+  actually running with: a flat `Tsak:*` / `ConnectionStrings:*` key→value map with **secrets
+  redacted** (`ConfigRedactor`: sensitive key names → `***`, connection-string passwords masked).
+  Answers "what settings is this node on" without SSH. Client `GetConfigAsync`, CLI `tsak system config`.
+- **`POST /api/scheduler/fire-job?key=`** (operator, audited) — fire a scheduled job immediately
+  (Quartz `TriggerJob`), the "run it now" button. Client `FireJobAsync`, CLI `tsak scheduler fire`.
+- **`Tsak:Health:DegradedNotReady`** (default `false`) — when `true`, the readiness probe returns
+  `503` on `Degraded` too, not only `Unhealthy` (stricter readiness for deployments that want it).
+
+**Tests.** HTTP end-to-end (real Kestrel) for the DLQ (`ApiDlqIntegrationTests` — list/replay/discard
+against a real SQLite DB and a live checkpoint route, plus `available:false` with no DB) and for the
+config endpoint (`ApiSystemConfigIntegrationTests` — effective values + secret redaction + auth gate);
+controller-level fire-job and Degraded-readiness cases. `TsakTestHarness.CreateWithDlq()` spins up a
+real DLQ + checkpoint context for the HTTP tests.
+
+### Feature — dead-letter queue with replay
+
+An exchange that fails at a redb.Route replay checkpoint (`.Replayable("…")`) is now captured,
+browsable, and replayable — the operator "show me what failed overnight and re-run it after the
+fix" workflow. Builds on the redb.Route replay-checkpoint primitive (`route.checkpoint` +
+`IRouteContext.ReplayAsync`); replay tails get fresh, cleaned-up connections (Route closed the
+DI-scope-on-replay gap).
+
+**Added**
+
+- **`CheckpointDlqHandler`** — a Tier-3 `IErrorHandler` installed on every module context. On
+  failure it reads `route.checkpoint` off the exchange and dead-letters it. **Opt-in by
+  construction**: only routes carrying a `.Replayable()` marker leave a checkpoint, so only those
+  are captured — the DLQ never fights a broker/transaction that already owns redelivery.
+- **`tsak_dlq`** — a flat table (PG/MSSQL/SQLite), created on startup like the audit table. Stores
+  the serialized snapshot (body + headers + scalar properties), route, marker, exception, status.
+- **`ExchangeSnapshotCodec`** — serializes/rehydrates the snapshot for durable storage. `byte[]`
+  and `string` round-trip exactly; other bodies via System.Text.Json (exact CLR type restored when
+  its assembly is loadable). A non-serializable body is stored visible but marked **not replayable**
+  — it never breaks capture.
+- **`ExchangesController`** — `GET /api/exchanges/failed` (filtered, paged, `operator`),
+  `POST /api/exchanges/{id}/replay` (`operator`, audited), `DELETE /api/exchanges/{id}` (`admin`,
+  audited). Replay rehydrates the snapshot and calls `ReplayAsync`; the route tail resolves fresh
+  redb/SQL connections lazily.
+- DLQ retention as a first-class `cron://tsak-dlq-retention` route on the `_system` context
+  (`Tsak:Dlq:RetentionDays`, default 30) — visible in the Routes API/dashboard and the scheduler page.
+- Client (`GetFailedExchangesAsync` / `ReplayExchangeAsync` / `DiscardExchangeAsync`), CLI
+  (`tsak dlq list|replay|discard`), and a **Dead-letter** dashboard page (server-side filters/paging,
+  per-row Replay/Discard).
+
+**Semantics.** Replay is **at-least-once + manual** — the tail may run more than once, so replayed
+side-effects must be idempotent. Not Temporal-style durable execution.
+
+**New configuration:** `Tsak:Dlq:Enabled` (default `true`), `Tsak:Dlq:RetentionDays` (default `30`).
+
+**Tests.** `DlqTests` — codec round-trips (byte[]/string/POCO/null/non-serializable) and an
+end-to-end capture → query → replay → discard over a real SQLite database driving a real route
+context's checkpoint tail (prefix not repeated).
+
+### Reliability — staged `.tpkg` validation before hot-swap
+
+A package update tore the running version down *before* loading the new one: `ReloadPackageAsync`
+unregistered the old modules and disposed the old ALC, then opened the new `.tpkg` — so a broken
+package left the context with no modules. (Bare-DLL hot-swap already auto-rolled-back; the package
+path did not.)
+
+**Added**
+
+- **Staged validation** in `HotReloadService.ReloadPackageAsync`: the new `.tpkg` is first opened in
+  a throwaway collectible ALC (`forceReload:false`, so the shared assembly tracker is not mutated and
+  running modules are untouched) and checked that it loads and discovers at least one module. Only
+  then is the old version torn down. A package that fails to open or has no modules is refused with a
+  logged reason and the **current version keeps running**.
+- `POST /api/modules/validate` (admin) — dry-run: the same structural + signature checks as upload,
+  installing nothing. For CI to verify a package before deploying. Client `ValidateModuleAsync`, CLI
+  `tsak module validate`.
+
+**Tests.** `ModuleDeploymentTests` extended with dry-run validation cases (valid signed, bad ZIP,
+invalid signature).
+
+### Config — redb cache options exposed via `Tsak:Redb:Cache`
+
+Tsak previously passed only `PropsSaveStrategy` and `EnsureCreated` through to redb, so the redb
+cache tuning knobs could not be set from a Tsak node's configuration — they ran on redb's defaults.
+
+**Added** the optional `Tsak:Redb:Cache` section, mapped onto the redb configuration in
+`ConfigureRedb` for both the Pro and Free tiers. Every key is optional and defaults to redb's own
+default, so an absent section changes nothing:
+
+- Props cache: `EnableProps` (false), `PropsMaxSize` (10000), `PropsTtlMinutes` (60).
+- `SkipHashValidationOnCacheCheck` (false) — trust the cache without re-checking the object hash in
+  the database. Faster, but single-writer only.
+- List cache: `EnableList` (true), `ListTtlMinutes` (5).
+- Metadata cache: `EnableMetadata` (true), `MetadataTtlMinutes` (30).
+- `AutoRecomputeHash` (true), `CacheDomain` (derived from the connection string when empty).
+
+**Safety.** Enabling `SkipHashValidationOnCacheCheck` together with `Tsak:Cluster:Enabled=true`
+logs a startup warning — skipping cache hash validation can serve stale data across cluster nodes
+writing to the same database. (Lazy props loading is intentionally not exposed; it stays off.)
+
+The Worker's default `appsettings.json` now lists the whole section with its default values, so the
+available knobs are visible and editable in place.
+
+### Feature — module upload & rollback via API (signed)
+
+Deploying a module previously meant filesystem access to the module directory. Modules can now be
+uploaded and rolled back over the API — but since a module is **code Tsak loads in-process**, the
+whole feature is built around a signature trust anchor and safe-by-default switches. Full trust
+model and signing walkthrough: **[MODULE_DEPLOYMENT.md](MODULE_DEPLOYMENT.md)**.
+
+**Added**
+
+- `POST /api/modules/upload` (admin, audited) — accepts a `.tpkg` body with a detached signature in
+  the `X-Tsak-Signature` header. **Disabled by default** (`Tsak:Modules:Upload:Enabled=false`) — a
+  node that doesn't need remote deploy exposes no upload surface at all.
+- `POST /api/modules/{name}/rollback` (admin, audited) — restores the previous on-disk version
+  (`KeepVersions` packages kept as `{name}.tpkg.v{n}`).
+- `ModuleSignatureVerifier` — RSA/ECDSA detached-signature verification, BCL-only (no cosign
+  dependency).
+- **Load-boundary enforcement** in `HotReloadService`: with `Tsak:Modules:Signature:Required=true`
+  and a configured public key, **every** `.tpkg` — uploaded *or* dropped into the directory by an
+  operator — must carry a valid `.tpkg.sig` or it is refused before any of its code loads. The
+  public key, not filesystem access, becomes the trust anchor. Stricter than the WSO2 MI default.
+- CLI: `tsak module keygen` (generate an ECDSA key pair), `tsak module sign` (sign a `.tpkg` →
+  `.tpkg.sig`), `tsak module deploy` (upload), `tsak module rollback`. Client:
+  `UploadModuleAsync` / `RollbackModuleAsync`.
+
+**Upload-time guards** (in `ModuleUploadService`): size ceiling, valid-ZIP + manifest check, the
+stored name is taken from the manifest and sanitized (no `/`, `\`, `..` — path-traversal / zip-slip
+safe), fail-fast signature verification, atomic install (temp → move), previous version archived.
+
+**New configuration:** `Tsak:Modules:Upload` (`Enabled`, `MaxSizeMB`, `TargetPath`, `KeepVersions`,
+`RequireSignatureForUpload`) and `Tsak:Modules:Signature` (`Required`, `PublicKeyPath` /
+`PublicKeyPem`).
+
+**Tests.** `ModuleDeploymentTests` — signature round-trip / tamper / wrong-key / RSA, and every
+upload guard (disabled, oversize, bad ZIP, missing manifest, unsafe name, signature required /
+missing / invalid / valid) plus rollback.
+
+### Feature — watchdog alert delivery
+
+The watchdog detected hung / suspected exchanges but no one was notified — alerts only
+accumulated behind `GET /api/watchdog/alerts`, a poll nobody runs at 3 a.m. Alerts are now
+pushed to configurable channels.
+
+**Added**
+
+- `AlertDispatcher` — fans new alerts out to every enabled channel. **Fire-and-forget** (bounded
+  queue + background pump, like the audit sink): the watchdog scan never blocks on a slow SMTP
+  server, and a broken alert backend can never take the node down. **Dedup** by
+  `context+route+exchange+level` within `DedupWindowMinutes` — the scan rebuilds its snapshot
+  every cycle, so without this a hung exchange would re-page every tick.
+- Channels, **all off by default**, each with its own config and connection params:
+  - **webhook** — POSTs alert JSON to a URL (Slack / Teams / PagerDuty / any collector). Native HTTP.
+  - **telegram** — Bot API (`sendMessage`). Native HTTPS — no connector.
+  - **email** — SMTP via the BCL `SmtpClient`. No extra package.
+  - **endpoint** — generic: sends to any redb.Route producer URI (`kafka:`, `rabbitmq:`, `amqp:`,
+    `sqs:`, `mqtt:` …) via a `ProducerTemplate`. One channel covers every broker with zero
+    per-connector code; the component is supplied by the host, so **no broker ever becomes a
+    compile-time dependency of Core**.
+- `POST /api/watchdog/test-alert` (role `operator`) — sends a synthetic alert through every
+  enabled channel and returns the per-channel outcome, so an operator can verify configuration
+  without waiting for a real hung exchange. Bypasses the dedup window.
+- `GET /api/watchdog/alerts/status` — whether delivery is active and which channels are enabled.
+- Dashboard: an **Alert Delivery** panel on the Watchdog page — status, enabled channels, and a
+  "Send test alert" button with per-channel results. Client: `GetAlertStatusAsync` / `TestAlertAsync`.
+
+**New configuration:** the `Tsak:Watchdog:Alerts` section (`Enabled`, `MinLevel`,
+`DedupWindowMinutes`, and `Webhook` / `Telegram` / `Email` / `Endpoint` sub-sections).
+
+**Tests.** `AlertDeliveryTests` — level filter, dedup window, channel isolation, `TestAsync`
+outcomes, and an end-to-end webhook delivery against a real in-process `HttpListener`.
+
+### Architecture — `IModuleHealthContributor` moved to `redb.Tsak.Contracts`
+
+The per-module health SPI lived in `redb.Tsak.Core`, so any module implementing it (e.g.
+redb.Identity) had to compile against the entire Tsak host and its transitive graph — and
+adding the SQL-audit `Route.Sql` reference to `redb.Tsak.Core` would have leaked into every
+such module. The interface depends only on `HealthStatus`, which already lives in
+`redb.Tsak.Contracts`, so it now lives there too.
+
+- `IModuleHealthContributor` moved from `redb.Tsak.Core` (namespace `redb.Tsak.Core.Contracts`)
+  to `redb.Tsak.Contracts` (namespace `redb.Tsak.Contracts`).
+- **Breaking for implementers**: change `using redb.Tsak.Core.Contracts;` to
+  `using redb.Tsak.Contracts;`. A module implementing this interface can now reference only the
+  lightweight `redb.Tsak.Contracts` assembly and drop its `redb.Tsak.Core` reference entirely.
+- `IHealthContributor` stays in `redb.Tsak.Core`: it exposes the mutable `HealthEvaluation`
+  bag, a host-internal type.
+
+### Security — persistent admin audit trail
+
+Admin actions were audited only to the log (`LogAdminAuditService`), and the lifecycle audit
+lived in a 1000-entry in-memory ring — after a restart there was no record of who did what.
+The audit is now persisted to a flat, queryable table.
+
+**Added**
+
+- `tsak_audit_log` — a flat table (not a redb object: append-only, grows, fixed schema),
+  created on startup by `AuditSchemaInitializer` for the configured provider. Mirrors the
+  existing `QuartzSchemaInitializer`: switch over `Tsak:Redb:Provider`, one embedded idempotent
+  DDL script per dialect (Postgres / SQL Server / SQLite), raw ADO.NET.
+- `RouteAdminAuditService` — the effective `IAdminAuditService`. Writes each event
+  **fire-and-forget** through the `direct://tsak-audit` route (`Sql.Execute` INSERT), so an API
+  call never waits for the database and a broken audit backend can never take the node down.
+  A bounded queue drains on a background pump; on backend failure the event falls back to the
+  log sink, and under sustained flood the oldest queued events are dropped with a warning.
+- `GET /api/audit` (`AuditController`, role `admin`) — filtered, paged, newest-first, with
+  server-side filtering only (no in-memory scans).
+- Audit retention as a first-class `cron://tsak-audit-retention` route on the `_system` context —
+  prunes entries older than `Tsak:Audit:RetentionDays` (default 90; `0` keeps forever). Visible in
+  the Routes API/dashboard and the scheduler page.
+- The sink is an endpoint on purpose: the same event stream can be pointed at a file, broker
+  or HTTP collector by configuration — the pattern the watchdog-alert work will reuse.
+
+**No database configured (standalone / in-memory):** audit stays on `LogAdminAuditService`,
+now emitting a `[tsak-audit]`-anchored JSON line (anchor first, one JSON object after it) so a
+standalone deployment can grep and parse it with no log-format handling.
+
+**Storage details:** `payload` is `jsonb` (Postgres) / `nvarchar(max)` (SQL Server) / `TEXT`
+(SQLite); timestamps are `TEXT` ISO-8601 in SQLite (readable, lexically sortable — Tsak's own
+table, not part of the redb REAL-Julian convention). Indexed by time, actor and action.
+
+**New configuration:** `Tsak:Audit:Enabled` (default `true`), `Tsak:Audit:RetentionDays`
+(default `90`).
+
+**Consumers.** `ITsakApiClient.GetAuditAsync` (server-side filters + limit/offset paging), the
+`tsak audit` CLI command (`--actor/--action/--target/--since/--until/--limit/--offset`), and a
+new **Audit** dashboard page — filters and paging are all server-side, so the (potentially
+large) table is never pulled into the browser.
+
+**Tests.** `AuditStorageTests` (dialect SQL + event→header mapping) and `AuditPersistenceTests`
+(end-to-end write→read→filter→prune over a real SQLite database).
+
+### Security — role enforcement on the management API
+
+API keys have carried roles since 1.0.0, and `AuthorizeProcessor` has always been able to
+check them — but no endpoint ever declared a requirement, so the check was never armed. With
+`Tsak:Auth:Enabled=true` any valid key could call any endpoint: a key issued for read-only
+dashboard access could force-stop a production route, remove a module, or mint itself a new
+key. `viewer` was functionally equivalent to `admin`.
+
+**Added**
+
+- `RequiresRoleAttribute` — declares the role(s) an action (or a whole controller) needs.
+  Multiple roles are OR-ed; a method-level attribute overrides the controller-level one.
+- `NoRoleRequiredAttribute` — marks technical endpoints that must never answer `403`.
+- `TsakRoles` — the `viewer` &lt; `operator` &lt; `admin` ladder, with `reader`/`ops` synonyms.
+  Custom roles are matched by exact name only.
+- `RoleAuthorizationProcessor` — enforcement, wired into the `_system` pipeline immediately
+  after a successful auth check. Resolves the target action through the same
+  `ControllerRegistry` the dispatcher uses, so both agree on what the request would hit.
+
+**Endpoints now requiring `admin`:** `/api/auth/*` (all, including reads), `/api/users/*`,
+`DELETE /api/contexts/{name}`, `DELETE /api/modules/{name}`, route `force-stop`,
+`POST /api/cluster/rebalance`, `DELETE /api/cluster/nodes/{id}`.
+**Requiring `operator`:** `/api/diagnostics/*` and `/api/logs/*` (both expose internals), plus
+every mutating endpoint by default. **Requiring `viewer`:** every other `GET`.
+
+**Technical endpoints are never gated.** The check runs only for authenticated exchanges, so
+auth-exempt Kubernetes probes pass through untouched; `HealthProbeController` is additionally
+marked `[NoRoleRequired]` so it cannot start answering `403` if an operator narrows
+`Tsak:Api:AuthExempt`. The echo and Prometheus routes have their own pipelines and never
+reach the check.
+
+**Compatibility.** Nothing changes when auth is disabled. Keys that carry no roles keep full
+access and log a one-time warning — set `Tsak:Auth:RolelessKeysAreAdmin=false` to deny them
+once every key has been re-issued with explicit roles. Enforcement as a whole can be switched
+off with `Tsak:Auth:EnforceRoles=false`.
+
+**New configuration:** `Tsak:Auth:EnforceRoles` (default `true`),
+`Tsak:Auth:RolelessKeysAreAdmin` (default `true`).
+
+**Tests.** `RoleAuthorizationTests` (32) covers the processor and the role ladder;
+`ApiRoleIntegrationTests` (27) drives the real Kestrel pipeline with `viewer`, `operator` and
+roleless keys, including proof that probes answer without a key and never return `403`.
+`TsakTestHarness.CreateWithAuth` now takes the key's roles and extra configuration.
+
+### Fixed — two stale tests
+
+- `SchedulerControllerTests.ConfigureQuartz_WithoutSection_SkipsRegistration` asserted that no
+  scheduler is registered without a `Quartz` config section. That behaviour was deliberately
+  removed when Tsak started always handing out one shared `IScheduler` (otherwise a cron
+  consumer builds its own RAMJobStore that `_system` cannot see, and the dashboard shows no
+  jobs while the route runs). Renamed to `..._RegistersSharedRamScheduler` and re-pointed at
+  the intended behaviour: factory registered, `RAMJobStore` defaulted, `IScheduler` a singleton.
+- `ClientIntegrationTests.GetClusterStatusAsync_ReturnsStatus` failed with
+  `No action matches GET /api/cluster`: when the shared `TsakTestHarness` was extracted, the
+  `ISystemContextPlugin` registration was lost, so the Pro `ClusterController` was never
+  mounted. The harness now contributes the Pro controller assembly the way a real deployment
+  does — without registering cluster services, so the controllers report `Enabled = false`.
+
+### Documentation
+
+- New root-level `API_GUIDE.md` — endpoint map (56 endpoints / 14 controllers), request
+  pipeline, auth and role model, health endpoints, extension points, configuration keys.
+- Corrected stale endpoint documentation: `HealthProbeController` was documented at `/healthz`
+  (it is `/api/health`), the controller table listed a `MetricsController` that does not exist
+  and omitted `LifecycleController`, and endpoint counts were stated as 32/12.
+
+---
+
 ## [3.3.3] — 2026-07-15
 
 > **Why the bump.** **No functional changes to redb.Tsak.** Rebuilds the distribution (Docker images +

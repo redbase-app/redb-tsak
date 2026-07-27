@@ -69,12 +69,134 @@ public sealed class HotReloadService : IDisposable
         _assemblyProbePaths = configuration.GetSection("Tsak:Modules:AssemblyPaths").Get<string[]>() ?? [];
         _collectible = _options.Collectible;
 
+        // Load-boundary signature enforcement. Applies to EVERY .tpkg — uploaded or dropped into the
+        // directory — so the public key, not filesystem access, is the trust anchor.
+        var sigOptions = new Modules.ModuleSignatureOptions();
+        configuration.GetSection("Tsak:Modules:Signature").Bind(sigOptions);
+        _signatureRequired = sigOptions.Required;
+        var pem = sigOptions.ResolvePem();
+        _signatureVerifier = pem is not null ? new Modules.ModuleSignatureVerifier(pem) : null;
+        if (_signatureRequired && _signatureVerifier is null)
+        {
+            _logger.LogError(
+                "Tsak:Modules:Signature:Required=true but no public key is configured — ALL .tpkg packages " +
+                "will be refused at load. Set Tsak:Modules:Signature:PublicKeyPath.");
+        }
+        else if (_signatureRequired)
+        {
+            _logger.LogInformation("Module signature enforcement ON — unsigned/tampered .tpkg packages will be refused");
+        }
+
         if (!_collectible)
         {
             _logger.LogInformation(
                 "HotReload: Collectible=false (default). Old module versions will NOT be unloaded from memory. " +
                 "This is safe for modules using XmlSerializer/Emit. " +
                 "Set Tsak:HotReload:Collectible=true if your modules are Emit-free and you need memory reclamation");
+        }
+    }
+
+    private readonly bool _signatureRequired;
+    private readonly Modules.ModuleSignatureVerifier? _signatureVerifier;
+
+    /// <summary>
+    /// The load-boundary gate: returns true if the package may be loaded. When signature enforcement
+    /// is on, a <c>.tpkg</c> must have a matching <c>.tpkg.sig</c> verified by the configured key —
+    /// otherwise it is refused and logged, regardless of how the file arrived.
+    /// </summary>
+    private bool PassesSignatureGate(string tpkgPath)
+    {
+        if (!_signatureRequired) return true;
+
+        if (_signatureVerifier is null)
+        {
+            _logger.LogError("Refusing {Pkg}: signature required but no public key configured", Path.GetFileName(tpkgPath));
+            return false;
+        }
+
+        var sigPath = tpkgPath + ".sig";
+        if (!File.Exists(sigPath))
+        {
+            _logger.LogError("Refusing {Pkg}: no signature file ({Sig}) alongside the package",
+                Path.GetFileName(tpkgPath), Path.GetFileName(sigPath));
+            return false;
+        }
+
+        try
+        {
+            var pkg = File.ReadAllBytes(tpkgPath);
+            var sig = File.ReadAllBytes(sigPath);
+            if (_signatureVerifier.VerifyWithEncodedSignature(pkg, sig))
+                return true;
+
+            _logger.LogError("Refusing {Pkg}: signature verification FAILED — unsigned by the trusted key or modified",
+                Path.GetFileName(tpkgPath));
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Refusing {Pkg}: signature check errored", Path.GetFileName(tpkgPath));
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Staged validation: opens the package in a throwaway collectible ALC and checks it loads and
+    /// discovers at least one module — without mutating the shared assembly tracker
+    /// (<c>forceReload:false</c>) and without registering anything. The throwaway ALC is unloaded
+    /// afterwards. Returns false (with a reason) when the package is unopenable or module-less.
+    /// </summary>
+    internal bool ValidatePackageLoads(string tpkgPath, out string error)
+    {
+        error = "";
+        Modules.ModulePackage? probe = null;
+        try
+        {
+            probe = Modules.ModulePackage.Open(tpkgPath, probePaths: _assemblyProbePaths,
+                logger: _logger, forceReload: false, collectible: true);
+            if (probe is null)
+            {
+                error = "package could not be opened (invalid ZIP, missing/invalid manifest, or unnamed)";
+                return false;
+            }
+
+            if (probe.LoadedAssemblies.Count == 0)
+            {
+                error = "no entry-point assemblies loaded";
+                return false;
+            }
+
+            var found = 0;
+            foreach (var assembly in probe.LoadedAssemblies)
+            {
+                try
+                {
+                    found += TsakModuleRegistry.DiscoverModulesInAssembly(assembly).Count;
+                }
+                catch (Exception ex)
+                {
+                    error = $"module discovery threw: {ex.Message}";
+                    return false;
+                }
+            }
+
+            if (found == 0)
+            {
+                error = "no modules discovered in the package";
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+        finally
+        {
+            // Unload the throwaway ALC — it was created collectible for exactly this.
+            probe?.Dispose();
         }
     }
 
@@ -180,6 +302,11 @@ public sealed class HotReloadService : IDisposable
                         continue;
 
                     _ignoredDlls[tpkg] = lastWrite;
+
+                    // Load-boundary trust gate: verify the signature before ANY code from this
+                    // package is loaded. Covers both API uploads and operator file drops.
+                    if (!PassesSignatureGate(tpkg))
+                        continue;
 
                     if (_packageModules.TryGetValue(tpkg, out var oldModuleNames) && oldModuleNames.Count > 0)
                     {
@@ -548,6 +675,19 @@ public sealed class HotReloadService : IDisposable
     {
         _logger.LogInformation("Reloading package {Pkg}: {Count} old modules",
             Path.GetFileName(tpkgPath), oldModuleNames.Count);
+
+        // 0. Staged validation BEFORE touching the running version. Load the new package into a
+        //    throwaway collectible ALC (forceReload:false → does not mutate the shared tracker;
+        //    entry points are isolated) and verify it opens and discovers at least one module.
+        //    Only if that succeeds do we tear the old version down. A broken .tpkg therefore leaves
+        //    the live context running instead of destroying it and failing to replace it.
+        if (!ValidatePackageLoads(tpkgPath, out var validationError))
+        {
+            _logger.LogError(
+                "Refusing to reload package {Pkg}: staged validation failed ({Error}). Keeping the current version.",
+                Path.GetFileName(tpkgPath), validationError);
+            return 0;
+        }
 
         // 1. Silently unregister old modules (no events → coordinator keeps context alive,
         //    autoStart state preserved in store)

@@ -113,6 +113,7 @@ public class ContextsController : RedbController
     }
 
     [HttpDelete("/{name}")]
+    [RequiresRole(TsakRoles.Admin)]
     [AuditAdminAction(ActionName = "RemoveContext", TargetParam = "name")]
     public async Task<object?> RemoveContext([FromRoute("name")] string name)
     {

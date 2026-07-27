@@ -194,6 +194,28 @@ public class SchedulerController : RedbController
         return new SchedulerActionResponse { Success = true, Message = $"Job '{key}' resumed" };
     }
 
+    /// <summary>
+    /// Fires a job immediately (out of schedule) — the "run it now" operator button. Requires the
+    /// <c>operator</c> role and is audited.
+    /// </summary>
+    [HttpPost("/fire-job")]
+    [RequiresRole(TsakRoles.Operator)]
+    [AuditAdminAction(ActionName = "FireJob", TargetParam = "jobKeyStr")]
+    public async Task<object> FireJob([FromQuery("key")] string jobKeyStr)
+    {
+        var scheduler = Scheduler;
+        if (scheduler is null || scheduler.IsShutdown)
+            return new SchedulerActionResponse { Success = false, Message = "Scheduler not available" };
+
+        var key = await FindJobKey(scheduler, jobKeyStr);
+        if (key is null)
+            return new SchedulerActionResponse { Success = false, Message = $"Job '{jobKeyStr}' not found" };
+
+        await scheduler.TriggerJob(key);
+        Log?.LogInformation("Job '{JobKey}' fired manually", key);
+        return new SchedulerActionResponse { Success = true, Message = $"Job '{key}' fired" };
+    }
+
     /// <summary>Find a Quartz JobKey by its ToString() representation among all registered jobs.</summary>
     private static async Task<JobKey?> FindJobKey(IScheduler scheduler, string jobKeyStr)
     {

@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using redb.Route.Controllers;
 using redb.Route.Controllers.Attributes;
 using redb.Tsak.Contracts;
@@ -19,6 +20,7 @@ namespace redb.Tsak.Core.Controllers;
 /// For rich health data (CLI/Web), use GET /api/system/health instead.
 /// </summary>
 [Route("/api/health")]
+[NoRoleRequired] // technical endpoints: kubelet and load balancers must never get a 403
 public class HealthProbeController : RedbController
 {
     /// <summary>
@@ -108,7 +110,15 @@ public class HealthProbeController : RedbController
         // Use async evaluation so per-module health contributors are included.
         var eval = await healthSvc.EvaluateAsync();
 
-        if (eval.Status == HealthStatus.Unhealthy)
+        // Degraded is 200 by default (the node serves, just slower). Some deployments prefer a
+        // stricter readiness that also fails on Degraded — opt in via Tsak:Health:DegradedNotReady.
+        var degradedNotReady = Context.GetService<IConfiguration>()
+            ?.GetValue("Tsak:Health:DegradedNotReady", false) ?? false;
+
+        var notReady = eval.Status == HealthStatus.Unhealthy
+                       || (degradedNotReady && eval.Status == HealthStatus.Degraded);
+
+        if (notReady)
         {
             ApiResponse.ServiceUnavailable(Exchange, eval.Description);
             Exchange.Stop();

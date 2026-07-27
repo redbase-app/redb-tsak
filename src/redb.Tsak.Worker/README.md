@@ -24,7 +24,7 @@ Controls where module definitions and runtime state are persisted.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `Type` | `string` | `"InMemory"` | `"InMemory"` — volatile, config-only. `"Redb"` — persistent via EAV database. |
+| `Type` | `string` | `"InMemory"` | `"InMemory"` — volatile, config-only. `"Redb"` — persistent via redb store. |
 
 - **InMemory**: API keys are read-only from `Tsak:Auth:Keys` config. Module and state data is lost on restart.
 - **Redb**: Requires `ConnectionStrings` and `Tsak:Redb` to be configured. API keys are seeded from config and can be managed at runtime.
@@ -36,9 +36,9 @@ Required when `Storage:Type = "Redb"` or `Cluster:Enabled = true`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `Provider` | `string` | — | `"postgres"` or `"mssql"`. |
-| `UsePro` | `bool` | `false` | Enable redb.Core.Pro features (EAV change tracking, clustering). |
-| `License` | `string \| string[]` | — | License key(s) for redb.Core.Pro / Tsak.Cluster. Required when `UsePro = true` (or for cluster). Accepts a single JWT, a `\|`-separated string, or a JSON array (see below). |
-| `PropsSaveStrategy` | `string` | `"DeleteInsert"` | EAV write strategy: `"DeleteInsert"` or `"ChangeTracking"`. |
+| `UsePro` | `bool` | `false` | Enable redb.Core.Pro features (props change tracking, clustering). |
+| `License` | `string \| string[]` | — | **Not needed on 3.x** — Pro and `tsak.cluster` are free through major 3, so leave this unset even with `UsePro = true`. Accepts a single JWT, a `\|`-separated string, or a JSON array if a future major requires one. |
+| `PropsSaveStrategy` | `string` | `"DeleteInsert"` | Props write strategy: `"DeleteInsert"` or `"ChangeTracking"`. |
 
 Connection string is selected automatically based on `Provider`:
 - `ConnectionStrings:Postgres` for `"postgres"`
@@ -272,7 +272,7 @@ Program.cs
 redb.Tsak.Worker
   ├── redb.Tsak.Core           (module registry, contexts, coordinator, API, monitoring)
   └── redb.Tsak.Core.Pro       (cluster: leader election, node registry, assignments)
-        └── redb.Core.Pro      (EAV, licensing)
+        └── redb.Core.Pro      (redb store, licensing)
 ```
 
 ### Module Loading
@@ -292,7 +292,7 @@ If hot-reload is enabled, the worker re-scans directories periodically and perfo
 | Aspect | Standalone | Cluster |
 |--------|-----------|---------|
 | `Cluster:Enabled` | `false` (default) | `true` |
-| Node discovery | N/A — single node | Via EAV registry |
+| Node discovery | N/A — single node | Via redb node registry |
 | Module assignment | All modules run locally | Distributed by leader node |
 | Leader election | N/A | Automatic (distributed lock) |
 | Rolling updates | Local only | Coordinated across nodes |

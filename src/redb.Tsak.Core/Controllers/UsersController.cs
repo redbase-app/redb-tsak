@@ -10,6 +10,7 @@ using redb.Tsak.Core.Security;
 namespace redb.Tsak.Core.Controllers;
 
 [Route("/api/users")]
+[RequiresRole(TsakRoles.Admin)]
 public class UsersController : RedbController
 {
     // Per-request scoped IRedbService (own connection) — NOT the captive singleton, which would

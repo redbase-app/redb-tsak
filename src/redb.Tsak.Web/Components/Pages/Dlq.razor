@@ -1,0 +1,228 @@
+@page "/node/{NodeId}/dlq"
+@inject INodeClientProvider NodeProvider
+@inject ToastService Toast
+@using redb.Tsak.Client
+@using redb.Tsak.Contracts
+@using redb.Tsak.Web.Components.Shared
+
+<TsakPageHeader Title="Dead-letter" Description="Exchanges that failed at a route checkpoint — replay or discard"
+                RefreshInterval="0" OnRefresh="() => LoadAsync(resetPage: true)">
+    <Actions>
+        <button class="btn btn-secondary btn-sm" @onclick="() => LoadAsync(resetPage: true)">
+            <TsakIcon Name="search" Size="14" /> Apply
+        </button>
+    </Actions>
+</TsakPageHeader>
+
+@* Server-side filters + paging — the DLQ can be large, nothing is pulled into the browser. *@
+<div class="card" style="margin-bottom: var(--space-4);">
+    <div style="display: flex; gap: var(--space-2); flex-wrap: wrap; align-items: flex-end;">
+        <div>
+            <label class="text-xs text-secondary">Route</label>
+            <input class="form-input" style="width: 160px;" placeholder="route id"
+                   @bind="_route" @bind:event="oninput" @onkeydown="OnKeyDown" />
+        </div>
+        <div>
+            <label class="text-xs text-secondary">Context</label>
+            <input class="form-input" style="width: 140px;" placeholder="context"
+                   @bind="_context" @bind:event="oninput" @onkeydown="OnKeyDown" />
+        </div>
+        <div>
+            <label class="text-xs text-secondary">Status</label>
+            <select class="form-input" style="width: 120px;" @bind="_status">
+                <option value="">All</option>
+                <option value="pending">pending</option>
+                <option value="replayed">replayed</option>
+                <option value="discarded">discarded</option>
+            </select>
+        </div>
+        <div>
+            <label class="text-xs text-secondary">Page size</label>
+            <select class="form-input" style="width: 90px;" @bind="_pageSize">
+                <option value="25">25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+            </select>
+        </div>
+    </div>
+</div>
+
+@if (_loading)
+{
+    <div class="card"><div class="empty-state" style="padding: var(--space-6);"><p class="text-secondary">Loading…</p></div></div>
+}
+else if (_unavailable)
+{
+    <div class="card"><div class="empty-state" style="padding: var(--space-6);">
+        <TsakIcon Name="alert-triangle" Size="32" />
+        <p class="text-secondary">
+            @(_error ?? "The dead-letter store is not available — this node runs without a database.")
+        </p>
+    </div></div>
+}
+else
+{
+    <div class="card" style="padding: 0;">
+        <table class="table" style="width: 100%; font-size: var(--font-size-sm);">
+            <thead>
+                <tr>
+                    <th style="width: 150px;">Time</th>
+                    <th>Route</th>
+                    <th>Marker</th>
+                    <th style="width: 90px;">Status</th>
+                    <th>Error</th>
+                    <th style="width: 160px;"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @if (_entries.Length == 0)
+                {
+                    <tr><td colspan="6"><div class="empty-state" style="padding: var(--space-6);">
+                        <TsakIcon Name="check-circle" Size="28" />
+                        <p class="text-secondary">No dead-lettered exchanges.</p>
+                    </div></td></tr>
+                }
+                else
+                {
+                    @foreach (var e in _entries)
+                    {
+                        <tr>
+                            <td class="text-mono text-xs">@e.OccurredAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</td>
+                            <td>@e.RouteId</td>
+                            <td class="text-secondary">@e.MarkerName</td>
+                            <td><TsakBadge Text="@e.Status" Variant="@StatusVariant(e.Status)" ShowDot="false" /></td>
+                            <td class="text-xs" title="@e.ExceptionMessage">
+                                @(e.ExceptionType ?? "—")
+                                @if (!e.Replayable) { <span class="badge badge-warning" style="margin-left:6px;">not replayable</span> }
+                            </td>
+                            <td style="text-align: right;">
+                                <AuthorizedView AdminOnly="false">
+                                    <button class="btn btn-primary btn-sm"
+                                            disabled="@(!e.Replayable || e.Status != "pending" || _busy == e.EntryId)"
+                                            @onclick="() => Replay(e.EntryId)">
+                                        <TsakIcon Name="send" Size="13" /> Replay
+                                    </button>
+                                </AuthorizedView>
+                                <AuthorizedView AdminOnly="true">
+                                    <button class="btn btn-secondary btn-sm" disabled="@(_busy == e.EntryId)"
+                                            @onclick="() => Discard(e.EntryId)">
+                                        <TsakIcon Name="trash" Size="13" />
+                                    </button>
+                                </AuthorizedView>
+                            </td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: var(--space-3); margin-top: var(--space-3);">
+        <button class="btn btn-secondary btn-sm" disabled="@(_page == 0)" @onclick="PrevPage">
+            <TsakIcon Name="chevron-left" Size="14" /> Prev
+        </button>
+        <span class="text-sm text-secondary">Page @(_page + 1) · showing @_entries.Length</span>
+        <button class="btn btn-secondary btn-sm" disabled="@(!_hasNext)" @onclick="NextPage">
+            Next <TsakIcon Name="chevron-right" Size="14" />
+        </button>
+    </div>
+}
+
+@code {
+    [Parameter] public string NodeId { get; set; } = "";
+
+    private string _route = "";
+    private string _context = "";
+    private string _status = "";
+    private int _pageSize = 50;
+
+    private int _page;
+    private FailedExchangeEntry[] _entries = [];
+    private bool _hasNext;
+    private bool _loading = true;
+    private bool _unavailable;
+    private string? _error;
+    private string? _busy;
+
+    protected override Task OnInitializedAsync() => LoadAsync(resetPage: true);
+
+    private async Task LoadAsync(bool resetPage)
+    {
+        if (resetPage) _page = 0;
+        _loading = true;
+        StateHasChanged();
+        try
+        {
+            var client = NodeProvider.GetClient(NodeId);
+            var result = await client.GetFailedExchangesAsync(
+                context: NullIfBlank(_context), route: NullIfBlank(_route), status: NullIfBlank(_status),
+                limit: _pageSize, offset: _page * _pageSize);
+
+            if (!result.Available)
+            {
+                _unavailable = true;
+                _error = result.Error;
+                _entries = [];
+            }
+            else
+            {
+                _unavailable = false;
+                _entries = result.Entries;
+                _hasNext = _entries.Length == _pageSize;
+            }
+        }
+        catch (Exception ex)
+        {
+            _unavailable = true;
+            _error = ex.Message;
+            Toast.Error($"Failed to load DLQ: {ex.Message}");
+        }
+        finally
+        {
+            _loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task Replay(string id)
+    {
+        _busy = id;
+        try
+        {
+            var result = await NodeProvider.GetClient(NodeId).ReplayExchangeAsync(id);
+            if (result.Success) Toast.Success("Replayed");
+            else Toast.Warning(result.Message);
+            await LoadAsync(resetPage: false);
+        }
+        catch (Exception ex) { Toast.Error($"Replay failed: {ex.Message}"); }
+        finally { _busy = null; }
+    }
+
+    private async Task Discard(string id)
+    {
+        _busy = id;
+        try
+        {
+            var result = await NodeProvider.GetClient(NodeId).DiscardExchangeAsync(id);
+            if (result.Success) Toast.Success("Discarded");
+            else Toast.Warning(result.Message);
+            await LoadAsync(resetPage: false);
+        }
+        catch (Exception ex) { Toast.Error($"Discard failed: {ex.Message}"); }
+        finally { _busy = null; }
+    }
+
+    private async Task NextPage() { if (_hasNext) { _page++; await LoadAsync(resetPage: false); } }
+    private async Task PrevPage() { if (_page > 0) { _page--; await LoadAsync(resetPage: false); } }
+    private async Task OnKeyDown(KeyboardEventArgs e) { if (e.Key == "Enter") await LoadAsync(resetPage: true); }
+
+    private static string? NullIfBlank(string s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+
+    private static string StatusVariant(string status) => status switch
+    {
+        "pending" => "warning",
+        "replayed" => "online",
+        "discarded" => "offline",
+        _ => "info"
+    };
+}

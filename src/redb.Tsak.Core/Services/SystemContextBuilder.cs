@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Configuration;
@@ -8,7 +9,12 @@ using redb.Route.Core;
 using redb.Route.Controllers;
 using redb.Route.Http;
 using redb.Route.Processors;
+using redb.Route.Quartz;
+using redb.Route.Sql;
+using redb.Route.Sql.Connection;
+using redb.Tsak.Core.Audit;
 using redb.Tsak.Core.Contracts;
+using redb.Tsak.Core.Dlq;
 using redb.Tsak.Core.Controllers;
 using redb.Tsak.Core.Monitoring;
 using redb.Tsak.Core.Security;
@@ -137,6 +143,25 @@ public class SystemContextBuilder
                 logger: _serviceProvider.GetService<ILoggerFactory>()?.CreateLogger("Tsak.AuthThrottle"));
         }
 
+        // 5b. Role enforcement (Tsak:Auth:EnforceRoles, default true when auth is on).
+        // Runs immediately after a successful auth check and only there, so it can never
+        // touch technical endpoints: auth-exempt paths (k8s probes under /api/health/*)
+        // skip the whole block, and the echo / Prometheus routes have their own pipelines.
+        var enforceRoles = _configuration.GetValue("Tsak:Auth:EnforceRoles", true);
+        var rolelessKeysAreAdmin = _configuration.GetValue("Tsak:Auth:RolelessKeysAreAdmin", true);
+        RoleAuthorizationProcessor? roleAuthorizer = null;
+        if (authEnabled && enforceRoles)
+        {
+            roleAuthorizer = new RoleAuthorizationProcessor(controllerRegistry, rolelessKeysAreAdmin);
+            _logger.LogInformation(
+                "Role enforcement enabled (roleless keys treated as admin: {Legacy})", rolelessKeysAreAdmin);
+        }
+        else if (authEnabled)
+        {
+            _logger.LogWarning(
+                "Role enforcement disabled (Tsak:Auth:EnforceRoles=false) — any valid API key may call any endpoint");
+        }
+
         // 6. Add API route
         var listenUri = $"http:{host}:{port}/{{**path}}?host={host}&port={port}&inOut=true";
         var actionFilters = _serviceProvider.GetService<IEnumerable<IControllerActionFilter>>()
@@ -163,6 +188,11 @@ public class SystemContextBuilder
                         var authorizer = new AuthorizeProcessor(apiKeyService);
                         await authorizer.Process(exchange, ct);
                     }
+
+                    // Role check for the authenticated caller. Unreachable for auth-exempt
+                    // technical endpoints — they never enter this block.
+                    if (!exchange.IsStopped && roleAuthorizer is not null)
+                        await roleAuthorizer.Process(exchange, ct);
                 }
 
                 if (!exchange.IsStopped)
@@ -248,11 +278,135 @@ public class SystemContextBuilder
                 host, port, metricsPort);
         }
 
+        // 6c. Admin audit writer route — direct://tsak-audit → INSERT into tsak_audit_log.
+        //     Mounted only when a redb provider is configured and audit persistence is enabled;
+        //     without a database the RouteAdminAuditService is never attached and the log sink
+        //     keeps handling audit events.
+        var auditProvider = ConfigureAuditRoute(routeContext);
+
+        // 6d. Retention sweeps as first-class cron routes (Routes API/dashboard + scheduler page),
+        //     replacing the bare Quartz jobs. Must be added before Start so the cron consumers wire up.
+        ConfigureRetentionRoutes(routeContext, auditProvider);
+
         // 7. Start
         await context.Start(ct);
         _logger.LogInformation("REST API started on http://{Host}:{Port}", host, port);
 
+        // 7a. Attach the persistent audit sink now that the writer route is live. Attach is a
+        //     no-op when no provider is configured.
+        if (auditProvider != AuditProvider.None
+            && _serviceProvider.GetService<IAdminAuditService>() is RouteAdminAuditService routeAudit)
+        {
+            routeAudit.Attach(routeContext);
+        }
+
+        // 7b. Attach the generic broker alert channel (kafka:/amqp:/… from Tsak:Watchdog:Alerts:Endpoint).
+        //     No-op unless enabled; the target component must be registered on this context by the host.
+        _serviceProvider.GetService<Monitoring.Alerts.AlertDispatcher>()?.AttachEndpointChannel(routeContext);
+
         return context;
+    }
+
+    /// <summary>
+    /// Adds the SQL component, registers the audit data source in the context registry, and
+    /// mounts the <c>direct://tsak-audit</c> writer route. Returns the resolved provider, or
+    /// <see cref="AuditProvider.None"/> when audit persistence is off or no database is
+    /// configured — in which case nothing is mounted.
+    /// </summary>
+    private AuditProvider ConfigureAuditRoute(RouteContext routeContext)
+    {
+        if (!_configuration.GetValue("Tsak:Audit:Enabled", true))
+            return AuditProvider.None;
+
+        var provider = AuditStorage.ResolveProvider(_configuration);
+        if (provider == AuditProvider.None)
+            return AuditProvider.None;
+
+        var connStr = AuditStorage.ResolveConnectionString(_configuration, provider);
+        if (string.IsNullOrEmpty(connStr))
+        {
+            _logger.LogWarning(
+                "Audit provider '{Provider}' configured but connection string missing — audit stays on the log sink",
+                provider);
+            return AuditProvider.None;
+        }
+
+        try
+        {
+            routeContext.AddComponent(new SqlComponent());
+
+            // Register the ADO provider factory (idempotent) and publish the data source.
+            var invariant = AuditStorage.ProviderInvariantName(provider);
+            if (!DbProviderFactories.GetProviderInvariantNames().Contains(invariant))
+                DbProviderFactories.RegisterFactory(invariant, AuditStorage.ProviderFactory(provider));
+
+            routeContext.AddToRegistry(AuditStorage.DataSourceName, (ISqlConnectionFactory)new SqlConnectionFactory(
+                new SqlConnectionOptions
+                {
+                    ConnectionString = connStr,
+                    ProviderName = invariant,
+                    ProviderFactory = AuditStorage.ProviderFactory(provider)
+                }));
+
+            routeContext.AddRoutes(new TsakAuditRouteBuilder(provider));
+
+            _logger.LogInformation("Admin audit writer route mounted on {Endpoint} ({Provider})",
+                AuditStorage.AuditEndpoint, provider);
+            return provider;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to mount admin audit route — falling back to the log sink");
+            return AuditProvider.None;
+        }
+    }
+
+    /// <summary>
+    /// Mounts the retention sweeps as <c>cron://</c> routes on the <c>_system</c> context (replacing the
+    /// former bare Quartz jobs) — gated exactly as before: audit needs an active provider + a positive
+    /// <c>Tsak:Audit:RetentionDays</c>; DLQ needs to be available + a positive <c>Tsak:Dlq:RetentionDays</c>.
+    /// The Cron component is added only when at least one sweep is registered; the shared scheduler
+    /// (injected into every Tsak context) is ensured so the cron jobs show on the scheduler page too.
+    /// </summary>
+    private void ConfigureRetentionRoutes(RouteContext routeContext, AuditProvider auditProvider)
+    {
+        var config = _serviceProvider.GetService<IConfiguration>();
+        var loggerFactory = _serviceProvider.GetService<ILoggerFactory>();
+
+        var audit = _serviceProvider.GetService<AuditQueryService>();
+        var auditDays = config?.GetValue("Tsak:Audit:RetentionDays", AuditRetentionRouteBuilder.DefaultRetentionDays)
+                        ?? AuditRetentionRouteBuilder.DefaultRetentionDays;
+        var auditOn = auditProvider != AuditProvider.None && audit is { IsAvailable: true } && auditDays > 0;
+
+        var dlq = _serviceProvider.GetService<DlqService>();
+        var dlqDays = config?.GetValue("Tsak:Dlq:RetentionDays", DlqRetentionRouteBuilder.DefaultRetentionDays)
+                      ?? DlqRetentionRouteBuilder.DefaultRetentionDays;
+        var dlqOn = dlq is { IsAvailable: true } && dlqDays > 0;
+
+        if (!auditOn && !dlqOn)
+            return;
+
+        // cron:// consumers resolve IScheduler from the context; ensure it is the shared Tsak scheduler
+        // so these sweeps land on the same scheduler the dashboard reads (visible on the scheduler page).
+        routeContext.AddComponent(new CronComponent());
+        if (_serviceProvider.GetService<global::Quartz.IScheduler>() is { } scheduler)
+            routeContext.AddService(typeof(global::Quartz.IScheduler), scheduler);
+
+        if (auditOn)
+        {
+            routeContext.AddRoutes(new AuditRetentionRouteBuilder(
+                audit!, auditDays, loggerFactory?.CreateLogger<AuditRetentionRouteBuilder>()));
+            _logger.LogInformation("Audit retention route mounted (cron://{Id}, {Days}d)",
+                AuditRetentionRouteBuilder.RouteIdName, auditDays);
+        }
+
+        if (dlqOn)
+        {
+            routeContext.AddRoutes(new DlqRetentionRouteBuilder(
+                dlq!, dlqDays, loggerFactory?.CreateLogger<DlqRetentionRouteBuilder>()));
+            _logger.LogInformation("DLQ retention route mounted (cron://{Id}, {Days}d)",
+                DlqRetentionRouteBuilder.RouteIdName, dlqDays);
+        }
     }
 
     /// <summary>
@@ -373,6 +527,7 @@ public class SystemContextBuilder
     {
         context.AddService(typeof(ITsakContextManager), _contextManager);
         context.AddService(typeof(ITsakModuleRegistry), registry);
+        context.AddService(typeof(IConfiguration), _configuration); // for /api/system/config
 
         // Optional services — register if available in DI
         TryRegisterService<HealthCheckService>(context);
@@ -382,6 +537,10 @@ public class SystemContextBuilder
         TryRegisterService<RouteWatchdogService>(context);
         TryRegisterService<LifecycleAuditService>(context);
         TryRegisterService<ITsakStateStore>(context);
+        TryRegisterService<AuditQueryService>(context);
+        TryRegisterService<Monitoring.Alerts.AlertDispatcher>(context);
+        TryRegisterService<Modules.ModuleUploadService>(context);
+        TryRegisterService<Dlq.DlqService>(context);
     }
 
     private void TryRegisterService<T>(RouteContext context) where T : class

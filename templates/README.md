@@ -39,7 +39,7 @@ Generated host:
 |-----------------|-------------|--------------------------------------------|
 | `--db`          | `postgres`  | `postgres` or `mssql`                      |
 | `--storage`     | `redb`      | `redb` (persistent) or `inmemory`          |
-| `--pro`         | `false`     | Enable Pro features (cluster, EAV store)   |
+| `--pro`         | `false`     | Enable Pro features (cluster, redb store)   |
 
 ## Documentation
 

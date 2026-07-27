@@ -70,6 +70,24 @@ public sealed class SharedAssemblyLoader
             if (_fileTimestamps.ContainsKey(dll))
                 continue;
 
+            // Skip anything the early bootstrap (SharedRuntime.InstallEarly) already byte-loaded
+            // — e.g. framework assemblies preloaded before the host was built. Re-loading via
+            // LoadFromStream would create a duplicate Assembly instance. We still record the
+            // timestamp so hot-reload change detection covers these files. Matched by assembly
+            // simple name (file name == assembly name for redb.* framework DLLs).
+            var simpleName = Path.GetFileNameWithoutExtension(dll);
+            if (LoadedAssemblyTracker.TryGet(simpleName, out var preloaded) && preloaded is not null)
+            {
+                _loadedAssemblies.Add(preloaded);
+                _fileTimestamps[dll] = File.GetLastWriteTimeUtc(dll);
+                // Surface framework/providers that the early bootstrap (SharedRuntime) byte-loaded
+                // before Serilog existed — otherwise they are invisible in the log file, unlike the
+                // connectors loaded below. Logged here (host is up) so redb.Core/redb.SQLite/... show.
+                _logger.LogInformation("Shared assembly {Name} {Version} preloaded from shared (framework)",
+                    preloaded.GetName().Name, preloaded.GetName().Version);
+                continue; // not counted as newly loaded by this loader
+            }
+
             try
             {
                 var bytes = File.ReadAllBytes(dll);
@@ -178,55 +196,13 @@ public sealed class SharedAssemblyLoader
         if (_resolvingHandlerRegistered)
             return;
 
-        // Ensure the centralized tracker resolver is registered first —
-        // it handles byte-loaded assemblies from packages and bare DLLs.
-        LoadedAssemblyTracker.EnsureResolverRegistered();
-
-        AssemblyLoadContext.Default.Resolving += (ctx, name) =>
-        {
-            // LoadedAssemblyTracker's handler runs first (registered earlier via EnsureResolverRegistered).
-            // This handler covers: (a) shared/ transitive deps not yet loaded, and
-            // (b) version-tolerant forwarding for higher-version references.
-
-            // 1. Try loading from the shared/ directory (transitive deps not yet loaded)
-            if (name.Name is not null)
-            {
-                var candidate = Path.Combine(fullSharedPath, name.Name + ".dll");
-                if (File.Exists(candidate))
-                {
-                    try
-                    {
-                        var bytes = File.ReadAllBytes(candidate);
-                        var loaded = AssemblyLoadContext.Default.LoadFromStream(new MemoryStream(bytes));
-                        LoadedAssemblyTracker.Track(loaded);
-                        return loaded;
-                    }
-                    catch (FileLoadException)
-                    {
-                        // Version/identity mismatch — fall through to runtime fallback below
-                    }
-                }
-            }
-
-            // 2. Fallback: if a NuGet package (e.g. Elastic 8.x) references a higher version
-            //    of a framework assembly (e.g. System.Text.Json v10) than the current runtime
-            //    provides, the runtime won't auto-resolve it. Return the already-loaded lower
-            //    version so it works via version-tolerant forwarding.
-            var already = ctx.Assemblies
-                .FirstOrDefault(a => string.Equals(a.GetName().Name, name.Name, StringComparison.OrdinalIgnoreCase));
-            if (already != null)
-            {
-                _logger.LogDebug(
-                    "Assembly {Name} v{Requested} not found — forwarding to already-loaded v{Loaded}",
-                    name.Name, name.Version, already.GetName().Version);
-                return already;
-            }
-
-            return null;
-        };
+        // Single implementation shared with the early (DI-free) bootstrap so the handler is
+        // installed only once per path — see SharedRuntime.EnsureSharedPathResolver. It performs
+        // exactly what this method used to inline: tracker resolver first, then shared-dir probe
+        // for transitive deps, then version-tolerant forwarding for higher-version references.
+        SharedRuntime.EnsureSharedPathResolver(fullSharedPath, msg => _logger.LogDebug("{Msg}", msg));
 
         _resolvingHandlerRegistered = true;
-        _logger.LogDebug("Registered Default ALC resolving handler for {Path}", fullSharedPath);
     }
 
     private static List<string> GetNativeLibraryDirs(string fullSharedPath)

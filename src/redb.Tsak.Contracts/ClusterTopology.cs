@@ -30,6 +30,9 @@ public class NodeInfo
     public string Version { get; set; } = string.Empty;
     public string Capabilities { get; set; } = string.Empty;
 
+    /// <summary>Cordoned = takes on no new work (draining/drained). Orthogonal to status.</summary>
+    public bool Cordoned { get; set; }
+
     /// <summary>Node is online and heartbeat is fresh (within 60 seconds).</summary>
     public bool IsAlive => Status == NodeStatus.Online
         && LastHeartbeat > DateTimeOffset.UtcNow.AddSeconds(-60);

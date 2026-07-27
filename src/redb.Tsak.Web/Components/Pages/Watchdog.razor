@@ -97,6 +97,60 @@ else if (_state is not null)
         }
     </div>
 
+    @* Alert delivery *@
+    <div class="card" style="margin-bottom: var(--space-4);">
+        <div class="card-header">
+            <span class="card-title">
+                <TsakIcon Name="send" Size="16" /> Alert Delivery
+            </span>
+            @if (_alertStatus is not null)
+            {
+                <TsakBadge Text="@(_alertStatus.Active ? "Active" : "Off")"
+                           Variant="@(_alertStatus.Active ? "online" : "offline")" ShowDot="false" />
+            }
+        </div>
+
+        <div style="padding: var(--space-3);">
+            @if (_alertStatus is { Active: true })
+            {
+                <p class="text-sm">Channels:
+                    @foreach (var c in _alertStatus.Channels)
+                    {
+                        <span class="badge badge-info" style="margin-right: 4px;">@c</span>
+                    }
+                </p>
+                <AuthorizedView AdminOnly="true">
+                    <button class="btn btn-secondary btn-sm" @onclick="TestAlert" disabled="@_testing">
+                        <TsakIcon Name="send" Size="14" /> @(_testing ? "Sending…" : "Send test alert")
+                    </button>
+                </AuthorizedView>
+
+                @if (_testResult is not null)
+                {
+                    <div style="margin-top: var(--space-3);">
+                        @foreach (var ch in _testResult.Channels)
+                        {
+                            <div class="text-sm" style="margin-bottom: 2px;">
+                                <TsakBadge Text="@(ch.Success ? "OK" : "FAIL")"
+                                           Variant="@(ch.Success ? "online" : "error")" ShowDot="false" />
+                                <span class="mono">@ch.Channel</span>
+                                @if (!ch.Success) { <span class="text-secondary">— @ch.Error</span> }
+                            </div>
+                        }
+                    </div>
+                }
+            }
+            else
+            {
+                <p class="text-secondary text-sm">
+                    Alert delivery is off. Enable it and at least one channel (webhook / telegram / email /
+                    endpoint) under <span class="mono">Tsak:Watchdog:Alerts</span>. With no database or channel
+                    configured, alerts still go to the log.
+                </p>
+            }
+        </div>
+    </div>
+
     @* Lifecycle events filtered to watchdog-related *@
     @if (_watchdogEvents is { Length: > 0 })
     {
@@ -139,6 +193,9 @@ else
     private bool _loading = true;
     private WatchdogState? _state;
     private LifecycleEvent[]? _watchdogEvents;
+    private AlertDeliveryStatus? _alertStatus;
+    private AlertTestResult? _testResult;
+    private bool _testing;
 
     private PeriodicTimer? _timer;
     private CancellationTokenSource? _cts;
@@ -175,9 +232,28 @@ else
                 _watchdogEvents = events;
             }
             catch { }
+
+            try { _alertStatus = await client.GetAlertStatusAsync(); }
+            catch { }
         }
         catch { }
         _loading = false;
+    }
+
+    private async Task TestAlert()
+    {
+        var client = NodeProvider.GetClient(NodeId);
+        if (client is null) return;
+        _testing = true;
+        _testResult = null;
+        try
+        {
+            _testResult = await client.TestAlertAsync();
+            if (_testResult.Delivered) Toast.Success("Test alert delivered to all channels");
+            else Toast.Warning(_testResult.Message ?? "Some channels failed — see details");
+        }
+        catch (Exception ex) { Toast.Error($"Test failed: {ex.Message}"); }
+        finally { _testing = false; }
     }
 
     private async Task Refresh() => await LoadData();

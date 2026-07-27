@@ -22,6 +22,15 @@ public sealed record ClusterNodeInfo
     public required DateTimeOffset StartedAt { get; init; }
     public required DateTimeOffset LastHeartbeat { get; init; }
     public string? ApiEndpoint { get; init; }
+
+    /// <summary>True when the node is cordoned (takes on no new work; draining/drained).</summary>
+    public bool Cordoned { get; init; }
+}
+
+public sealed record ClusterCordonResponse
+{
+    public required string NodeId { get; init; }
+    public required bool Cordoned { get; init; }
 }
 
 public sealed record ClusterRebalanceResponse

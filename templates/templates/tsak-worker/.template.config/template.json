@@ -28,7 +28,7 @@
       "defaultValue": "redb",
       "description": "State store backing",
       "choices": [
-        { "choice": "redb",     "description": "Persistent state in REDB EAV (recommended)" },
+        { "choice": "redb",     "description": "Persistent state in REDB (recommended)" },
         { "choice": "inmemory", "description": "In-memory only (state lost on restart)" }
       ]
     },
@@ -36,7 +36,7 @@
       "type": "parameter",
       "datatype": "bool",
       "defaultValue": "false",
-      "description": "Enable Pro features (cluster, EAV key store, audit)"
+      "description": "Enable Pro features (cluster, redb-backed key store, audit)"
     },
     "UsePostgres": {
       "type": "computed",

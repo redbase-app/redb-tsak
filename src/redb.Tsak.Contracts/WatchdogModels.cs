@@ -28,3 +28,27 @@ public sealed record WatchdogAlert
     public DateTime DetectedAt { get; init; }
     public double ElapsedSeconds { get; init; }
 }
+
+/// <summary>Alert-delivery status: whether delivery is active and which channels are enabled.</summary>
+public sealed record AlertDeliveryStatus
+{
+    public required bool Active { get; init; }
+    public string MinLevel { get; init; } = "";
+    public IReadOnlyList<string> Channels { get; init; } = [];
+}
+
+/// <summary>Result of <c>POST /api/watchdog/test-alert</c>: per-channel delivery outcome.</summary>
+public sealed record AlertTestResult
+{
+    public required bool Delivered { get; init; }
+    public string? Message { get; init; }
+    public IReadOnlyList<AlertChannelOutcome> Channels { get; init; } = [];
+}
+
+/// <summary>Outcome of delivering the test alert to one channel.</summary>
+public sealed record AlertChannelOutcome
+{
+    public required string Channel { get; init; }
+    public required bool Success { get; init; }
+    public string? Error { get; init; }
+}

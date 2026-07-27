@@ -15,3 +15,12 @@ public sealed record ModuleRemovedResponse
     public required string ModuleName { get; init; }
     public required bool Removed { get; init; }
 }
+
+/// <summary>Result of a module upload or rollback.</summary>
+public sealed record ModuleDeployResponse
+{
+    public required bool Success { get; init; }
+    public required string Message { get; init; }
+    public string? ModuleName { get; init; }
+    public string? Version { get; init; }
+}

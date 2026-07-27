@@ -1,0 +1,249 @@
+@page "/node/{NodeId}/audit"
+@inject INodeClientProvider NodeProvider
+@inject ToastService Toast
+@using redb.Tsak.Client
+@using redb.Tsak.Contracts
+@using redb.Tsak.Web.Components.Shared
+
+<TsakPageHeader Title="Audit" Description="Persisted admin-action trail — who did what, and when"
+                RefreshInterval="0" OnRefresh="() => LoadAsync(resetPage: true)">
+    <Actions>
+        <button class="btn btn-secondary btn-sm" @onclick="() => LoadAsync(resetPage: true)">
+            <TsakIcon Name="search" Size="14" /> Apply
+        </button>
+    </Actions>
+</TsakPageHeader>
+
+@* All filtering and paging is server-side — the audit table can be very large, so nothing is
+   pulled into the browser and filtered there. *@
+<div class="card" style="margin-bottom: var(--space-4);">
+    <div style="display: flex; gap: var(--space-2); flex-wrap: wrap; align-items: flex-end;">
+        <div>
+            <label class="text-xs text-secondary">Actor</label>
+            <input class="form-input" style="width: 160px;" placeholder="key id / principal"
+                   @bind="_actor" @bind:event="oninput" @onkeydown="OnFilterKeyDown" />
+        </div>
+        <div>
+            <label class="text-xs text-secondary">Action</label>
+            <input class="form-input" style="width: 160px;" placeholder="e.g. RemoveContext"
+                   @bind="_action" @bind:event="oninput" @onkeydown="OnFilterKeyDown" />
+        </div>
+        <div>
+            <label class="text-xs text-secondary">Target</label>
+            <input class="form-input" style="width: 140px;" placeholder="resource id"
+                   @bind="_target" @bind:event="oninput" @onkeydown="OnFilterKeyDown" />
+        </div>
+        <div>
+            <label class="text-xs text-secondary">Since (UTC)</label>
+            <input class="form-input" style="width: 180px;" type="datetime-local" @bind="_since" />
+        </div>
+        <div>
+            <label class="text-xs text-secondary">Until (UTC)</label>
+            <input class="form-input" style="width: 180px;" type="datetime-local" @bind="_until" />
+        </div>
+        <div>
+            <label class="text-xs text-secondary">Page size</label>
+            <select class="form-input" style="width: 90px;" @bind="_pageSize">
+                <option value="25">25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+                <option value="250">250</option>
+            </select>
+        </div>
+        @if (HasAnyFilter)
+        {
+            <button class="btn btn-secondary btn-sm" @onclick="ClearFilters">
+                <TsakIcon Name="x" Size="14" /> Clear
+            </button>
+        }
+    </div>
+</div>
+
+@if (_loading)
+{
+    <div class="card"><div class="empty-state" style="padding: var(--space-6);">
+        <p class="text-secondary">Loading…</p>
+    </div></div>
+}
+else if (_unavailable)
+{
+    <div class="card"><div class="empty-state" style="padding: var(--space-6);">
+        <TsakIcon Name="shield" Size="32" />
+        <p class="text-secondary">
+            @(_error ?? "The audit trail is not available — this node runs without a database. " +
+              "Admin actions are written to the log instead (grep for the [tsak-audit] anchor).")
+        </p>
+    </div></div>
+}
+else
+{
+    <div class="card" style="padding: 0;">
+        <table class="table" style="width: 100%; font-size: var(--font-size-sm);">
+            <thead>
+                <tr>
+                    <th style="width: 160px;">Time</th>
+                    <th style="width: 140px;">Actor</th>
+                    <th>Action</th>
+                    <th>Target</th>
+                    <th style="width: 70px;">Status</th>
+                    <th style="width: 90px;">Duration</th>
+                    <th style="width: 120px;">IP</th>
+                </tr>
+            </thead>
+            <tbody>
+                @if (_entries.Length == 0)
+                {
+                    <tr><td colspan="7">
+                        <div class="empty-state" style="padding: var(--space-6);">
+                            <TsakIcon Name="search" Size="28" />
+                            <p class="text-secondary">No audit entries match the current filters.</p>
+                        </div>
+                    </td></tr>
+                }
+                else
+                {
+                    @foreach (var e in _entries)
+                    {
+                        <tr>
+                            <td class="text-mono text-xs">@e.Timestamp.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</td>
+                            <td>@(e.ActorPrincipal ?? e.ActorKeyId ?? "—")</td>
+                            <td>@e.Action</td>
+                            <td class="text-secondary">@(e.TargetResource ?? "—")</td>
+                            <td><TsakBadge Text="@e.StatusCode.ToString()" Variant="@StatusVariant(e.StatusCode)" /></td>
+                            <td class="text-xs">@e.DurationMs.ToString("F0") ms</td>
+                            <td class="text-mono text-xs">@(e.RemoteIp ?? "—")</td>
+                        </tr>
+                        @if (e.ExceptionType is not null)
+                        {
+                            <tr>
+                                <td></td>
+                                <td colspan="6" class="text-xs" style="color: var(--status-error);">
+                                    @e.ExceptionType: @e.ExceptionMessage
+                                </td>
+                            </tr>
+                        }
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
+
+    @* Pagination — offset/limit driven, next enabled only when the page came back full. *@
+    <div style="display: flex; align-items: center; gap: var(--space-3); margin-top: var(--space-3);">
+        <button class="btn btn-secondary btn-sm" disabled="@(_page == 0)" @onclick="PrevPage">
+            <TsakIcon Name="chevron-left" Size="14" /> Prev
+        </button>
+        <span class="text-sm text-secondary">
+            Page @(_page + 1) · showing @_entries.Length (offset @(_page * _pageSize))
+        </span>
+        <button class="btn btn-secondary btn-sm" disabled="@(!_hasNextPage)" @onclick="NextPage">
+            Next <TsakIcon Name="chevron-right" Size="14" />
+        </button>
+    </div>
+}
+
+@code {
+    [Parameter] public string NodeId { get; set; } = "";
+
+    private string _actor = "";
+    private string _action = "";
+    private string _target = "";
+    private DateTime? _since;
+    private DateTime? _until;
+    private int _pageSize = 50;
+
+    private int _page;
+    private AuditEntry[] _entries = [];
+    private bool _hasNextPage;
+    private bool _loading = true;
+    private bool _unavailable;
+    private string? _error;
+
+    private bool HasAnyFilter =>
+        !string.IsNullOrEmpty(_actor) || !string.IsNullOrEmpty(_action) ||
+        !string.IsNullOrEmpty(_target) || _since is not null || _until is not null;
+
+    protected override Task OnInitializedAsync() => LoadAsync(resetPage: true);
+
+    private async Task LoadAsync(bool resetPage)
+    {
+        if (resetPage) _page = 0;
+        _loading = true;
+        _error = null;
+        StateHasChanged();
+
+        try
+        {
+            var client = NodeProvider.GetClient(NodeId);
+            var result = await client.GetAuditAsync(
+                actor: NullIfBlank(_actor),
+                action: NullIfBlank(_action),
+                target: NullIfBlank(_target),
+                since: _since is { } s ? new DateTimeOffset(DateTime.SpecifyKind(s, DateTimeKind.Utc)) : null,
+                until: _until is { } u ? new DateTimeOffset(DateTime.SpecifyKind(u, DateTimeKind.Utc)) : null,
+                limit: _pageSize,
+                offset: _page * _pageSize);
+
+            if (!result.Available)
+            {
+                _unavailable = true;
+                _error = result.Error;
+                _entries = [];
+            }
+            else
+            {
+                _unavailable = false;
+                _entries = result.Entries;
+                // A full page implies there may be more; a short page is the last one.
+                _hasNextPage = _entries.Length == _pageSize;
+            }
+        }
+        catch (Exception ex)
+        {
+            _unavailable = true;
+            _error = ex.Message;
+            Toast.Error($"Failed to load audit: {ex.Message}");
+        }
+        finally
+        {
+            _loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task NextPage()
+    {
+        if (!_hasNextPage) return;
+        _page++;
+        await LoadAsync(resetPage: false);
+    }
+
+    private async Task PrevPage()
+    {
+        if (_page == 0) return;
+        _page--;
+        await LoadAsync(resetPage: false);
+    }
+
+    private async Task ClearFilters()
+    {
+        _actor = _action = _target = "";
+        _since = _until = null;
+        await LoadAsync(resetPage: true);
+    }
+
+    private async Task OnFilterKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+            await LoadAsync(resetPage: true);
+    }
+
+    private static string? NullIfBlank(string s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+
+    private static string StatusVariant(int status) => status switch
+    {
+        >= 500 => "error",
+        >= 400 => "warning",
+        _ => "online"
+    };
+}

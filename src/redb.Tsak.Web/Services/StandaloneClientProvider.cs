@@ -134,6 +134,8 @@ public sealed class StandaloneClientProvider : INodeClientProvider
     /// <inheritdoc />
     public Task<bool> RemoveNodeAsync(string nodeId) => Task.FromResult(false);
 
+    public Task<bool> SetCordonedAsync(string nodeId, bool cordoned) => Task.FromResult(false);
+
     public void Dispose()
     {
         foreach (var client in _clients.Values)

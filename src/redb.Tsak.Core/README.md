@@ -9,7 +9,7 @@ This project is referenced by the Worker host (`redb.Tsak.Worker`) and the Pro v
 ```
 redb.Tsak.Core/
 ├── Contracts/          ← Interfaces (ITsakModule, ITsakContextManager, ITsakCoordinator, …)
-├── Controllers/        ← ASP.NET Core controllers (13 controllers, 32 endpoints)
+├── Controllers/        ← redb.Route controllers (14 here + 1 from Core.Pro, 57 endpoints)
 ├── Extensions/         ← DI registration helpers
 ├── Models/             ← Internal models (not exposed as API DTOs)
 ├── Modules/            ← Assembly loading: ALC, hot-swap, manifest, packages
@@ -149,11 +149,11 @@ Serilog sink that captures recent log entries into a fixed-capacity ring buffer.
 | Implementation | Storage | Use case |
 |---|---|---|
 | `ConfigApiKeyStore` | `appsettings.json` (static list) | Single-node dev/simple deployments |
-| `RedbApiKeyStore` | EAV-backed redb schema | Multi-node, runtime key management |
+| `RedbApiKeyStore` | redb-backed schema | Multi-node, runtime key management |
 
 ### `AdminAuditFilter`
 
-MVC action filter that records every mutating API call to `LifecycleAuditService` for compliance and debugging.
+Controller action filter that records every mutating API call (marked `[AuditAdminAction]`) to the registered `IAdminAuditService`. The effective sink is `RouteAdminAuditService`, which persists events to the flat `tsak_audit_log` table (via `direct://tsak-audit`) and falls back to `LogAdminAuditService` (a `[tsak-audit]`-anchored JSON log line) when no database is configured. See `Audit/` for the schema initializer, writer route, query service and retention job.
 
 ## Controllers
 
@@ -161,18 +161,22 @@ MVC action filter that records every mutating API call to `LifecycleAuditService
 |---|---|---|
 | `AuthController` | `/api/auth` | Create/list/revoke API keys |
 | `ContextsController` | `/api/contexts` | CRUD + lifecycle for contexts |
-| `RoutesController` | `/api/contexts/{ctx}/routes` | Route lifecycle, inflight, force-stop |
+| `RoutesController` | `/api/contexts/{ctx}/routes` | Route lifecycle, inflight, force-stop, per-route metrics |
 | `ModulesController` | `/api/modules` | List, get, remove modules |
 | `SchedulerController` | `/api/scheduler` | Quartz status, jobs, start/standby/pause/resume |
-| `ClusterController` | `/api/cluster` | Cluster status, nodes, rebalance |
+| `ClusterController` | `/api/cluster` | Cluster status, nodes, rebalance (ships in `Core.Pro`, contributed via `ISystemContextPlugin`) |
 | `WatchdogController` | `/api/watchdog` | State, alerts, enable/disable |
-| `DiagnosticsController` | `/api/diagnostics` | System dump, route dump, lifecycle events |
+| `DiagnosticsController` | `/api/diagnostics` | System dump, route-level dump |
 | `LogsController` | `/api/logs` | Ring-buffer entries, log files, download |
-| `MetricsController` | `/api/metrics` | Per-route metrics, history |
-| `SystemController` | `/api/system` | Health, info, metrics |
+| `LifecycleController` | `/api/lifecycle` | Recent lifecycle events (filtered) |
+| `AuditController` | `/api/audit` | Persisted admin-action trail (filtered, paged; `admin` role) |
+| `SystemController` | `/api/system` | Health, info, metrics, metrics history |
 | `UsersController` | `/api/users` | User CRUD (Pro) |
 | `DashboardController` | `/api/dashboard` | Aggregated snapshot |
-| `HealthProbeController` | `/healthz` | Kubernetes-style liveness probe |
+| `HealthProbeController` | `/api/health` | Kubernetes probes: `startup`, `live`, `ready` (auth-exempt) |
+
+57 endpoints in total. Request path, auth model and the full per-endpoint map live in
+[API_GUIDE.md](../../API_GUIDE.md).
 
 ## Module assembly loading
 
@@ -244,7 +248,7 @@ Configure via `Tsak:Storage:Mode`:
 | Dependency | Purpose |
 |---|---|
 | `redb.Tsak.Contracts` | Shared DTO types for API responses |
-| `redb.Core` / `redb.Core.Pro` | EAV object store (state + key storage) |
+| `redb.Core` / `redb.Core.Pro` | typed object store (state + key storage) |
 | `redb.Route.Core` | Route context, builders, exchange model |
 | `redb.Route.Http` | HTTP transport for route endpoints |
 | `redb.Route.Quartz` | Quartz scheduler integration |

@@ -17,6 +17,7 @@ public sealed class RouteWatchdogService : BackgroundService
     private readonly ITsakContextManager _contextManager;
     private readonly ILogger<RouteWatchdogService> _logger;
     private readonly WatchdogOptions _options;
+    private readonly Alerts.AlertDispatcher? _alerts;
 
     private readonly object _lock = new();
     private volatile bool _enabled;
@@ -24,15 +25,21 @@ public sealed class RouteWatchdogService : BackgroundService
     private int _autoRestartsPerformed;
     private readonly List<WatchdogAlert> _activeAlerts = [];
 
+    // Keys already reported to the alert dispatcher; lets us fire only on NEW alerts, since the
+    // scan rebuilds the full snapshot every cycle. The dispatcher also dedups by time window.
+    private readonly HashSet<string> _notifiedKeys = [];
+
     public RouteWatchdogService(
         ITsakContextManager contextManager,
         ILogger<RouteWatchdogService> logger,
-        IOptions<WatchdogOptions> options)
+        IOptions<WatchdogOptions> options,
+        Alerts.AlertDispatcher? alerts = null)
     {
         _contextManager = contextManager;
         _logger = logger;
         _options = options.Value;
         _enabled = _options.Enabled;
+        _alerts = alerts;
     }
 
     /// <summary>Enables the watchdog at runtime.</summary>
@@ -168,6 +175,41 @@ public sealed class RouteWatchdogService : BackgroundService
             _activeAlerts.AddRange(newAlerts);
             _lastCheckAt = now;
         }
+
+        NotifyNewAlerts(newAlerts);
+    }
+
+    /// <summary>
+    /// Pushes genuinely new alerts to the dispatcher. The scan rebuilds the whole snapshot each
+    /// cycle, so we track already-notified keys here and let the dispatcher additionally dedup by
+    /// time window. Keys that clear (exchange completed) are forgotten, so a later recurrence
+    /// alerts again.
+    /// </summary>
+    private void NotifyNewAlerts(List<WatchdogAlert> current)
+    {
+        if (_alerts is null || !_alerts.IsActive) return;
+
+        var currentKeys = new HashSet<string>();
+        foreach (var a in current)
+        {
+            var key = $"{a.Level}|{a.ContextName}|{a.RouteId}|{a.ExchangeId}";
+            currentKeys.Add(key);
+            if (_notifiedKeys.Add(key))
+            {
+                _alerts.Enqueue(new Alerts.AlertNotification
+                {
+                    Level = a.Level,
+                    Title = $"{a.Level} exchange in route '{a.RouteId}'",
+                    ContextName = a.ContextName,
+                    RouteId = a.RouteId,
+                    ExchangeId = a.ExchangeId,
+                    ElapsedSeconds = a.ElapsedSeconds,
+                    Timestamp = a.DetectedAt
+                });
+            }
+        }
+
+        _notifiedKeys.IntersectWith(currentKeys); // forget cleared alerts
     }
 
     private async Task TryAutoRestartRouteAsync(string contextName, string routeId, CancellationToken ct)

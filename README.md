@@ -49,9 +49,9 @@ Tsak is the missing piece between "a Worker Service" and "an enterprise ESB":
 | Deploy a new pipeline | Redeploy whole process | `cp module.dll Libs/` (hot-reload) | Vendor wizard, hours |
 | Stop one pipeline without affecting others | Custom code | `tsak context stop orders` | Vendor UI |
 | Distribute pipelines across nodes | Custom coordinator | Built-in leader election + auto-rebalance | Vendor cluster |
-| REST API for ops/CI | Build it yourself | 32 endpoints, typed client | Yes, vendor-locked |
+| REST API for ops/CI | Build it yourself | 69 endpoints, typed client | Yes, vendor-locked |
 | CLI for CI/CD | Build it yourself | 30 commands, profiles, JSON output | Maybe |
-| Web dashboard | Build it yourself | Blazor Server, 10 pages | Yes, vendor-locked |
+| Web dashboard | Build it yourself | Blazor Server, 11 pages | Yes, vendor-locked |
 | Cost | Engineering time | Apache 2.0, free | $$$$ + lock-in |
 | Routing engine | DIY or MassTransit | **redb.Route** — 22 transports, 24 EIP processors, fluent DSL | Vendor's DSL |
 
@@ -205,8 +205,8 @@ redb.Tsak/
 │   ├── redb.Tsak.Web/           Blazor Server dashboard, custom design system
 │   └── redb.Tsak.Web.Pro/       Pro web extensions (auth, node providers)
 ├── tests/
-│   ├── redb.Tsak.Tests/         287 unit + integration tests
-│   └── redb.Tsak.CLI.Tests/     64 CLI command tests
+│   ├── redb.Tsak.Tests/         492 unit + HTTP integration tests
+│   └── redb.Tsak.CLI.Tests/     83 CLI command tests
 ├── docs/
 │   ├── PLAN.md                  Architecture reference
 │   ├── CONFIG_GUIDE.md          5-layer configuration deep-dive
@@ -214,10 +214,13 @@ redb.Tsak/
 │   ├── ENTERPRISE_AUDIT.md
 │   └── phases/                  Per-phase implementation notes (0..8B)
 ├── README.md                    This file
+├── API_GUIDE.md                 REST API: endpoint map, pipeline, auth, probes
+├── MODULE_DEPLOYMENT.md         Module upload/rollback trust model & signing
+├── CONFIG_GUIDE.md              5-layer configuration model
+├── DEPLOYMENT.md                Running the published images
 ├── CHANGELOG.md                 Per-version changes
 ├── CONTRIBUTING.md              Contribution guide
 ├── SECURITY.md                  Security policy
-├── DEPLOYMENT_SECRETS.md        Secrets management for production
 └── LICENSE                      Apache 2.0
 ```
 
@@ -262,7 +265,7 @@ docker run -d --name tsak \
   ghcr.io/redbase-app/redb-tsak-stack:latest
 ```
 
-Ready-to-use compose files (worker / web / stack / full-with-postgres) live in [`publish/docker/`](publish/docker/).
+Ready-to-use compose files (worker / web / stack / full-with-postgres) live in `publish/docker/`.
 
 ### Option B — Standalone archive (no Docker)
 
@@ -273,7 +276,15 @@ Self-contained archives (no .NET runtime required on host) are attached to every
 | `redb-tsak-<version>-linux-x64.tar.gz` | Linux x64 |
 | `redb-tsak-<version>-win-x64.zip`      | Windows x64 |
 
-Each archive bundles `worker/`, `web/`, `cli/`, all 20 Route connectors in `worker/Libs/shared/`, and startup scripts (`start-worker.sh`/`.bat`/`.ps1`, same for web and stack).
+Each archive bundles `worker/`, `web/`, `cli/`, the Route connectors **and the redb.\* framework** in `worker/Libs/shared/`, and startup scripts (`start-worker.sh`/`.bat`/`.ps1`, same for web and stack).
+
+#### Shared runtime layer — swappable redb.\* libraries
+
+The Tsak binary is deliberately thin: only `redb.Tsak.*` (+ `redb.Licensing`) live in the app bin. The **redb.\* framework and providers** (`redb.Core(.Pro)`, `redb.Route.*`, `redb.Postgres/MSSql/SQLite (.Pro)`) and every Route connector live in **`worker/Libs/shared/`**, byte-loaded at startup before any redb type is touched.
+
+- **Patch a library without rebuilding Tsak.** A binary-compatible fix of a redb leaf/provider/connector — or a new beta connector — is delivered by dropping its DLL into `worker/Libs/shared/`. No host rebuild, no archive re-spin. Use `scripts/refresh-shared.ps1` `-Lib <name> -SharedDir <archive>/worker/Libs/shared`, then re-zip / re-cosign the archive.
+- **Fail-fast + compat-gate.** A missing/corrupt framework DLL aborts startup with a precise message rather than failing later under load; the shared redb.\* **minor** must match the archive's Tsak minor (patches may differ) or startup is refused.
+- **What's loaded, really.** `GET /api/system/assemblies` (admin) reports every loaded assembly with its version and origin (shared / bin / runtime).
 
 ```bash
 curl -LO https://github.com/redbase-app/redb-tsak/releases/latest/download/redb-tsak-2.0.2-linux-x64.tar.gz
@@ -284,7 +295,7 @@ cd redb-tsak-2.0.2-linux-x64
 
 ### Verifying signatures (recommended)
 
-All images and archives are signed with [cosign](https://docs.sigstore.dev/cosign/installation/). Public key: [`publish/keys/cosign.pub`](publish/keys/cosign.pub).
+All images and archives are signed with [cosign](https://docs.sigstore.dev/cosign/installation/). Public key: `publish/keys/cosign.pub`.
 
 ```bash
 # Image
@@ -774,24 +785,33 @@ Full reference: [CONFIG_GUIDE.md](CONFIG_GUIDE.md).
 
 ## REST API
 
-32 endpoints organized into 12 controllers. Every endpoint speaks JSON. Auth is opt-in (`Tsak:Auth:Enabled`) — when enabled, all endpoints require an API key except the auth-exempt health probes under `/api/health/*` (configurable via `Tsak:Api:AuthExempt`).
+69 endpoints organized into 16 controllers. Every endpoint speaks JSON. Auth is opt-in (`Tsak:Auth:Enabled`) — when enabled, all endpoints require an API key except the auth-exempt health probes under `/api/health/*` (configurable via `Tsak:Api:AuthExempt`).
+
+The API is itself a route context (`_system`): one catch-all HTTP listener whose pipeline is
+*header bridge → auth → controller dispatch*, with controllers discovered by assembly scan.
+**[API_GUIDE.md](API_GUIDE.md)** documents the full endpoint map, the request pipeline, the
+auth model, and the extension points.
 
 ### Controllers
 
 | Group | Endpoints | Purpose |
 |---|---:|---|
-| `/api/auth` | 3 | Create / list / revoke API keys |
-| `/api/users` | 5 | User CRUD (Pro feature, redb-backed) |
-| `/api/contexts` | 7 | List / get / start / stop / restart / reset-route-states / remove |
-| `/api/routes` | 6 | List / get / start / stop / force-stop / inflight per route |
-| `/api/modules` | 3 | List / get / remove loaded modules |
-| `/api/cluster` | 4 | Status / nodes / rebalance / remove-node |
-| `/api/system` | 4 | Health / metrics / metrics-history / info |
-| `/api/scheduler` | 9 | Status / jobs / running / start / standby / pause-job / resume-job / fire-job |
-| `/api/watchdog` | 2 | State / alerts |
-| `/api/lifecycle` | 1 | Recent lifecycle events (filtered) |
+| `/api/health` | 3 | Kubernetes probes: startup / live / ready (auth-exempt) |
+| `/api/system` | 5 | Health / metrics / metrics-history / info / config |
+| `/api/contexts` | 8 | List / get / start / stop / restart / reset-route-states / endpoints / remove |
+| `/api/contexts/{ctx}/routes` | 8 | List / get / start / stop / force-stop / inflight / context-wide inflight / metrics |
+| `/api/modules` | 6 | List / get / remove / upload / validate / rollback (signed; upload off by default) |
+| `/api/watchdog` | 6 | Status / alerts / enable / disable / alert-status / test-alert |
 | `/api/diagnostics` | 2 | Dump (cluster-wide) / route-level diagnostics |
-| `/api/logs` | 3 | Tail / list-files / download-file |
+| `/api/lifecycle` | 1 | Recent lifecycle events (filtered) |
+| `/api/audit` | 1 | Persisted admin-action trail (filtered, paged; `admin` role) |
+| `/api/exchanges` | 3 | Dead-letter queue: list / replay / discard failed exchanges |
+| `/api/logs` | 3 | Tail (incremental) / list-files / download-file |
+| `/api/scheduler` | 8 | Status / scheduled / running / start / standby / pause-job / resume-job / fire-job |
+| `/api/cluster` | 6 | Status / nodes / rebalance / remove-node / cordon / uncordon (Pro) |
+| `/api/auth` | 3 | Create / list / revoke API keys |
+| `/api/users` | 5 | User CRUD (redb-backed storage required) |
+| `/api/dashboard` | 1 | Aggregated snapshot for the UI (one round-trip) |
 
 ### Sample calls
 
@@ -873,7 +893,7 @@ tsak context list --output json    # JSON
 tsak context list --output plain   # raw lines (grep-friendly)
 ```
 
-### Command groups (30 commands)
+### Command groups (43 commands)
 
 | Group | Commands |
 |---|---|
@@ -881,10 +901,11 @@ tsak context list --output plain   # raw lines (grep-friendly)
 | **auth** | `auth keys list`, `auth keys create`, `auth keys revoke` |
 | **context** | `context list`, `context get`, `context start`, `context stop`, `context restart`, `context reset-routes`, `context delete` |
 | **route** | `route list`, `route get`, `route start`, `route stop`, `route force-stop`, `route inflight` |
-| **module** | `module list`, `module get`, `module deploy`, `module delete` |
-| **scheduler** | `scheduler status`, `scheduler jobs`, `scheduler running`, `scheduler start`, `scheduler standby`, `scheduler pause-job`, `scheduler resume-job`, `scheduler fire-job` |
-| **cluster** | `cluster overview`, `cluster nodes`, `cluster rebalance`, `cluster remove-node` |
-| **monitoring** | `health`, `metrics`, `metrics history`, `info`, `logs`, `logs files`, `logs download`, `lifecycle`, `diagnostics`, `route-diagnostics` |
+| **module** | `module list`, `module get`, `module remove`, `module keygen`, `module sign`, `module deploy`, `module validate`, `module rollback` |
+| **scheduler** | `scheduler status`, `scheduler jobs`, `scheduler running`, `scheduler start`, `scheduler standby`, `scheduler pause`, `scheduler resume`, `scheduler fire` |
+| **cluster** | `cluster status`, `cluster nodes`, `cluster rebalance`, `cluster cordon`, `cluster uncordon` |
+| **monitoring** | `health`, `metrics`, `metrics history`, `info`, `system config`, `logs`, `logs files`, `logs download`, `lifecycle`, `diagnostics`, `route-diagnostics`, `audit` |
+| **dlq** | `dlq list`, `dlq replay`, `dlq discard` |
 | **watchdog** | `watchdog status`, `watchdog alerts` |
 | **users** | `users list`, `users get`, `users create`, `users update`, `users delete` |
 
@@ -1109,7 +1130,9 @@ When `UsePro = true`, [redb.Core.Pro](https://github.com/redbase-app/redb) is en
 | **Cluster trust** | Inter-node calls use the same API key auth — no implicit trust between nodes |
 | **Protected resources** | The `_system` context cannot be stopped or removed by any caller, including admins |
 
-Full policy: [SECURITY.md](SECURITY.md). Production secrets handling: [DEPLOYMENT_SECRETS.md](DEPLOYMENT_SECRETS.md).
+Full policy: [SECURITY.md](SECURITY.md). Production secrets — which keys exist, what ships empty in the
+image, and how to inject connection strings, the dashboard login and the management-API secret through
+env vars — are covered in [DEPLOYMENT.md](DEPLOYMENT.md#5-dashboard--passwords).
 
 ---
 
@@ -1167,7 +1190,7 @@ Distinct probes for the three K8s lifecycle phases. All three are **auth-exempt*
 > The probe endpoints live under **`/api/health/*`** (the auth-exempt prefix). The rich
 > aggregate at `GET /api/system/health` is a separate, auth-gated endpoint for CLI/Web.
 
-`HealthCheckService` aggregates probes (worst status wins: Unhealthy > Degraded > Healthy) and never throws — exceptions inside a probe become Unhealthy, never a 500. Modules can contribute custom probes by implementing `IModuleHealthContributor`. Pro ships `ClusterHealthContributor` reporting leader / member health.
+`HealthCheckService` aggregates probes (worst status wins: Unhealthy > Degraded > Healthy) and never throws — exceptions inside a probe become Unhealthy, never a 500. Modules can contribute custom probes by implementing `IModuleHealthContributor`. Pro ships `ClusterHealthContributor` reporting leader / member health. Full breakdown of both health endpoints and the contributor SPI: [API_GUIDE.md](API_GUIDE.md#6-health-two-endpoints-two-audiences).
 
 ### Logs
 
@@ -1311,7 +1334,7 @@ Mount `Libs/` from the host (or a shared volume) so module updates can be deploy
 
 ### docker compose templates
 
-Ready-to-use compose files are shipped in [`publish/docker/`](publish/docker/) — copy and edit, no monorepo paths:
+Ready-to-use compose files are shipped in `publish/docker/` — copy and edit, no monorepo paths:
 
 | File | What it stands up |
 |---|---|
@@ -1328,11 +1351,14 @@ Each has a matching `compose.*.env.example` — copy to `.env` and fill in.
 cosign verify --key cosign.pub ghcr.io/redbase-app/redb-tsak-worker:2.0.2
 ```
 
-Public key: [`publish/keys/cosign.pub`](publish/keys/cosign.pub) in the repo, or downloadable from any [release](https://github.com/redbase-app/redb-tsak/releases).
+Public key: `publish/keys/cosign.pub` in the repo, or downloadable from any [release](https://github.com/redbase-app/redb-tsak/releases).
 
 ### Building images yourself
 
-If you need a custom build (e.g. proprietary connectors baked in), see [`publish/HOW_TO_PUBLISH.md`](publish/HOW_TO_PUBLISH.md) for the full pipeline (`pwsh publish/build.ps1 -All`).
+If you need a custom build (e.g. proprietary connectors baked in), build from
+[`src/redb.Tsak.Worker/Dockerfile`](src/redb.Tsak.Worker/Dockerfile) — a plain multi-stage
+`dotnet publish`, no private tooling involved. The template host ships its own
+[`Dockerfile`](templates/templates/tsak-worker/Dockerfile) for the same purpose.
 
 ---
 
@@ -1438,7 +1464,8 @@ dotnet test redb.Tsak/tests/redb.Tsak.CLI.Tests
 
 ## Implementation status
 
-All 9 phases are complete and merged. See [STATUS.md](STATUS.md) for the per-phase breakdown.
+All 9 phases are complete and merged. The per-phase breakdown is the table below; each release is
+itemised in [CHANGELOG.md](CHANGELOG.md).
 
 | # | Phase | Status | Tests |
 |---|---|---|---|
@@ -1451,7 +1478,7 @@ All 9 phases are complete and merged. See [STATUS.md](STATUS.md) for the per-pha
 | 6 | REST API & Auth (12 controllers, redb key store) | Done | 42 |
 | 7 | Quartz Scheduler (DI, schema initializer, controller) | Done | 30 |
 | 8A | CLI (30 commands, profiles, JSON) | Done | 64 |
-| 8B | Web UI (Blazor Server, 10 pages, design system) | Done | — |
+| 8B | Web UI (Blazor Server, 11 pages, design system) | Done | — |
 
 **Total: 351 tests passing.**
 
@@ -1484,7 +1511,7 @@ Out of the box, no. The cluster coordination assumes low-latency access to the s
 The dashboard is small and focused. Custom CSS keeps the bundle tiny, eliminates a major source of UI churn (vendor breaking changes), and gives full control over theming. CSS variables enable dark/light themes with no JS.
 
 **Is there an OpenAPI spec?**
-Not yet. The 12 controllers are documented in [STATUS.md](STATUS.md) and exposed via the typed `ITsakApiClient`. OpenAPI / Swagger generation is on the roadmap.
+Not yet. All 16 controllers are documented in [API_GUIDE.md](API_GUIDE.md) and exposed via the typed `ITsakApiClient`. OpenAPI / Swagger generation is on the roadmap.
 
 ---
 
@@ -1497,7 +1524,7 @@ Not yet. The 12 controllers are documented in [STATUS.md](STATUS.md) and exposed
 - Live config editor in the dashboard
 - Multi-region federation primitives
 
-See [docs/](docs/) for design notes on each.
+See docs/ for design notes on each.
 
 ---
 

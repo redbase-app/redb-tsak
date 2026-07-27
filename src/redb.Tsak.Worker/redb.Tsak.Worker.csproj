@@ -36,7 +36,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\redb.Tsak.Core\redb.Tsak.Core.csproj" />
-    <PackageReference Include="redb.Tsak.Core.Pro" Version="3.3.3" />    <!-- Connector transports moved to Libs/shared/ — loaded at runtime by SharedAssemblyLoader.
+    <PackageReference Include="redb.Tsak.Core.Pro" Version="3.4.0" />    <!-- Connector transports moved to Libs/shared/ — loaded at runtime by SharedAssemblyLoader.
          Use scripts/build-shared.ps1 to build and copy connectors. -->
   </ItemGroup>
 
@@ -53,6 +53,34 @@
   <ItemGroup>
     <None Include="Libs\shared\**" CopyToOutputDirectory="PreserveNewest" LinkBase="Libs\shared" />
   </ItemGroup>
+
+  <!--
+    Stage B2 of the shared-layer move (docs/SHARED_RUNTIME_PLAN.md): ALL redb.* runtime DLLs — the
+    framework/providers AND every redb.Route.* that leaks in transitively (connectors, controllers,
+    the redb.Route umbrella) — are PRUNED from the Worker output ROOT and served instead from
+    Libs/shared. The framework is byte-loaded early by SharedRuntime; anything else redb.* is resolved
+    on demand by the shared-layer resolver (installed at the same early point). So they become
+    swappable patch DLLs without rebuilding this host.
+
+    Kept in the bin: redb.Tsak.* (the host kernel) and redb.Licensing (tiny, stable, resolves from
+    app-base for shared-loaded redb.* that need it). Glob-based so no per-name list drifts. Only the
+    ROOT output is pruned — Libs/shared/ copies are untouched. MSBuild ExcludeAssets/PrivateAssets
+    can't do this cleanly (see redb.Tsak.Core.csproj), hence an explicit post-build/publish prune.
+  -->
+  <Target Name="PruneRedbFromBuild" AfterTargets="Build">
+    <ItemGroup>
+      <_RedbToPrune Include="$(OutDir)redb.*.dll;$(OutDir)redb.*.pdb"
+                    Exclude="$(OutDir)redb.Tsak.*;$(OutDir)redb.Licensing.*" />
+    </ItemGroup>
+    <Delete Files="@(_RedbToPrune)" />
+  </Target>
+  <Target Name="PruneRedbFromPublish" AfterTargets="Publish">
+    <ItemGroup>
+      <_RedbToPrunePub Include="$(PublishDir)redb.*.dll;$(PublishDir)redb.*.pdb"
+                       Exclude="$(PublishDir)redb.Tsak.*;$(PublishDir)redb.Licensing.*" />
+    </ItemGroup>
+    <Delete Files="@(_RedbToPrunePub)" />
+  </Target>
 
 </Project>
 

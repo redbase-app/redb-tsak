@@ -38,6 +38,12 @@ public interface ITsakApiClient : IDisposable
     /// <summary>Remove a dead/offline cluster node.</summary>
     Task<ClusterNodeRemovedResponse> RemoveClusterNodeAsync(string nodeId, CancellationToken ct = default);
 
+    /// <summary>Cordon a node (take on no new work; drain to peers) for planned maintenance.</summary>
+    Task<ClusterCordonResponse> CordonNodeAsync(string nodeId, CancellationToken ct = default);
+
+    /// <summary>Uncordon a node — it starts taking on work again.</summary>
+    Task<ClusterCordonResponse> UncordonNodeAsync(string nodeId, CancellationToken ct = default);
+
     // ── Contexts ─────────────────────────────────────────────────────
 
     /// <summary>List all route contexts.</summary>
@@ -98,6 +104,12 @@ public interface ITsakApiClient : IDisposable
     /// <summary>Disable watchdog monitoring.</summary>
     Task DisableWatchdogAsync(CancellationToken ct = default);
 
+    /// <summary>Alert-delivery status: whether delivery is active and which channels are enabled.</summary>
+    Task<AlertDeliveryStatus> GetAlertStatusAsync(CancellationToken ct = default);
+
+    /// <summary>Send a synthetic alert through every enabled channel; returns the per-channel outcome.</summary>
+    Task<AlertTestResult> TestAlertAsync(CancellationToken ct = default);
+
     // ── Lifecycle ────────────────────────────────────────────────────
 
     /// <summary>Get lifecycle events with optional filters.</summary>
@@ -136,6 +148,23 @@ public interface ITsakApiClient : IDisposable
     /// <summary>Download a log file as ZIP bytes.</summary>
     Task<byte[]> DownloadLogFileAsync(string filename, CancellationToken ct = default);
 
+    // ── Audit ────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Query the persistent admin-action audit trail, newest-first. All filters are optional;
+    /// use <paramref name="limit"/>/<paramref name="offset"/> to page (limit is clamped to 1..1000
+    /// server-side). Returns <c>Available = false</c> when the node runs without a database.
+    /// </summary>
+    Task<AuditQueryResult> GetAuditAsync(
+        string? actor = null,
+        string? action = null,
+        string? target = null,
+        DateTimeOffset? since = null,
+        DateTimeOffset? until = null,
+        int? limit = null,
+        int? offset = null,
+        CancellationToken ct = default);
+
     // ── Modules ──────────────────────────────────────────────────────
 
     /// <summary>List all modules.</summary>
@@ -146,6 +175,33 @@ public interface ITsakApiClient : IDisposable
 
     /// <summary>Remove a module.</summary>
     Task<ModuleRemovedResponse> RemoveModuleAsync(string name, CancellationToken ct = default);
+
+    /// <summary>
+    /// Upload a <c>.tpkg</c> package for deployment. <paramref name="signatureBase64"/> is the
+    /// detached signature (sent as the <c>X-Tsak-Signature</c> header); pass null when unsigned.
+    /// Requires the node to have upload enabled and the caller to hold the <c>admin</c> role.
+    /// </summary>
+    Task<ModuleDeployResponse> UploadModuleAsync(byte[] packageBytes, string? signatureBase64 = null, CancellationToken ct = default);
+
+    /// <summary>Dry-run validate a `.tpkg` without installing it.</summary>
+    Task<ModuleDeployResponse> ValidateModuleAsync(byte[] packageBytes, string? signatureBase64 = null, CancellationToken ct = default);
+
+    /// <summary>Roll a module back to its previous on-disk version.</summary>
+    Task<ModuleDeployResponse> RollbackModuleAsync(string name, CancellationToken ct = default);
+
+    // ── Dead-letter queue ────────────────────────────────────────────
+
+    /// <summary>Query dead-lettered exchanges (failed at a route checkpoint), newest-first, paged.</summary>
+    Task<FailedExchangeQueryResult> GetFailedExchangesAsync(
+        string? context = null, string? route = null, string? status = null,
+        DateTimeOffset? since = null, DateTimeOffset? until = null,
+        int? limit = null, int? offset = null, CancellationToken ct = default);
+
+    /// <summary>Replay a dead-lettered exchange: re-run its route tail from the captured snapshot.</summary>
+    Task<ExchangeReplayResult> ReplayExchangeAsync(string entryId, CancellationToken ct = default);
+
+    /// <summary>Discard a dead-lettered exchange.</summary>
+    Task<ExchangeReplayResult> DiscardExchangeAsync(string entryId, CancellationToken ct = default);
 
     // ── Scheduler ────────────────────────────────────────────────────
 
@@ -170,6 +226,9 @@ public interface ITsakApiClient : IDisposable
     /// <summary>Resume a specific job.</summary>
     Task<SchedulerActionResponse> ResumeJobAsync(string jobKey, CancellationToken ct = default);
 
+    /// <summary>Fire a scheduled job immediately (out of schedule).</summary>
+    Task<SchedulerActionResponse> FireJobAsync(string jobKey, CancellationToken ct = default);
+
     // ── System ───────────────────────────────────────────────────────
 
     /// <summary>Get system health status.</summary>
@@ -183,6 +242,9 @@ public interface ITsakApiClient : IDisposable
 
     /// <summary>Get system information.</summary>
     Task<SystemInfoResponse> GetInfoAsync(CancellationToken ct = default);
+
+    /// <summary>Get the effective (merged, redacted) configuration of this node (admin).</summary>
+    Task<EffectiveConfigResult> GetConfigAsync(CancellationToken ct = default);
 
     // ── Users ────────────────────────────────────────────────────────
 

@@ -22,18 +22,18 @@ The Tsak cluster is **redb-backed**: leader election, heartbeats and round-robin
 distribution live in the redb store (this is **not** Quartz clustering, which stays off on
 SQLite). The shipped `appsettings.json` is already wired for it, so there is nothing to turn on:
 
-- `Tsak:Redb:UsePro: true` + a bundled **1-year trial license** whose features include
-  `tsak.cluster` (`max_nodes: 3`);
+- `Tsak:Redb:UsePro: true` — Pro, including `tsak.cluster`, is **free and unrestricted on the whole
+  3.x line**, so there is no license key and no node cap;
 - `Tsak:Cluster:Enabled: true`, on an embedded **SQLite** store (zero external dependencies).
 
 So a **single Worker process is already a working one-node cluster** — start it and it elects
-itself leader and begins distributing routes. Add more nodes (up to the license `max_nodes`)
-pointing at the **same redb database**, same `ClusterName`/`GroupName`, each with an empty
-`NodeId` (self-assigned), and they join automatically.
+itself leader and begins distributing routes. Add as many nodes as you like — they point at the
+**same redb database**, share `ClusterName`/`GroupName`, each with an empty `NodeId`
+(self-assigned), and join automatically.
 
 ```jsonc
 "Tsak": {
-  "Redb":    { "Provider": "sqlite", "UsePro": true, "License": [ "<trial JWT — bundled>" ] },
+  "Redb":    { "Provider": "sqlite", "UsePro": true, "License": [ ] },
   "Cluster": { "Enabled": true, "ClusterName": "default", "GroupName": "default", "Strategy": "round-robin" }
 }
 ```
@@ -44,9 +44,9 @@ Run **standalone** (no cluster) by flipping one flag:
 "Tsak": { "Cluster": { "Enabled": false } }
 ```
 
-> The bundled trial is a real, time-limited Pro key — fine for evaluation and single-box
-> clusters. For production or more than `max_nodes`, drop your own license into
-> `Tsak:Redb:License` and point the cluster at a shared Postgres/MSSql redb store.
+> `License` stays **empty** — the whole 3.x line runs Pro free, in production, with no node cap
+> (licensing re-enables only at major 4.0). For a multi-node cluster the one thing you do change is
+> the store: point every node at a shared Postgres/MSSql redb database instead of embedded SQLite.
 
 ## What Tsak exposes
 

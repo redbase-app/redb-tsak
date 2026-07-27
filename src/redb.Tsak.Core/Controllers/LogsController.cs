@@ -14,6 +14,7 @@ namespace redb.Tsak.Core.Controllers;
 /// GET /api/logs/files/{filename} — download log file as ZIP
 /// </summary>
 [Route("/api/logs")]
+[RequiresRole(TsakRoles.Operator)] // log bodies may carry payload fragments
 public class LogsController : RedbController
 {
     [HttpGet("")]

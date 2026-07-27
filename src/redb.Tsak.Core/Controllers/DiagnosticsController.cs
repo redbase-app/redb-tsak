@@ -12,6 +12,7 @@ namespace redb.Tsak.Core.Controllers;
 /// Diagnostic endpoints: system dump and per-route diagnostics.
 /// </summary>
 [Route("/api/diagnostics")]
+[RequiresRole(TsakRoles.Operator)] // dumps expose thread state and internals — not a read-only concern
 public class DiagnosticsController : RedbController
 {
     private ITsakContextManager GetManager() => Context.GetService<ITsakContextManager>()

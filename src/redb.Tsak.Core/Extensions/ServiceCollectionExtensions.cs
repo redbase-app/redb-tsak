@@ -55,6 +55,23 @@ public static class ServiceCollectionExtensions
         // Admin audit (default sink: structured WRN log; Pro can replace with redb-backed sink)
         services.AddTsakAdminAudit();
 
+        // Watchdog alert delivery (all channels off by default; configured via Tsak:Watchdog:Alerts)
+        services.AddTsakAlerts(configuration);
+
+        // Dead-letter queue (capture failed exchanges at route checkpoints + replay).
+        services.AddSingleton<Dlq.DlqService>();
+        services.AddSingleton<IHostedService, Dlq.DlqSchemaInitializer>();
+        // Retention runs as a cron:// route on the _system context (SystemContextBuilder), not a job.
+
+        // Module deployment (upload/rollback). Disabled by default — an RCE-capable surface.
+        var uploadOptions = new Modules.ModuleUploadOptions();
+        configuration.GetSection("Tsak:Modules:Upload").Bind(uploadOptions);
+        var moduleSigOptions = new Modules.ModuleSignatureOptions();
+        configuration.GetSection("Tsak:Modules:Signature").Bind(moduleSigOptions);
+        services.AddSingleton(uploadOptions);
+        services.AddSingleton(moduleSigOptions);
+        services.AddSingleton<Modules.ModuleUploadService>();
+
         ConfigureHotReload(services, configuration);
         ConfigureMonitoring(services, configuration);
         ConfigureQuartz(services, configuration);
@@ -141,7 +158,12 @@ public static class ServiceCollectionExtensions
                 if (!string.IsNullOrEmpty(license))
                     options.WithLicense(license);   // registers the license (redb Pro + LicenseStore)
 
-                options.Configure(c => { c.PropsSaveStrategy = strategy; c.EnsureCreated = true; });
+                options.Configure(c =>
+                {
+                    c.PropsSaveStrategy = strategy;
+                    c.EnsureCreated = true;
+                    ApplyCacheConfig(c, configuration);
+                });
             });
         }
         else
@@ -160,8 +182,59 @@ public static class ServiceCollectionExtensions
                 else
                     options.UsePostgres(connectionString);
 
-                options.Configure(c => { c.PropsSaveStrategy = strategy; c.EnsureCreated = true; });
+                options.Configure(c =>
+                {
+                    c.PropsSaveStrategy = strategy;
+                    c.EnsureCreated = true;
+                    ApplyCacheConfig(c, configuration);
+                });
             });
+        }
+    }
+
+    /// <summary>
+    /// Maps the optional <c>Tsak:Redb:Cache</c> section onto the redb configuration. Every key is
+    /// optional and defaults to redb's own default, so an absent section changes nothing.
+    /// <para>
+    /// <b>Safety note:</b> <c>SkipHashValidationOnCacheCheck=true</c> trusts the in-process cache
+    /// without re-checking the object hash in the database. That is correct only for a single writer.
+    /// In a Tsak cluster (multiple nodes writing to the same database) it can serve stale data, so we
+    /// log a warning if both are on.
+    /// </para>
+    /// </summary>
+    private static void ApplyCacheConfig(redb.Core.Models.Configuration.RedbServiceConfiguration c, IConfiguration configuration)
+    {
+        var cache = configuration.GetSection("Tsak:Redb:Cache");
+        if (!cache.Exists()) return;
+
+        // Props cache
+        if (cache["EnableProps"] is { } ep && bool.TryParse(ep, out var enableProps)) c.EnablePropsCache = enableProps;
+        if (cache.GetValue<int?>("PropsMaxSize") is { } pms) c.PropsCacheMaxSize = pms;
+        if (cache.GetValue<int?>("PropsTtlMinutes") is { } ptm) c.PropsCacheTtl = TimeSpan.FromMinutes(ptm);
+        if (cache["SkipHashValidationOnCacheCheck"] is { } sh && bool.TryParse(sh, out var skipHash))
+            c.SkipHashValidationOnCacheCheck = skipHash;
+
+        // List cache
+        if (cache["EnableList"] is { } el && bool.TryParse(el, out var enableList)) c.EnableListCache = enableList;
+        if (cache.GetValue<int?>("ListTtlMinutes") is { } ltm) c.ListCacheTtl = TimeSpan.FromMinutes(ltm);
+
+        // Metadata cache
+        if (cache["EnableMetadata"] is { } em && bool.TryParse(em, out var enableMeta)) c.EnableMetadataCache = enableMeta;
+        if (cache.GetValue<int?>("MetadataTtlMinutes") is { } mtm) c.MetadataCacheLifetimeMinutes = mtm;
+
+        // Hash recompute on save + cache domain isolation
+        if (cache["AutoRecomputeHash"] is { } ar && bool.TryParse(ar, out var autoHash)) c.AutoRecomputeHash = autoHash;
+        if (!string.IsNullOrWhiteSpace(cache["CacheDomain"])) c.CacheDomain = cache["CacheDomain"];
+
+        // Cluster + skip-hash is a stale-read hazard.
+        if (c.SkipHashValidationOnCacheCheck && configuration.GetValue<bool>("Tsak:Cluster:Enabled"))
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.Error.WriteLine(
+                "[WARN] Tsak:Redb:Cache:SkipHashValidationOnCacheCheck=true with Tsak:Cluster:Enabled=true. " +
+                "Skipping cache hash validation can serve STALE data across cluster nodes writing to the same " +
+                "database. Set it to false in clustered deployments.");
+            Console.ResetColor();
         }
     }
 

@@ -99,6 +99,20 @@ public sealed class TsakApiClient : ITsakApiClient
         return await ReadAsync<ClusterNodeRemovedResponse>(response, ct);
     }
 
+    /// <inheritdoc />
+    public async Task<ClusterCordonResponse> CordonNodeAsync(string nodeId, CancellationToken ct = default)
+    {
+        var response = await _http.PostAsync($"api/cluster/nodes/{Uri.EscapeDataString(nodeId)}/cordon", null, ct);
+        return await ReadAsync<ClusterCordonResponse>(response, ct);
+    }
+
+    /// <inheritdoc />
+    public async Task<ClusterCordonResponse> UncordonNodeAsync(string nodeId, CancellationToken ct = default)
+    {
+        var response = await _http.PostAsync($"api/cluster/nodes/{Uri.EscapeDataString(nodeId)}/uncordon", null, ct);
+        return await ReadAsync<ClusterCordonResponse>(response, ct);
+    }
+
     // ── Contexts ─────────────────────────────────────────────────────
 
     /// <inheritdoc />
@@ -234,6 +248,20 @@ public sealed class TsakApiClient : ITsakApiClient
             await ReadAsync<object>(response, ct);
     }
 
+    /// <inheritdoc />
+    public async Task<AlertDeliveryStatus> GetAlertStatusAsync(CancellationToken ct = default)
+    {
+        var response = await _http.GetAsync("api/watchdog/alerts/status", ct);
+        return await ReadAsync<AlertDeliveryStatus>(response, ct);
+    }
+
+    /// <inheritdoc />
+    public async Task<AlertTestResult> TestAlertAsync(CancellationToken ct = default)
+    {
+        var response = await _http.PostAsync("api/watchdog/test-alert", null, ct);
+        return await ReadAsync<AlertTestResult>(response, ct);
+    }
+
     // ── Lifecycle ────────────────────────────────────────────────────
 
     /// <inheritdoc />
@@ -308,6 +336,29 @@ public sealed class TsakApiClient : ITsakApiClient
     }
 
     /// <inheritdoc />
+    public async Task<AuditQueryResult> GetAuditAsync(
+        string? actor = null,
+        string? action = null,
+        string? target = null,
+        DateTimeOffset? since = null,
+        DateTimeOffset? until = null,
+        int? limit = null,
+        int? offset = null,
+        CancellationToken ct = default)
+    {
+        var query = BuildQuery(
+            ("actor", actor),
+            ("action", action),
+            ("target", target),
+            ("since", since?.ToUniversalTime().ToString("o")),
+            ("until", until?.ToUniversalTime().ToString("o")),
+            ("limit", limit?.ToString()),
+            ("offset", offset?.ToString()));
+        var response = await _http.GetAsync($"api/audit{query}", ct);
+        return await ReadAsync<AuditQueryResult>(response, ct);
+    }
+
+    /// <inheritdoc />
     public async Task<LogFilesResponse> GetLogFilesAsync(CancellationToken ct = default)
     {
         var response = await _http.GetAsync("api/logs/files", ct);
@@ -345,6 +396,70 @@ public sealed class TsakApiClient : ITsakApiClient
     {
         var response = await _http.DeleteAsync($"api/modules/{Uri.EscapeDataString(name)}", ct);
         return await ReadAsync<ModuleRemovedResponse>(response, ct);
+    }
+
+    /// <inheritdoc />
+    public async Task<ModuleDeployResponse> UploadModuleAsync(byte[] packageBytes, string? signatureBase64 = null, CancellationToken ct = default)
+    {
+        using var content = new ByteArrayContent(packageBytes);
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+        using var request = new HttpRequestMessage(HttpMethod.Post, "api/modules/upload") { Content = content };
+        if (!string.IsNullOrWhiteSpace(signatureBase64))
+            request.Headers.TryAddWithoutValidation("X-Tsak-Signature", signatureBase64);
+
+        var response = await _http.SendAsync(request, ct);
+        return await ReadAsync<ModuleDeployResponse>(response, ct);
+    }
+
+    /// <inheritdoc />
+    public async Task<ModuleDeployResponse> ValidateModuleAsync(byte[] packageBytes, string? signatureBase64 = null, CancellationToken ct = default)
+    {
+        using var content = new ByteArrayContent(packageBytes);
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+        using var request = new HttpRequestMessage(HttpMethod.Post, "api/modules/validate") { Content = content };
+        if (!string.IsNullOrWhiteSpace(signatureBase64))
+            request.Headers.TryAddWithoutValidation("X-Tsak-Signature", signatureBase64);
+
+        var response = await _http.SendAsync(request, ct);
+        return await ReadAsync<ModuleDeployResponse>(response, ct);
+    }
+
+    /// <inheritdoc />
+    public async Task<ModuleDeployResponse> RollbackModuleAsync(string name, CancellationToken ct = default)
+    {
+        var response = await _http.PostAsync($"api/modules/{Uri.EscapeDataString(name)}/rollback", null, ct);
+        return await ReadAsync<ModuleDeployResponse>(response, ct);
+    }
+
+    // ── Dead-letter queue ────────────────────────────────────────────
+
+    /// <inheritdoc />
+    public async Task<FailedExchangeQueryResult> GetFailedExchangesAsync(
+        string? context = null, string? route = null, string? status = null,
+        DateTimeOffset? since = null, DateTimeOffset? until = null,
+        int? limit = null, int? offset = null, CancellationToken ct = default)
+    {
+        var query = BuildQuery(
+            ("context", context), ("route", route), ("status", status),
+            ("since", since?.ToUniversalTime().ToString("o")),
+            ("until", until?.ToUniversalTime().ToString("o")),
+            ("limit", limit?.ToString()), ("offset", offset?.ToString()));
+        var response = await _http.GetAsync($"api/exchanges/failed{query}", ct);
+        return await ReadAsync<FailedExchangeQueryResult>(response, ct);
+    }
+
+    /// <inheritdoc />
+    public async Task<ExchangeReplayResult> ReplayExchangeAsync(string entryId, CancellationToken ct = default)
+    {
+        var response = await _http.PostAsync($"api/exchanges/{Uri.EscapeDataString(entryId)}/replay", null, ct);
+        return await ReadAsync<ExchangeReplayResult>(response, ct);
+    }
+
+    /// <inheritdoc />
+    public async Task<ExchangeReplayResult> DiscardExchangeAsync(string entryId, CancellationToken ct = default)
+    {
+        var response = await _http.DeleteAsync($"api/exchanges/{Uri.EscapeDataString(entryId)}", ct);
+        return await ReadAsync<ExchangeReplayResult>(response, ct);
     }
 
     // ── Scheduler ────────────────────────────────────────────────────
@@ -400,6 +515,14 @@ public sealed class TsakApiClient : ITsakApiClient
         return await ReadAsync<SchedulerActionResponse>(response, ct);
     }
 
+    /// <inheritdoc />
+    public async Task<SchedulerActionResponse> FireJobAsync(string jobKey, CancellationToken ct = default)
+    {
+        var response = await _http.PostAsync(
+            $"api/scheduler/fire-job?key={Uri.EscapeDataString(jobKey)}", null, ct);
+        return await ReadAsync<SchedulerActionResponse>(response, ct);
+    }
+
     // ── System ───────────────────────────────────────────────────────
 
     /// <inheritdoc />
@@ -428,6 +551,13 @@ public sealed class TsakApiClient : ITsakApiClient
     {
         var response = await _http.GetAsync("api/system/info", ct);
         return await ReadAsync<SystemInfoResponse>(response, ct);
+    }
+
+    /// <inheritdoc />
+    public async Task<EffectiveConfigResult> GetConfigAsync(CancellationToken ct = default)
+    {
+        var response = await _http.GetAsync("api/system/config", ct);
+        return await ReadAsync<EffectiveConfigResult>(response, ct);
     }
 
     // ── Users ────────────────────────────────────────────────────────

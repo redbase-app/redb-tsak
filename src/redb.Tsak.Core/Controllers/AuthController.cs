@@ -13,6 +13,7 @@ namespace redb.Tsak.Core.Controllers;
 /// DELETE /api/auth/keys/{id} — revoke a key
 /// </summary>
 [Route("/api/auth")]
+[RequiresRole(TsakRoles.Admin)] // issuing and revoking keys is privilege escalation
 public class AuthController : RedbController
 {
     private ApiKeyService GetKeyService() => Context.GetService<ApiKeyService>()

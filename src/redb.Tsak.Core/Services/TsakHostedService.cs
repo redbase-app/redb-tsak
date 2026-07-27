@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using redb.Core;
+using redb.Tsak.Core.Audit;
 using redb.Tsak.Core.Contracts;
 using redb.Tsak.Core.Security;
 using redb.Tsak.Core.Modules;
@@ -120,6 +121,9 @@ public class TsakHostedService : BackgroundService
                     _logger.LogError(ex, "Failed to start REST API (_system context), continuing without it");
                 }
             }
+
+            // 2a. Retention sweeps (audit + DLQ) are mounted as cron:// routes on the _system context
+            //     by SystemContextBuilder — no bare Quartz jobs here anymore.
 
             // 3. Register static providers (fires batch event → coordinator creates contexts)
             var staticCount = await _registry.RegisterStaticProvidersAsync(_staticProviders);
