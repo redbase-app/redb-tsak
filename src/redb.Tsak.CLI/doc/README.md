@@ -1,6 +1,6 @@
 # tsak CLI
 
-Command-line interface for managing [redb.Tsak](../README.md) runtime instances.
+Command-line interface for managing [redb.Tsak](../../../README.md) runtime instances.
 
 ## Installation
 
