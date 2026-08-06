@@ -27,6 +27,22 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [3.5.0] — 2026-08-05
+
+**No changes in redb.Tsak itself — this is a rebuild onto redb 3.5.0**, released together with the
+rest of the ecosystem.
+
+It is not optional housekeeping. The shared-runtime layer is gated on the **minor** version
+(`SharedRuntimeBootstrap`): a 3.4.x Worker refuses to start when a 3.5.0 framework is dropped into
+`Libs/shared`, because patch-level drift is the only drift the gate allows. Staying a minor behind
+would therefore make the whole "swap a DLL instead of re-releasing the runtime" flow unusable, and
+would keep two correctness fixes in redb.Core away from every Tsak deployment: a props-cache entry
+that could be served stale after in-place mutation, and `RedbHash` being order-dependent for
+`Dictionary` properties. Both are described in the root `CHANGELOG.md`.
+
+What ships underneath: `redb.Route` 3.5.0 (Message History, XSLT and Routing Slip EIPs, `{{key}}`
+placeholders in endpoint URIs, event-driven IBM MQ receive) and redb core 3.5.0.
+
 ## [3.4.0] — 2026-07-27
 
 Minor bump aligning redb.Tsak with the 3.4.0 ecosystem (redb.Core / redb.Route / redb.Identity).
