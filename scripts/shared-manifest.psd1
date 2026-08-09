@@ -16,6 +16,11 @@
         'redb.Core.Pro'
         'redb.Route.Core'
         'redb.Route.Http'
+        # Extracted from redb.Route.Http in 3.5.1 (SharedHttpServerManager). It reaches the shared
+        # layer transitively anyway — publish output of Http carries it — but an undeclared assembly
+        # gets neither the byte-preload fail-fast nor the minor compat-gate, so a mismatched copy
+        # would be swallowed silently instead of aborting the start. Declare it.
+        'redb.Route.Http.Hosting'
         'redb.Route.Quartz'
         'redb.Postgres'
         'redb.Postgres.Pro'
@@ -58,5 +63,8 @@
         'redb.Route.Exec'
         'redb.Route.Sqs'
         'redb.Route.Telegram'
+        # AS2/EDI (3.5.1). Without this line the connector never reaches Libs/shared, so a module
+        # asking for an `as2://` endpoint finds no component in a Tsak worker at all.
+        'redb.Route.As2'
     )
 }

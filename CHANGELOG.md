@@ -27,6 +27,27 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [3.5.1] — 2026-08-07
+
+**No changes in redb.Tsak itself — a rebuild that re-pins the dependency on `redb.Route`.**
+
+`redb.Route` 3.5.1 extracted `SharedHttpServerManager` from `redb.Route.Http` into the new
+`redb.Route.Http.Hosting`, so that HTTP-based connectors share **one** Kestrel per `host:port`.
+`redb.Tsak.Core` 3.5.0 pins `redb.Route.Http` **3.5.0**, which still carries its own private copy of
+that server. Nothing in the graph would have upgraded it: `redb.Route.As2` depends on
+`Http.Hosting`, not on `Http`, so NuGet had no reason to lift the pin.
+
+The consequence, had this rebuild not shipped: anyone assembling **their own worker from NuGet**
+(`redb.Tsak.Core` + `redb.Route.As2`) would run two independent Kestrel managers, and an AS2 receiver
+could not share a port with the worker's own HTTP routes — the exact scenario the extraction exists
+to enable. Distributions are unaffected either way: the Tsak archive and images build `Libs/shared`
+from a single source tree, so the two assemblies there always match.
+
+Also in this build: `redb.Route.As2` is now declared in `scripts/shared-manifest.psd1`, so the AS2
+connector actually reaches `Libs/shared` and an `as2://` endpoint resolves inside a worker;
+`redb.Route.Http.Hosting` is declared in the framework set so it is covered by the startup fail-fast
+and the minor compat-gate instead of arriving as an undeclared transitive file.
+
 ## [3.5.0] — 2026-08-05
 
 **No changes in redb.Tsak itself — this is a rebuild onto redb 3.5.0**, released together with the
