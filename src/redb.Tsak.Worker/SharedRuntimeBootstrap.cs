@@ -29,6 +29,11 @@ internal static class SharedRuntimeBootstrap
         "redb.Core.Pro",
         "redb.Route.Core",
         "redb.Route.Http",
+        // Extracted from redb.Route.Http in 3.5.1 (SharedHttpServerManager). It reaches Libs/shared
+        // transitively via Http's publish output, but it must ALSO be declared here so the byte-preload
+        // fail-fast and the minor compat-gate cover it — otherwise a mismatched copy is swallowed
+        // silently instead of aborting the start. Keep in sync with scripts/shared-manifest.psd1.
+        "redb.Route.Http.Hosting",
         "redb.Route.Quartz",
         "redb.Route.Sql",
         "redb.Postgres",

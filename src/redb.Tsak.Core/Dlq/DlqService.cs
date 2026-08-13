@@ -53,7 +53,7 @@ public sealed class DlqService
             await using var cmd = conn.CreateCommand();
             cmd.CommandText = DlqStorage.InsertSql(provider);
             AddParam(cmd, "entry_id", Guid.NewGuid().ToString());
-            AddParam(cmd, "occurred_at", NowIso());
+            AddDateParam(cmd, provider, "occurred_at", DateTimeOffset.UtcNow);
             AddParam(cmd, "context_name", contextName);
             AddParam(cmd, "route_id", checkpoint.RouteId);
             AddParam(cmd, "marker_name", checkpoint.MarkerName);
@@ -66,7 +66,10 @@ public sealed class DlqService
             AddParam(cmd, "body_data", s.BodyData);
             AddParam(cmd, "headers_json", s.HeadersJson);
             AddParam(cmd, "properties_json", s.PropertiesJson);
-            AddParam(cmd, "replayable", s.Replayable ? 1 : 0);
+            // Bind a real bool: PostgreSQL BOOLEAN has NO implicit cast from integer, so an int 1/0
+            // makes the whole INSERT throw (silently, via the catch) — the DLQ then captures nothing
+            // on Postgres. bool maps cleanly to PG boolean / SQL Server bit / SQLite 0/1.
+            AddParam(cmd, "replayable", s.Replayable);
             await cmd.ExecuteNonQueryAsync(ct);
 
             _logger.LogInformation("DLQ captured failed exchange: route={Route} marker={Marker} ex={Ex}",
@@ -102,8 +105,8 @@ public sealed class DlqService
             AddParam(cmd, "context", context);
             AddParam(cmd, "route", route);
             AddParam(cmd, "status", status);
-            AddParam(cmd, "since", Iso(since));
-            AddParam(cmd, "until", Iso(until));
+            AddDateParam(cmd, provider, "since", since);
+            AddDateParam(cmd, provider, "until", until);
             AddParam(cmd, "limit", limit);
             AddParam(cmd, "offset", offset);
 
@@ -165,7 +168,7 @@ public sealed class DlqService
                 row.BodyKind, row.BodyType, row.BodyData, row.HeadersJson, row.PropertiesJson, row.Replayable));
 
             await context.ReplayAsync(row.RouteId, row.MarkerName, snapshot, ct);
-            await UpdateStatusAsync(entryId, "replayed", NowIso(), ct);
+            await UpdateStatusAsync(entryId, "replayed", DateTimeOffset.UtcNow, ct);
 
             return new ExchangeReplayResult { Success = true, Message = "Replayed.", EntryId = entryId };
         }
@@ -198,11 +201,11 @@ public sealed class DlqService
         await conn.OpenAsync(ct);
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = DlqStorage.DeleteOlderThanSql();
-        AddParam(cmd, "cutoff", Iso(cutoff));
+        AddDateParam(cmd, provider, "cutoff", cutoff);
         return await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    private async Task UpdateStatusAsync(string entryId, string status, string replayedAtIso, CancellationToken ct)
+    private async Task UpdateStatusAsync(string entryId, string status, DateTimeOffset? replayedAt, CancellationToken ct)
     {
         var provider = Provider;
         var connStr = DlqStorage.ResolveConnectionString(_configuration, provider)!;
@@ -211,7 +214,7 @@ public sealed class DlqService
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = DlqStorage.UpdateStatusSql(provider);
         AddParam(cmd, "status", status);
-        AddParam(cmd, "replayed_at", replayedAtIso);
+        AddDateParam(cmd, provider, "replayed_at", replayedAt);
         AddParam(cmd, "entry_id", entryId);
         await cmd.ExecuteNonQueryAsync(ct);
     }
@@ -252,8 +255,25 @@ public sealed class DlqService
         cmd.Parameters.Add(p);
     }
 
-    private static string NowIso() => DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture);
-    private static string? Iso(DateTimeOffset? v) => v?.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
+    /// <summary>
+    /// Binds a timestamp parameter as the type the column expects: a native <see cref="DateTimeOffset"/>
+    /// (UTC) for Postgres (<c>timestamptz</c>) and SQL Server (<c>datetimeoffset</c>) — a bare ISO
+    /// string has no implicit cast to those in a comparison, so the retention sweep and date-filtered
+    /// queries would throw — and an ISO-8601 <c>"o"</c> string for SQLite, whose column is TEXT and
+    /// relies on lexicographic == chronological ordering (kept identical to how rows were written).
+    /// </summary>
+    private static void AddDateParam(DbCommand cmd, AuditProvider provider, string name, DateTimeOffset? value)
+    {
+        var p = cmd.CreateParameter();
+        p.ParameterName = name;
+        p.Value = value is null
+            ? DBNull.Value
+            : provider == AuditProvider.Sqlite
+                ? value.Value.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture)
+                : value.Value.ToUniversalTime();
+        cmd.Parameters.Add(p);
+    }
+
     private static string? Truncate(string? v, int max) => v is null || v.Length <= max ? v : v[..max];
 
     private static string? GetString(DbDataReader r, string col)

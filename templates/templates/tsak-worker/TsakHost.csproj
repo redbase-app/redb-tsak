@@ -9,8 +9,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="redb.Tsak.Core" Version="3.5.1" />
-    <PackageReference Include="redb.Tsak.Core.Pro" Version="3.5.1" Condition="'$(pro)' == 'true'" />
+    <PackageReference Include="redb.Tsak.Core" Version="3.6.0" />
+    <PackageReference Include="redb.Tsak.Core.Pro" Version="3.6.0" Condition="'$(pro)' == 'true'" />
     <PackageReference Include="Serilog.AspNetCore" Version="8.0.2" />
     <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
     <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />

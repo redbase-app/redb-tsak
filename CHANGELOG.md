@@ -27,6 +27,58 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [3.6.0] — 2026-08-13
+
+> Ships with the ecosystem. The minor comes from `redb.Route` (new `.PropagateToolHeaders(...)` API);
+> redb.Tsak's own changes here are fixes, and the rebuild also carries the redb.Core tree-scope fix
+> and the rebuilt SQLite native into every worker.
+
+### Fixed — shared-runtime layer now fail-fasts / compat-gates redb.Route.Http.Hosting
+
+`redb.Route.Http.Hosting` (extracted from `redb.Route.Http` in 3.5.1) was listed in the build manifest
+(`scripts/shared-manifest.psd1` Framework) — so `build-shared` puts it in `Libs/shared` — but was
+**missing from `SharedRuntimeBootstrap.FrameworkAssemblies`**, the list that drives the early byte-preload
+fail-fast and the minor compat-gate. So it was served from the shared layer with **neither guard**: a
+version-mismatched copy would be swallowed silently instead of aborting startup — exactly what the
+manifest's own note warns against. Declared it.
+
+A new test (`SharedRuntimeManifestConsistencyTests`) guards this both ways so the drift can't return:
+every manifest **Framework** assembly must be declared for fail-fast/gate, and every declared assembly
+must actually be built into `Libs/shared` (manifest Framework or Connectors) or the host fail-fasts on
+every start. Full suite 578/578.
+
+### Fixed — dead-letter store on PostgreSQL (provider-specific binding bugs)
+
+The DLQ was integration-tested only on SQLite, which hid two PostgreSQL binding bugs that made the
+dead-letter store **silently non-functional on Postgres**. Both are fixed and verified against a real
+Postgres; SQLite and SQL Server behavior is unchanged.
+
+- **Capture never persisted on Postgres.** `DlqService.CaptureAsync` bound `replayable` as an `int`
+  `1/0` into a `BOOLEAN` column. Postgres has no implicit `integer → boolean` cast, so the whole INSERT
+  threw (`42804: column "replayable" is of type boolean but expression is of type integer`) — and
+  capture's own catch swallowed it, so dead-letters were dropped on the floor. Now bound as a real
+  `bool` (→ PG `boolean` / SQL Server `bit` / SQLite `0/1`).
+- **Retention sweep and date-filtered queries threw on Postgres.** Timestamps (`occurred_at`, `since`,
+  `until`, `cutoff`, `replayed_at`) were bound as ISO-8601 **strings** compared against native
+  `timestamptz` columns. Postgres has no implicit `text → timestamptz` cast in a comparison operator,
+  so `DELETE ... WHERE occurred_at < @cutoff` and `WHERE occurred_at >= @since` threw
+  (`42883: operator does not exist: timestamp with time zone < text`) — the daily retention job and any
+  date-filtered dashboard query. Timestamps are now bound as native `DateTimeOffset` for Postgres/SQL
+  Server (their columns are `timestamptz`/`datetimeoffset`), and kept as ISO-8601 `"o"` strings for
+  SQLite (whose column is `TEXT`, relying on lexicographic == chronological order — unchanged on-disk
+  format).
+
+Verified: both failures reproduced against the real Postgres with the old bindings and pass with the
+new ones; full Tsak suite 576/576 (incl. the SQLite DLQ integration tests).
+
+**Known follow-ups (not in this fix):** replay has no atomic `pending` claim, so a concurrent/repeated
+replay can process the same exchange twice; `QueryAsync` returns the page size, not the total match
+count; `body_data` has no size cap (base64, +33%); the retention `DELETE` is unbatched; and a
+PostgreSQL/SQL Server-backed DLQ integration test should join the SQLite one to keep this from
+regressing.
+
+---
+
 ## [3.5.1] — 2026-08-07
 
 **No changes in redb.Tsak itself — a rebuild that re-pins the dependency on `redb.Route`.**
