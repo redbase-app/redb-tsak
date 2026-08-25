@@ -13,20 +13,40 @@ namespace redb.Tsak.Core.Security;
 /// </summary>
 public sealed class ApiKeyService
 {
+    private sealed class CacheEntry
+    {
+        public required ApiKeyRecord Record;
+        public DateTimeOffset CachedAt;
+        public DateTimeOffset LastCheck;
+    }
+
     private readonly IApiKeyStore _store;
     private readonly byte[] _hmacSecret;
     private readonly IUserProvider? _userProvider;
-    private readonly ConcurrentDictionary<string, (ApiKeyRecord Record, DateTimeOffset CachedAt)> _cache = new();
+    private readonly Func<DateTimeOffset> _now;
+    private readonly ConcurrentDictionary<string, CacheEntry> _cache = new();
 
-    /// <summary>Cache TTL for validated keys. Default 5 min.</summary>
+    /// <summary>Full cache lifetime for a validated key. After this the key is fully re-validated
+    /// (including the linked-user enabled check). Default 5 min.</summary>
     public TimeSpan CacheTtl { get; set; } = TimeSpan.FromMinutes(5);
 
-    public ApiKeyService(IApiKeyStore store, byte[] hmacSecret, IUserProvider? userProvider = null)
+    /// <summary>
+    /// How often a still-cached key is cheaply re-checked against the store for revocation/expiry
+    /// (review item 2.7). This bounds how long a key revoked on ANOTHER node — or directly in the
+    /// database — stays accepted here, independent of the full <see cref="CacheTtl"/>. Default 30s.
+    /// Set to <see cref="TimeSpan.Zero"/> to re-check on every request (no revocation window, at the
+    /// cost of a store read per hit).
+    /// </summary>
+    public TimeSpan RevocationCheckInterval { get; set; } = TimeSpan.FromSeconds(30);
+
+    public ApiKeyService(IApiKeyStore store, byte[] hmacSecret, IUserProvider? userProvider = null,
+        Func<DateTimeOffset>? now = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _hmacSecret = hmacSecret ?? throw new ArgumentNullException(nameof(hmacSecret));
         if (_hmacSecret.Length < 16) throw new ArgumentException("HMAC secret must be at least 16 bytes.", nameof(hmacSecret));
         _userProvider = userProvider;
+        _now = now ?? (() => DateTimeOffset.UtcNow);
     }
 
     /// <summary>
@@ -50,12 +70,27 @@ public sealed class ApiKeyService
         if (string.IsNullOrWhiteSpace(rawKey)) return null;
 
         var keyHash = HashKey(rawKey);
+        var now = _now();
 
         // Check cache first
         if (_cache.TryGetValue(keyHash, out var cached))
         {
-            if (DateTimeOffset.UtcNow - cached.CachedAt < CacheTtl)
+            if (now - cached.CachedAt < CacheTtl)
             {
+                // Within the full lifetime, but periodically re-confirm the key was not revoked or
+                // expired elsewhere in the cluster (or straight in the DB) — bounds the revocation
+                // window to RevocationCheckInterval instead of the whole CacheTtl.
+                if (now - cached.LastCheck >= RevocationCheckInterval)
+                {
+                    var fresh = await _store.GetByHashAsync(keyHash, ct);
+                    if (fresh is null || !fresh.IsValid)
+                    {
+                        _cache.TryRemove(keyHash, out _);
+                        return null;
+                    }
+                    cached.Record = fresh;
+                    cached.LastCheck = now;
+                }
                 return cached.Record.IsValid ? cached.Record : null;
             }
             _cache.TryRemove(keyHash, out _);
@@ -81,7 +116,7 @@ public sealed class ApiKeyService
         }
 
         // Cache the valid record
-        _cache[keyHash] = (record, DateTimeOffset.UtcNow);
+        _cache[keyHash] = new CacheEntry { Record = record, CachedAt = now, LastCheck = now };
         return record;
     }
 

@@ -1,8 +1,8 @@
 @page "/auth"
 @inject INodeClientProvider NodeProvider
-@inject IAuthService AuthService
 @inject ToastService Toast
 @using redb.Tsak.Contracts
+@using Microsoft.AspNetCore.Components.Authorization
 
 <TsakPageHeader Title="Auth & Users" Description="Manage API keys and user accounts">
     <Actions>
@@ -187,7 +187,7 @@ else
                             <button class="btn btn-sm" @onclick="() => ShowUserForm(context)">
                                 <TsakIcon Name="edit" Size="14" />
                             </button>
-                            @if (context.Id > 1 && context.Login != AuthService.Login)
+                            @if (context.Id > 1 && context.Login != _currentLogin)
                             {
                                 <button class="btn btn-danger btn-sm" @onclick="() => DeleteUser(context.Login)">
                                     <TsakIcon Name="trash" Size="14" />
@@ -219,6 +219,9 @@ else
     private string? _createdKey;
     private TsakConfirmDialog? _confirm;
 
+    [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
+    private string? _currentLogin;
+
     // User form
     private bool _showUserForm;
     private TsakUserInfo? _editingUser;
@@ -229,6 +232,8 @@ else
 
     protected override async Task OnInitializedAsync()
     {
+        if (AuthState is not null)
+            _currentLogin = (await AuthState).User.Identity?.Name;
         await LoadData();
     }
 

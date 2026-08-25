@@ -27,6 +27,623 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [3.7.0] — 2026-08-25
+
+> **Why a minor.** Secure-by-default changes the running configuration, not just the code: the
+> management API now binds `127.0.0.1` instead of `0.0.0.0`, roleless API keys are denied by default,
+> and the dashboard requires a real session with a BCrypt password hash. A deployment that relied on
+> the old defaults needs its config updated — read **Changed — secure by default** and the two
+> dashboard entries before rolling this out. The ecosystem moves on one number; `redb` core,
+> `redb.Route` and `redb.Identity` ship 3.7.0 alongside.
+
+### Changed — the packages now ship XML documentation
+
+`GenerateDocumentationFile` was never enabled for redb.Tsak, so all five library packages shipped a bare
+`.dll`: a consumer of `redb.Tsak.Client` or `redb.Tsak.Core` got no IntelliSense at all. It is on now, and
+`lib/<tfm>/*.xml` travels with every package.
+
+CS1591 (public member without XML doc) is suppressed, unlike `redb.Route` where it is deliberately left on:
+turning the doc file on without that floods the build with warnings on members that predate the policy, and
+the doc file is what consumers actually need. The doc-syntax warnings stay visible on purpose — they mark
+real defects in existing comments, and there are some to fix.
+
+### Fixed — SOAP connector is now part of the shared layer
+
+`redb.Route.Soap` was missing from `scripts/shared-manifest.psd1` (the single source of truth for the
+shared connector layer), so `build-shared.ps1` never staged it into `Libs/shared` — a module using a
+`soap://` endpoint would find no component in a Tsak worker. Added it to the `Connectors` list (same gap
+that had been fixed earlier for `redb.Route.As2`). Re-run `scripts/build-shared.ps1` to repopulate the
+shared layer.
+
+### Added — startup log lines listing every configured port
+
+The worker emits one consolidated port summary at startup — `Tsak ports — management API:
+http://{host}:{port} (auth=…); echo: …{echoPath} (AutoStart=false); Prometheus: /metrics on
+http://{host}:{port}/metrics (scrapes OTel listener http://localhost:{promPort}/metrics)` (or
+`Prometheus: disabled`) — so an operator sees the API, echo and both Prometheus ports in a single line
+instead of hunting through the API, echo and metrics setup separately. The dashboard logs the URL(s) it
+actually bound to once the server is listening and which Tsak management API it proxies to (`Tsak dashboard
+listening on {urls}; proxying to Tsak management API at {node}`).
+
+### Fixed — `.tpkg` hot-deploy no longer skips a package after a transient failure or reads it mid-copy (4.11)
+
+The package scanner recorded a `.tpkg`'s last-write time **before** trying to open/verify it, so a package
+that failed on that scan (a still-copying, half-written ZIP, or a signature not yet present) was recorded as
+"seen" and then **permanently skipped** until its mtime changed again. The tracked time is now written only
+**after** a successful open/verify — on both the new-package path and inside `ReloadPackageAsync` — so a
+transient failure is retried on the next scan (and, e.g., a package whose detached `.sig` lands a moment
+later now loads). Separately, a new **copy-stability debounce** (`HotReloadOptions.AdditionStabilityScans`,
+default 2) requires a new/changed `.tpkg` to hold the same size and mtime for N consecutive scans before it
+is opened, so an operator dropping a large file in place is never read while still copying (mirrors
+`RemovalDebounceScans` for deletions). Note: this adds up to one scan cycle of latency before a newly
+added/updated package loads, including atomic API uploads (which are already safe from mid-copy reads via
+temp-write + rename) — set `AdditionStabilityScans=1` to disable the wait where only API uploads are used.
+Covered by unit tests for the debounce (streak, size/mtime reset, threshold) and a scan test proving a
+failed package is not recorded (red-before verified).
+
+### Changed — dashboard API calls now cancel when the component is disposed (4.9, part 2)
+
+The auto-refresh dashboard pages (Dashboard, Endpoints, Logs, NodeDetail, Routes, RouteView, Watchdog)
+already held a component-scoped `CancellationTokenSource` for their refresh timer but did not pass it into
+their API calls, so an in-flight request kept running after the user navigated away. Those calls now flow
+the component token, so they abort on disposal. Action-only pages without a refresh timer (Auth, Audit, Dlq)
+are unchanged — adding cancellation infrastructure there is disproportionate to the benefit. The `Ct`
+accessor guards the disposed state (reading `CancellationTokenSource.Token` after `Dispose` throws
+`ObjectDisposedException`; it now returns `None` instead — surfaced by an adversarial self-review, which
+found `NodeDetail`'s poll loop was the one path that would have leaked that as an unobserved task
+exception). The log-download endpoint also now returns a clean `504` if the download client's own timeout
+elapses (previously an unhandled `500`), while a browser disconnect stays handled by ASP.NET.
+
+### Fixed — large log-file downloads no longer cut by the 5s request timeout (4.9, part 1)
+
+The dashboard's log-file download went through the API client's shared `HttpClient`, whose 5s default
+timeout (`HttpClient.Timeout`) is global and cannot be widened per call — so a large log ZIP (the server
+buffers the whole file into a ZIP before responding) was aborted mid-flight. `TsakApiClient` now uses a
+**dedicated download client** with its own, longer timeout (`DefaultDownloadTimeout`, 5 min; configurable
+via the new `downloadTimeout` constructor argument), independent of the short request timeout that normal
+calls keep. The dashboard download endpoint now also passes `HttpContext.RequestAborted` into
+`DownloadLogFileAsync`, so a browser-cancelled download aborts the server-side transfer instead of running
+to completion. (Component-scoped cancellation-token propagation for the dashboard's other API calls is the
+remaining part of 4.9.)
+
+### Fixed — `RouteBuilderModule` now actually registers its routes (issue #3)
+
+`RouteBuilderModule.Initialize` called `_builder.Configure(context)`, which only fills the builder's own
+definition list. The context compiles **only** builders registered via `RouteContext.AddRoutes(...)`, so the
+routes never reached it: the context started with zero endpoints and no error
+(`"started successfully: all 0 endpoints operational"`). `Initialize` now registers a `RouteBuilder` with
+the context via `AddRoutes` so its routes are compiled at Start; a non-`RouteContext` target throws a clear
+`InvalidOperationException` instead of silently dropping the routes. A hand-rolled `IRouteBuilder` that is not
+a `RouteBuilder` still has its `Configure` called directly (it is expected to self-register). The previous
+mock-based test asserted only that `Configure` was *called* (not its effect), so it was green while the bug
+shipped; replaced with a real test that builds a `RouteBuilder`, starts the context, and asserts a route was
+compiled (red-before verified). Reported by @MegasomaWT.
+
+### Fixed — API brute-force throttle now guards the real auth surface + is proxy-aware (4.5)
+
+The per-IP auth throttle only gated requests whose path started with `/api/auth/` (`Tsak:Api:AuthThrottle:PathPrefix`),
+but the API-key check runs on **every** non-exempt request — so key-guessing simply used any other endpoint
+(e.g. `/api/contexts`) and was never throttled. It also counted *all* requests (not failures), which is why
+it could not be applied surface-wide without throttling legitimate authenticated traffic. Replaced with a
+**failed-attempt lockout** (`FailedAttemptThrottle`, the API-key analogue of the dashboard's `LoginThrottle`)
+that keys on the client IP and counts **key-auth failures across the whole surface**: after
+`Tsak:Api:AuthThrottle:Limit` failures within `WindowSeconds` the IP is locked out for the new
+`LockoutSeconds` and gets `429`; a valid key clears the counter, so real clients are unaffected. Only a
+missing/invalid key (401) feeds the throttle — role denials (403) do not. Added proxy-awareness: the client
+IP is the transport peer by default, and honours the **right-most** `X-Forwarded-For` hop (the address the
+trusted proxy itself appended — the client cannot forge it) only when
+`Tsak:Api:AuthThrottle:TrustProxyHeaders=true` (secure default off — XFF is otherwise spoofable). Config
+change: `PathPrefix` is no longer used; `LockoutSeconds` (default 120) and `TrustProxyHeaders` (default false)
+are new. The throttle map is now bounded: once large, `RecordFailure` evicts expired entries so a flood of
+distinct source IPs (e.g. an IPv6 /64) cannot exhaust memory. Covered by unit tests for the throttle
+(lockout / window / success-clears / per-IP / concurrency / eviction) and for client-IP extraction (proxy
+trusted vs not, right-most hop, fallbacks), red-before verified for the proxy path.
+
+**Deployment note:** behind a reverse proxy you MUST set `TrustProxyHeaders=true`. With it off, the transport
+peer is the proxy's IP for every request, so all clients share one throttle bucket and a single attacker
+could lock the whole API out — and the right-most-hop parsing assumes exactly one trusted proxy. Also note
+(known limitation): because a success clears the key's counter, principals sharing one IP (NAT / a single
+proxy IP) can let a legitimate success reset an attacker's failure count — keying on the real per-client IP
+(TrustProxyHeaders behind a proxy) avoids this. (Both surfaced by an adversarial self-review; the earlier
+revision used the spoofable left-most hop.)
+
+### Fixed — hot-swap/rollback no longer leak a duplicate module assembly into the Default ALC (F-7)
+
+`HotReloadService.HotSwapAsync` (step 8) and `RollbackAsync` published the module's **own entry assembly**
+to the shared `LoadedAssemblyTracker` (`Replace`), which `Assembly.Load`s a second copy into the
+non-unloadable **Default** ALC. The swapped module already runs from its isolated `newAlc`, so that copy
+served no one: it was a guaranteed memory leak (not even counted in `_leakedAlcCount`) and exposed the
+entry-assembly name to `Default.Resolving` — a latent type-identity split-brain vector. This mirrored a
+bug the 3.7b discovery-path fix had already removed; hot-swap/rollback were simply left inconsistent. Both
+`Replace` calls are removed, so a module's entry assembly now stays ALC-private — exactly as the `.tpkg`
+path already treats entry points (`ModulePackage` never tracks them). Cross-module shared types continue to
+flow through the tracked shared/companion layer, which is unchanged. As a bonus this also removes a
+name-collision hazard where a module entry-assembly name matching a real shared assembly would clobber the
+shared tracker entry. Covered by two new tests (hot-swap + rollback) that assert the entry assembly is not
+published to the tracker, red-before verified.
+
+### Fixed — Failed cluster assignments are retried with backoff (cluster, 4.4)
+
+A `Failed` assignment on a still-alive node used to count as "assigned" and blocked reassignment forever;
+the leader now removes the `Failed` assignment and reassigns the module, gated by a per-module backoff
+(`ClusterOptions.FailedRetryBackoffSeconds`, default 60s) so a persistently-failing module is not re-tried
+on every rebalance. Backoff state is in-memory on the leader (a new leader retries pending `Failed`
+immediately, which is acceptable) and is now pruned each rebalance for modules that are no longer Failed,
+so it cannot grow unbounded.
+
+**Note:** an earlier revision of this item also added a read-time *epoch fence* in `ApplyLocalAssignmentsAsync`
+(skip any assignment whose `Epoch` is below the current leader epoch). An adversarial self-review found this
+fence is harmful and it has been **removed**: assignments are stamped with the epoch of the leader that
+created them and are never re-stamped while a module stays put, while a follower's snapshot epoch tracks the
+*live* leader — so after any leader failover (E→E+1) every surviving assignment reads `E < E+1`, and the
+fence stopped all still-running modules on every failover and never restarted them. Split-brain writes from a
+superseded leader are already prevented at the lock layer (epoch-fenced takeover/renew in
+`RedbDistributedLock`), which is the correct place to fence. A regression test now asserts a lower-epoch
+survivor assignment is still applied.
+
+### Fixed — internal exception detail no longer leaks to API clients / the dashboard UI (4.7, Tsak side)
+
+Exception messages (which can carry internal paths / config) were surfaced verbatim: `ModuleUploadService`
+returned `Install failed: {ex.Message}` / `Rollback failed: {ex.Message}` to the API, and the dashboard
+`TsakErrorBoundary` rendered `@CurrentException.Message`. These now show a **generic** message and log
+the detail server-side (the error boundary logs via `ILogger`; upload logs and returns "see server logs").
+The root leak in redb.Route's `ControllerDispatcherProcessor` (returns `ex.Message`) is outside redb.Tsak
+and is filed as a bug-report (BOUNDARIES BR-4).
+
+### Fixed — leader state is published as one atomic snapshot (4.3)
+
+`RedbLeaderElection` published `(epoch, leaderId, isLeader)` as three separate field writes, and
+`RenewAsync`/`StepDown` cleared `isLeader` without touching the epoch — so a reader calling the separate
+getters could observe a torn tuple (e.g. `IsLeader=true` with an epoch from a different election), which
+would undermine epoch fencing. The three values are now one immutable `LeaderSnapshot` swapped atomically;
+a new `ILeaderElection.GetLeaderSnapshot()` returns the consistent triple in a single read (used by epoch
+fencing so `IsLeader` and `Epoch` always belong to the same election).
+
+Tests: `RedbLeaderElectionTests` (consistent snapshot on acquire; renew-failure/step-down drop leadership
+but keep the epoch consistent; a concurrent-read stress never sees a torn tuple).
+
+### Fixed — defects found by an adversarial self-review of this release
+
+Independent adversarial review of the session's changes surfaced five real bugs, now fixed (one more,
+a hot-swap Default-ALC republish, is documented as follow-up F-7):
+
+- **Coordinator `WaitForIdleAsync` lost-wakeup hang.** `_pending` and `_idleSignal` were mutated with
+  `Interlocked` but the counter-transition and the signal reset/complete were not atomic together — the
+  consumer could complete a signal a concurrent `Enqueue` had just swapped out, stranding a waiter
+  forever. Both are now guarded by one lock so the transition and the signal op are atomic.
+- **Cluster rebalance-on-acquire could be skipped on a leadership flap.** With the split loops, the work
+  loop detected "became leader" only via a `wasLeader` edge, which a lose→re-acquire happening entirely
+  inside the heartbeat loop can hide. The heartbeat loop now sets a `_rebalanceRequested` flag on every
+  acquire, which the work loop honours in addition to the edge.
+- **`LoadedAssemblyTracker.LoadOrReuse` could still return a duplicate.** When the caller key (file
+  basename) differs from the real assembly name AND that real name is already tracked, it returned the
+  freshly byte-loaded duplicate instead of the canonical instance. It now resolves the canonical via the
+  real name (`GetOrAdd`) and aliases the caller key to it.
+- **`LoginThrottle` lost-update race.** The lockout counter was incremented in place inside
+  `ConcurrentDictionary.AddOrUpdate` returning the same reference — no serialization, so concurrent
+  failures lost increments and slipped under the threshold. The read-modify-write is now under a
+  per-entry lock (defeats concurrent brute-force).
+- **`DashboardAuth.IsLocalUrl` open-redirect via control chars.** `"/\t/evil.com"` passed the local-URL
+  check; browsers strip the tab, collapsing it to a protocol-relative `//evil.com`. Control characters
+  are now rejected.
+
+Tests: red-before/green-after verified for the tracker fix; new control-char cases (`DashboardAuthTests`),
+concurrency stress for the throttle (`LoginThrottleTests`) and the coordinator drain
+(`TsakCoordinatorTests.WaitForIdle_UnderConcurrentEnqueue_CompletesAndDrains`).
+
+### Added — optional authentication for the Prometheus `/metrics` route (4.6)
+
+`/metrics` was always unauthenticated. Its exposure is already contained by default (it rides the Api
+port, which now binds loopback by default — review item 2.1). For operators who deliberately expose the
+Api port, `Tsak:Metrics:Prometheus:RequireAuth=true` now gates the scrape route through the existing
+`AuthorizeProcessor` (a valid API key required; a `401` otherwise). Off by default so Prometheus keeps
+scraping out of the box.
+
+### Fixed — hot-reload Dispose is idempotent and coordinated with in-progress scans (4.12)
+
+`HotReloadService.Dispose` unloaded module ALCs but had no guard: a second call re-iterated and
+double-unloaded, and a `ScanAndReloadAsync` running concurrently could touch an ALC while Dispose was
+unloading it (review item 4.12). Dispose is now idempotent (`_disposed` guard) and takes a scan gate
+(`SemaphoreSlim`) that scans also hold for their whole run — so Dispose waits for an in-progress scan
+to finish, and a scan starting after disposal bails with `0`.
+
+Tests: `HotReloadServiceTests.Dispose_is_idempotent`, `ScanAndReload_after_dispose_returns_zero`.
+
+### Fixed — control-plane failure is reflected in readiness; cluster timing-margin warning (4.1, 4.2)
+
+- **4.1** When the `_system` control-plane context (REST/management API) failed to start, the host logged
+  an error and kept running the business contexts — a node with no management plane could still report
+  healthy. The failure is now logged at **Critical** and flips a `control-plane` health check to
+  **Unhealthy** (`ControlPlaneHealth` + an `IHealthContributor`), so the readiness probe stops reporting
+  a control-plane-less node as ready.
+- **4.2** The cluster coordinator now logs a startup **warning** when the timing margins are tight
+  (`DeadNodeTimeoutSeconds` < 3× heartbeat, or `LeaderLockTtlSeconds` < 2× heartbeat) — a single slow
+  heartbeat then looks like a dead node / expired lease. The defaults (HB 15s, dead-node 60s, TTL 30s)
+  are safe; this only fires when an operator tightened them.
+
+Test: `ControlPlaneHealthTests` (healthy by default; unhealthy after the control-plane is marked failed).
+
+### Fixed — dashboard hygiene: DLQ node null-guard, self-hosted chart.js (4.8, 4.10)
+
+- **4.8** The DLQ page called `NodeProvider.GetClient(NodeId)` and used the result without a null check —
+  a node missing from the current topology (removed, or not yet discovered) threw a
+  `NullReferenceException`. Load now shows a clean "node not available" state and Replay/Discard toast
+  the same instead of throwing (matching the Logs page).
+- **4.10** `chart.js` was loaded from a public CDN with no integrity checking (and no fallback for
+  air-gapped ops). It is now **self-hosted** (`wwwroot/js/chart.umd.min.js`, pinned to Chart.js 4.4.7),
+  removing the runtime third-party dependency.
+
+### Changed — module lifecycle is async end-to-end: ordered event queue, no sync-over-async (1.7, 3.8)
+
+The module-lifecycle pipeline was a mix of fire-and-forget `async void` and sync-over-async blocking.
+It is now a coherent async chain (review items 1.7 + 3.8):
+
+- **Coordinator event queue (1.7).** `TsakCoordinator` subscribed to the registry's synchronous
+  `EventHandler<T>` events with `async void` handlers — unordered, unobservable, and impossible to wait
+  on (the reported context count was racy). Events are now **enqueued** and a **single background
+  consumer awaits each handler in FIFO order**, with a per-item catch (a bad module still can't crash
+  the node). A new `WaitForIdleAsync()` lets startup/tests wait for topology changes to settle instead
+  of racing them. `Initialize` is now idempotent (no double-subscription).
+- **Registry persistence is async (3.8).** `RegisterModule`/`UnregisterModule`/`ReplaceModuleSilent`
+  blocked on the store via `.GetAwaiter().GetResult()`. They are now `RegisterModuleAsync` /
+  `UnregisterModuleAsync` / `ReplaceModuleSilentAsync`, awaited by their (already-async) callers
+  (hot-reload, the modules controller). `UnregisterModuleSilent` touches no store and stays sync.
+- **Heartbeat snapshot is async (3.8).** `ContextInfoCollector.CollectSnapshots` (called every
+  heartbeat) blocked on the store-backed auto-start read; it is now `CollectSnapshotsAsync`, awaited by
+  `RedbNodeRegistry.HeartbeatAsync`.
+
+Tests: `TsakCoordinatorTests.Integration_static_providers_trigger_coordinator` now drains via
+`WaitForIdleAsync` (the old pass depended on fragile sync-until-first-await timing — exactly the race
+this removes); the collision test still proves the queue survives a bad module. Registry/controller
+tests updated to the async methods. Unit suite 614/614; cluster integration 33/34 (1 pre-existing
+stress-test flake, passes in isolation — untouched lock code).
+
+### Fixed — module private deps and own assembly no longer leak into / duplicate in the Default ALC
+
+Two module-isolation defects (review item 3.7):
+- **(a)** `ModuleAssemblyLoadContext.Load` byte-loaded a module's PRIVATE probe-path dependency into the
+  **Default** ALC (via `LoadedAssemblyTracker.LoadOrReuse`). That pinned it in memory (can't unload with
+  a collectible module) and made two modules with different versions of the same private dependency
+  silently share whichever loaded first. Private probe deps now load into the **module's own ALC**
+  (`LoadFromStream`); only genuine host/shared-contract assemblies (resolved earlier via Default/the
+  tracker) stay shared.
+- **(b)** Hot-reload's bare-DLL discovery byte-loaded the module's OWN assembly into the Default ALC
+  **and** into its isolated ALC — two distinct copies of the module's types while the module actually
+  ran as the ALC copy (type split-brain + leak). The redundant Default load is removed; a module's own
+  assembly is not a shared dependency.
+
+Tests: `ModuleAssemblyLoadContextTests.PrivateProbeDependency_LoadsIntoModuleAlc_NotDefault` (emits a
+real private-dep assembly on disk via `PersistedAssemblyBuilder`; verified to FAIL on the pre-fix code —
+the dep landed in Default — and pass after) and `SharedContractAssembly_ResolvesFromDefault_NotModuleAlc`
+(shared contracts keep one identity in Default). The startup bare-DLL path (`TsakModuleRegistry`) already
+loads once into its target (Default) ALC and discovers from that same copy — left unchanged.
+
+### Fixed — shared-path resolver never throws out of the resolution event
+
+The shared-path `Default.Resolving` handler byte-loads a transitive dependency from `Libs/shared/`, but
+caught only `FileLoadException` (review item 3.6). A transient `IOException` (the DLL locked mid-copy by
+`build-shared`), `UnauthorizedAccessException`, or a partial/corrupt image (`BadImageFormatException`)
+propagated out of the `Resolving` handler — which aborts the runtime's entire resolution instead of
+letting it fall through to version-tolerant forwarding or another handler. The handler now soft-skips
+any such failure (logs it) and falls through, so a bad file in the shared dir can never abort a JIT
+resolution.
+
+Test: `SharedRuntimeResolverTests.Resolver_CorruptDllInSharedDir_DoesNotThrowBadImageOutOfResolution`
+(a corrupt DLL in the shared dir yields an ordinary not-found, not a `BadImageFormatException` escaping
+the handler).
+
+### Fixed — assembly dedup keys on both the file name and the real assembly name (no duplicate load)
+
+`LoadedAssemblyTracker.LoadOrReuse(assemblyName, bytes)` tracked the loaded assembly only under its
+**real** simple-name, but its fast-path and return lookup used the **caller's** key (typically the file
+basename). When the two differed, the next `LoadOrReuse` with the same file name missed the cache and
+called `Assembly.Load(bytes)` again — two instances of one identity in the Default ALC, i.e. type
+split-brain (review item 3.5). `LoadOrReuse` (and `Replace`) now alias the loaded assembly under **both**
+the real simple-name (what the runtime's `Default.Resolving` asks for) and the caller's key, so a repeat
+call reuses the single instance.
+
+Tests: `LoadedAssemblyTrackerTests` — a file-name-≠-assembly-name reuse returns the same instance (and
+resolves by the real name too), plus an idempotency check.
+
+### Fixed — shared-assembly list is now a thread-safe immutable snapshot (no torn read during hot-reload)
+
+`SharedAssemblyLoader` held its loaded assemblies in a plain `List<Assembly>` that
+`ReloadSharedAssemblies` cleared and repopulated on the hot-reload thread, while
+`TsakContextManager.CreateContext` enumerated `LoadedAssemblies` (`.ToArray()`) concurrently on an API
+thread (review item 3.4) — a classic `List` enumerate-vs-mutate race that throws
+`InvalidOperationException` or hands a context a torn component set. The list is now an
+`ImmutableArray<Assembly>` published under a lock: reads are lock-free snapshots, and reload builds the
+fresh set and **swaps it atomically** (no empty/torn window mid-reload). The scan/load logic moved into
+a `ScanAndLoad` helper that never touches the published field.
+
+Test: `SharedAssemblyLoaderTests.Concurrent_reload_and_enumeration_never_throws` (500 reloads hammered
+against continuous enumeration — no exception).
+
+### Fixed — hot-swap rolls back on ANY start failure, not only timeout (no registry left on a broken module)
+
+`HotSwapAsync` unregistered the old module, replaced it with the new one, then started the new
+version — but rolled back only on `OperationCanceledException`/`TimeoutException` (review item 3.2).
+Any other failure to start the new version (a `CreateContext` throw, a DI fault) fell through to the
+outer catch, which did NOT restore the registry, did NOT unload the new ALC, and logged the misleading
+"staying on current version" — leaving the old module unregistered and the registry pointing at a
+broken new one. Now:
+
+- **Rollback on ANY exception** while starting the new version (routed through the existing
+  `RollbackAsync`, which stops the new module, re-registers and restarts the old one, and reverts the
+  shared assembly tracker).
+- **The shared `LoadedAssemblyTracker` is switched to the new assembly only AFTER the new version has
+  started successfully** (was: before validation), so other modules never resolve an unvalidated,
+  unstarted assembly, and a failed swap needs no tracker revert.
+- The outer catch now rolls back too whenever the registry was already mutated, and **logs the actual
+  outcome** (rolled back vs. staying on current) instead of a hardcoded message.
+- Removed the dead `startCts` timeout wiring — `ProcessModuleAddedAsync` takes no `CancellationToken`,
+  so the start timeout was never actually enforced (tracked as a follow-up).
+
+Test: `HotReloadServiceTests.HotSwap_LoadFailureBeforeSwitch_LeavesOldModuleUntouched` (a failure
+before the switch does not unregister the old module or attempt a rollback). The
+rollback-on-start-failure path shares the already-exercised `RollbackAsync` and is verified by review
+(a dedicated test needs an on-disk two-version module fixture — see BOUNDARIES_AND_FOLLOWUPS).
+
+### Fixed — CreateContext is serialized with remove, so a context can't be orphaned by a concurrent remove
+
+`CreateContext` mutated both `_contexts` and `_namedRedbContainers` but, unlike start/stop/restart/
+remove, ran *outside* `_lifecycleLock` (review item 3.1). A `RemoveContextAsync` racing a coordinator
+`CreateContext` on the same name could `TryRemove` before the `TryAdd`, leaving an orphaned context
+(and a leaked named-redb container) the remover believed was gone. `CreateContext` now takes
+`_lifecycleLock` — with a fail-fast existence check under the lock — so create/remove are atomic with
+respect to each other, and concurrent creates of one name no longer build or register anything for the
+loser. The lock order is always coordinator-per-context → `_lifecycleLock` (no lifecycle path re-enters
+the coordinator, none calls CreateContext), so it cannot invert or re-enter.
+
+Tests: `TsakContextManagerTests.Concurrent_create_same_name_yields_exactly_one_context` and
+`Concurrent_create_and_remove_distinct_contexts_leaves_clean_state`.
+
+### Fixed — DLQ replay is atomically claimed, so a failed exchange is never replayed twice
+
+`DlqService.ReplayAsync` read the entry, replayed it, then unconditionally marked it `replayed`
+(review item 3.3). Two operators — or a double-click — both read the same `pending` entry and both
+replayed it, running the business exchange **twice**. Replay now takes an **atomic claim first**:
+`UPDATE tsak_dlq SET status='replaying' … WHERE entry_id=@id AND status='pending'`. The DB serializes
+the conditional update, so exactly one caller sees `affected == 1` and proceeds; the rest are told the
+entry is already being (or has been) replayed. On success the entry becomes `replayed`; on replay
+failure the claim is **released back to `pending`** for retry; a crash between claim and replay leaves
+it visibly in `replaying` rather than silently lost.
+
+Tests: `DlqTests.Replay_SecondAttempt_IsRefused_TailRunsOnce` (deterministic double-replay → tail runs
+once) and `Replay_Concurrent_NeverProcessesTwice` (two concurrent replays → the tail never runs twice),
+both on a real SQLite-backed DLQ with a live replayable route.
+
+### Changed — built-in retention sweeps are now cluster-singletons (`.Cluster(true)`)
+
+The daily audit and DLQ retention cron routes ran in the per-node `_system` context with no cluster
+guard, so in a multi-node cluster each node ran the sweep. It was harmless (the prune is an idempotent
+`DELETE ... WHERE created < cutoff` — the first node deletes, the rest affect zero rows), but wasteful.
+Both routes are now marked `.Cluster(true)`, so they run on the leader only in a cluster and still run
+via the AlwaysLeader fallback in standalone. A sweep missed during a leader failover is covered by the
+next day's run. These are the first built-in Tsak routes to dog-food the `.Cluster(true)` policy.
+
+Test: `RetentionRouteClusterTests` (both route definitions report `GetCluster() == true`).
+
+### Fixed — cluster coordinator: leader renewal no longer starved by module starts (two-leader window)
+
+The coordinator ran heartbeat, leader-lock renewal, dead-node detection, rebalance AND module
+start/stop in one sequential loop with a single delay (review items 1.3, 1.5). A module that took
+longer than the lease TTL to start pushed the next renewal past the TTL — the lock expired, a peer
+was elected, and **two nodes rebalanced at once**; the same stall also delayed heartbeat, so a live
+node could be marked dead. Following the industry canon for lease-based coordination
+(Kubernetes leader-election, etcd/Consul lease keepalive, ZooKeeper session ping — a dedicated
+renewal timer isolated from work), the loop is now split:
+
+- **A fast, minimal heartbeat/renew loop** on a `PeriodicTimer` whose cadence is `min(interval, TTL/3)`
+  — it does only the heartbeat upsert and the leader-lock renewal, so a slow module start can never
+  delay it. Renewal is proactive at `TTL/3`.
+- **A separate work loop** for the heavy duties (license backstop, dead-node detection, rebalance,
+  applying local assignments = module start/stop). Its latency no longer costs the node its leadership.
+- **Voluntary step-down on the renew-deadline** (canon: K8s `RenewDeadline`): if renewal keeps
+  *throwing* (e.g. the store is unreachable) so leadership can't be confirmed, the node steps down
+  locally (`ILeaderElection.StepDown()`) instead of holding stale leadership until the TTL lapses.
+  Epoch fencing (from the earlier lock fix) makes any late write from a stale leader a no-op, so this
+  shrinks the split-brain window to near zero.
+- **Heartbeat is now a light upsert** (1.5): `RedbNodeRegistry.HeartbeatAsync` no longer calls the
+  heavy `RegisterAsync` (registration lock + license check) from *inside* the deadlock-retry lambda —
+  a nested lock on the hot path. When the node record is missing, re-registration runs *after* the
+  retry scope closes.
+- The consumer-side epoch fencing that stops a revived node's routes when its epoch is stale
+  (`ClusteredRoutePolicy` watch loop: renew → lost → `StopRoute`) was already in place from the lock
+  fix; no change needed. `DeadNodeTimeoutSeconds` default (60s) is already ≥ 4× the heartbeat
+  interval (15s), per the false-dead guidance.
+
+Tests: `ClusterCoordinatorTests.Heartbeat_and_renew_are_not_starved_by_a_slow_module_start` (heartbeat
+and renew keep ticking while a module start blocks past the TTL) and
+`Leader_steps_down_when_renew_keeps_throwing_past_the_deadline`. Unit suite 601/601; cluster
+integration 34/34 against real PostgreSQL.
+
+### Fixed — revoked API keys are rejected within seconds, not up to 5 minutes (cluster)
+
+`ApiKeyService` cached a validated key for the full `CacheTtl` (5 min) and only its `RevokeKeyAsync`
+evicted the local cache. So a key revoked on node A — or straight in the database — stayed accepted
+on node B for up to 5 minutes (review item 2.7). The cache now re-confirms a still-cached key against
+the store once per `RevocationCheckInterval` (default 30s, `Tsak:Auth:RevocationCheckSeconds`;
+`CacheTtl` is `Tsak:Auth:CacheTtlSeconds`). This bounds the cluster-wide revocation window to the
+interval — independent of the full TTL and without a store read on every request — and picks up
+revocation and expiry that happened on any node or directly in the DB. Set the interval to 0 to
+re-check on every request (no window, at the cost of a store read per hit).
+
+Test: `ApiKeyRevocationTests` — revoked-elsewhere rejected within the interval (not the TTL),
+zero-interval re-checks every request, still-valid keys refresh once per interval (clock injected).
+
+### Changed — whole-log-file download raised to Admin (bulk-exfil risk)
+
+A full log file can carry raw endpoint URIs with passwords and payload fragments, yet downloading one
+was gated only at Operator (review item 2.8). The download action `GET /api/logs/files/{filename}` is
+now `[RequiresRole(Admin)]` (the live tail `GET /api/logs` stays Operator — same data, but the
+interactive path operators need). The dashboard's log-download proxy is likewise raised to
+`RequireAuthorization("Admin")`, and the ZIP link is shown only under `AuthorizedView AdminOnly`.
+
+Test: `RoleAuthorizationTests.DownloadingWholeLogFile_RequiresAdmin` (operator → 403, admin → allow).
+
+> **Bug report (root cause is outside redb.Tsak, not fixed here):** log bodies contain raw secrets
+> because the core logging layer writes endpoint URIs and payloads unredacted. The real fix is
+> redaction at write time (`docs/SECURITY_URI_REDACTION_PLAN.md`). Raising the gate to Admin is the
+> in-Tsak mitigation until that lands.
+
+### Changed — dashboard login hardened: BCrypt hash, constant-time compare, lockout
+
+The standalone dashboard login compared the password against a plaintext config value with `!=` (a
+timing oracle) and had no rate limiting, so an exposed dashboard was open to online guessing
+(review item 2.6). Now:
+
+- **`Tsak:Web:AdminPasswordHash`** (a BCrypt hash, verified via the core `BcryptPasswordHasher`,
+  which also accepts legacy SHA256 hashes) is preferred over the plaintext `Tsak:Web:AdminPassword`.
+  Plaintext still works for back-compat but logs a one-time warning to switch to the hash.
+- Plaintext comparison is **constant-time** (`CryptographicOperations.FixedTimeEquals` over SHA-256
+  of each side), so a wrong password cannot be recovered from response timing.
+- A shared **`LoginThrottle`** locks a login out after N failed attempts within a window
+  (`Tsak:Web:Lockout:MaxAttempts` / `:WindowSeconds` / `:DurationSeconds`, default 5 / 300s / 60s).
+  It applies to both standalone and cluster logins; a success clears the counter. The login page
+  shows a distinct "too many attempts" message.
+
+Tests: `LoginThrottleTests` (lockout, expiry, per-key scoping, window roll-off on a controllable
+clock) and `ConfigAuthServiceTests` (hash accept/reject, hash-over-plaintext precedence, plaintext
+back-compat, case sensitivity). Web suite 48/48.
+
+### Changed — dashboard: real server-side session (cookie auth), no more unauthenticated log download
+
+The dashboard authenticated only inside the Blazor circuit — a per-circuit in-memory `IAuthService`
+flag. Anything reached *outside* a circuit was ungated, most importantly the BFF log-download proxy
+`GET /api/proxy/{node}/logs/download/{file}`, a plain HTTP endpoint that streamed worker log files
+(connection strings, tokens, PII) using the server's admin key to **anyone who could reach the port**
+(review item 2.4). And because the circuit flag was not a real security principal, dashboard
+authorization was cosmetic — `<AuthorizedView>` only hid markup (2.5).
+
+The dashboard is now a proper BFF with a single, server-verifiable session:
+
+- **ASP.NET Core cookie authentication** (`tsak.auth`, HttpOnly, SameSite=Strict). The browser holds
+  only the cookie; the server holds the Tsak keys and uses them only for an authenticated principal.
+  The same cookie gates the Blazor circuit **and** plain HTTP endpoints uniformly.
+- **Login/logout are real endpoints** (`/auth/login`, `/auth/logout`) that `SignInAsync`/`SignOutAsync`
+  — an interactive circuit cannot set a cookie after the response has started. The login page is a
+  native form POST (anti-forgery validated; `returnUrl` restricted to local paths — no open redirect).
+  Credentials are still validated by `IAuthService` (standalone: config; cluster: redb `_users` via
+  `IUserProvider`/BCrypt), now stateless.
+- **Routed pages require authentication** via `AuthorizeRouteView` (anonymous → redirect to `/login`);
+  `<AuthorizedView>` and the top bar read the role from the **signed principal**, which cannot be
+  forged client-side.
+- **The log-download proxy is behind `RequireAuthorization("Operator")`** plus a path-traversal guard
+  on the filename and node validation via the client provider. An anonymous or viewer caller is
+  refused before the admin key is ever used. The download `<a href>` inherits the auth cookie
+  automatically, so the UX is unchanged for authorized users.
+- Roles are expanded into a ladder at sign-in (`admin` ⊇ `operator` ⊇ `viewer`), so `RequireRole`
+  is a simple membership test.
+
+Tests: new `redb.Tsak.Web.Tests` project — `DashboardAuthTests` (traversal guard, open-redirect
+guard, role ladder) and `LogDownloadAuthTests` (WebApplicationFactory: anonymous download → redirect
+to login, not the file; login page reachable anonymously). 35/35.
+
+Follow-up (documented, not in this change): the BFF still calls the worker with a single admin key,
+so the worker's own RBAC is not yet per-user (review item 2.5.3); and the download gate will be
+raised from Operator to Admin under review item 2.8.
+
+### Fixed — effective-config endpoint no longer leaks webhook URLs, URI userinfo, embedded passwords
+
+`GET /api/system/config` (admin-only) dumps the whole `Tsak:*` section, but `ConfigRedactor` masked
+only `Password=`/`Pwd=` inside values under the `ConnectionStrings:` prefix, plus values whose *leaf*
+key name looked sensitive. Several secret-shaped values slipped through: an alert `…Webhook:Url` (the
+URL is itself a bearer credential), a `…Webhook:Headers:Authorization` token, a broker/endpoint
+`…Endpoint:Uri` of the form `amqp://user:pass@host` (userinfo), and any connection string stored
+*outside* the `ConnectionStrings:` prefix. `ConfigRedactor` now:
+
+- matches sensitive markers against the **whole key path**, not just the leaf (so `…:Webhook:Url`
+  masks on `webhook`, `…:Headers:Authorization` on `authorization`), and adds `webhook`,
+  `authorization`, `accountkey`, `sastoken`, `passwd`, `privatekey` markers;
+- scrubs `Password=`/`Pwd=` inside **any** value, not only under `ConnectionStrings:` (host/database
+  stay visible for diagnostics);
+- masks **URI userinfo** (`scheme://user:pass@host` → `scheme://***@host`) in any value, so broker
+  URIs stop leaking credentials while host:port stays visible.
+
+Test: `ConfigRedactorTests` — a `KnownLeaks` regression table plus connection-string / URI-userinfo /
+false-positive cases (an `@` in a path/query is not treated as userinfo). Suite 15/15.
+
+### Changed — secure by default: loopback bind + fail-closed roles
+
+Two default flips from the security review so a fresh Tsak is not wide open the moment its port is
+reachable. Both are overridable in config; only deployments that *relied on* the old permissive
+defaults are affected.
+
+- **Management API binds `127.0.0.1` by default** (was `0.0.0.0`). `Tsak:Api:Host` now defaults to
+  loopback, so local runs work out of the box while exposing the management plane on an external
+  address is an explicit choice. When the host *is* bound off-loopback with `Tsak:Auth:Enabled=false`,
+  `SystemContextBuilder` now logs a loud `SECURITY:` warning that the port grants full unauthenticated
+  admin (stop/remove contexts, upload modules, issue keys, dump config).
+- **Roleless API keys are denied by default** (`Tsak:Auth:RolelessKeysAreAdmin` now defaults to
+  `false`; `RoleAuthorizationProcessor`'s ctor default likewise). A key carrying no roles is refused
+  role-gated endpoints (fail-closed) instead of being silently treated as `admin`. Set the switch to
+  `true` only as a migration bridge to keep pre-RBAC keys working until they are re-issued with
+  explicit roles.
+
+Tests: `RoleAuthorizationTests` updated — `RolelessKey_IsDenied_ByDefault`,
+`RolelessKey_IsDeniedMutation_ByDefault` (fail-closed), and
+`RolelessKey_IsTreatedAsAdmin_WhenCompatibilitySwitchIsOn` (opt-in bridge). Suite 33/33.
+
+### Fixed — a bad module can no longer crash the node (coordinator event handlers)
+
+`TsakCoordinator` subscribed to the registry's `EventHandler<T>` events with `async` lambdas, i.e.
+`async void`: any exception after the first `await` — most easily a **context-name collision**, where
+`ValidateContextNameClaim` threw `InvalidOperationException` — surfaced as an *unobserved* exception on
+a thread-pool thread and **terminated the whole process**. Two hot-added modules claiming the same
+context name would take the node down instead of logging an error. Now:
+
+- Every registry-event handler runs through a `SafeHandle` wrapper that catches and logs, so an
+  unobserved fault can never crash the node (same fire-and-forget timing as before).
+- Context-name collision is a **logged skip** (`TryClaimContextName` returns `false` instead of
+  throwing): the offending module is skipped, the rest of the batch keeps loading, the node stays up.
+
+Test: `TsakCoordinatorTests.Context_name_collision_is_skipped_not_thrown` (collision → no throw, exactly
+one context). Full unit suite 579/579. (A Channel-fed, awaited handler — so startup can wait on
+completion and the reported context count stops being racy — is tracked as a review follow-up.)
+
+### Fixed — cluster coordinator: lock release and self-renew fencing (Pro, multi-node)
+
+Two deterministic defects from the cluster review that made the coordinator lose routes on planned
+drains and double-run them on failover. Fixed and verified against a real PostgreSQL two-node setup.
+
+- **`ReleaseLockAsync` was a guaranteed no-op on cordon-drain and on watch-loop errors.**
+  `ClusteredRoutePolicy` cleared `_isLeader` *before* calling `ReleaseLockAsync`, whose
+  `if (!_isLeader) return;` then skipped the actual `_lock.ReleaseAsync`. So a cordoned node stopped
+  its consumer but **held the lock until TTL** → the route ran on **zero** nodes for up to the TTL on
+  every drain; a watch-loop exception left the node consuming without renewing → **two-node run** after
+  TTL. (Same no-op also leaked the lock on shutdown-during-acquire.) Release is now unconditional
+  (`IDistributedLock.ReleaseAsync` is owner-scoped, so a non-holder is a safe no-op at the store), and
+  cordon/error paths **stop the consumer first, then release** — closing the reorder window.
+- **Self-renew bypassed epoch fencing → two lock holders.** `RedbDistributedLock.TryAcquireAsync`'s
+  "owned by us → renew" branch renewed unconditionally on the initial (out-of-transaction, possibly
+  stale) read with a last-writer-wins `SaveAsync`, so a node whose expired lock had just been taken
+  over (higher epoch) could clobber that takeover with its old epoch and report `Acquired=true`. Self-
+  renew now runs through an atomic `AtomicSelfRenewAsync` (row lock + re-read): it renews only if the
+  record is still owned by us and preserves the fresh epoch, otherwise it reports the lock lost.
+- **A rapid suspend→resume could leave two watch loops running.** `ClusteredRoutePolicy.StartWatchLoop`
+  overwrote `_loopCts`/`_loopTask` without cancelling the previous loop; since `OnResume` also resets
+  `_stopping=false`, an old loop still parked in its heartbeat `Task.Delay` would wake and keep running
+  alongside the new one (duplicate acquire/start + leaked CTS). Start/stop is now serialized through a
+  gate that cancels, awaits and disposes the previous loop first (`StartWatchLoopAsync`/`StopWatchLoopAsync`).
+- **A concurrent first-create race could leave two coexisting lock records (both "leader").** With no
+  unique constraint on the lock key, two nodes creating the lock at once can both `INSERT` and — if
+  neither sees the other yet — both return `Acquired=true`; each then renews its own record forever.
+  `RenewAsync` is now dedup-aware: it queries ALL records for the key inside a transaction, keeps the
+  deterministic winner (lowest id) under a row lock, deletes the rest, and only the surviving record's
+  owner renews. The loser's next renew finds its record gone and stops — the split-brain collapses
+  within one heartbeat. (Fully preventing the double-insert would need a redb uniqueness/serializable
+  primitive that isn't exposed today; the dedup makes it self-healing instead.)
+
+Tests: `ClusteredRoutePolicyFailoverTests.Cordoned_leader_drains_route_to_follower_within_a_heartbeat`
+(follower picks up well under the TTL — fails on the old no-op release) and
+`DistributedLockTests.Self_renew_never_rewinds_epoch_under_concurrent_takeover` (epochs never rewind
+under concurrent acquire/renew). Existing failover tests still green; full unit suite unchanged.
+Note: clustering targets a shared DB (Postgres/SQL Server); the default single-node SQLite path is
+unaffected.
+
+---
+
 ## [3.6.0] — 2026-08-13
 
 > Ships with the ecosystem. The minor comes from `redb.Route` (new `.PropagateToolHeaders(...)` API);

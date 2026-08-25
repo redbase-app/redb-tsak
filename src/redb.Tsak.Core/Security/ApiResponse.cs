@@ -69,6 +69,10 @@ public static class ApiResponse
     public static void NotFound(IExchange exchange, string message)
         => Error(exchange, 404, "NotFound", message);
 
+    /// <summary>429 Too Many Requests.</summary>
+    public static void TooManyRequests(IExchange exchange, string message = "Too many requests")
+        => Error(exchange, 429, "TooManyRequests", message);
+
     /// <summary>409 Conflict.</summary>
     public static void Conflict(IExchange exchange, string message)
         => Error(exchange, 409, "Conflict", message);

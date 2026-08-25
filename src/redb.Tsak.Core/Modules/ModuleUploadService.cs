@@ -112,8 +112,10 @@ public sealed class ModuleUploadService
         }
         catch (Exception ex)
         {
+            // Detail to the log, generic message to the client (review item 4.7) — the exception text
+            // can carry internal paths / config and should not leak over the API.
             _logger.LogError(ex, "Failed to install module '{Name}'", safeName);
-            return new ModuleDeployResult(false, $"Install failed: {ex.Message}");
+            return new ModuleDeployResult(false, "Install failed. See server logs for details.");
         }
     }
 
@@ -186,7 +188,8 @@ public sealed class ModuleUploadService
         }
         catch (Exception ex)
         {
-            return new ModuleDeployResult(false, $"Rollback failed: {ex.Message}");
+            _logger.LogError(ex, "Failed to roll back module '{Name}'", safeName);
+            return new ModuleDeployResult(false, "Rollback failed. See server logs for details.");
         }
     }
 

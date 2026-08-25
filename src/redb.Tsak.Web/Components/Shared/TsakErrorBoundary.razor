@@ -1,12 +1,14 @@
 @inherits ErrorBoundaryBase
+@inject ILogger<TsakErrorBoundary> Logger
 
 @if (CurrentException is not null)
 {
     <div class="error-boundary">
         <TsakIcon Name="alert-circle" Size="48" />
         <h2>Something went wrong</h2>
+        @* Generic message only (review item 4.7): the raw exception text can carry internal detail
+           (paths, config, connection strings) and is written to the server log instead. *@
         <p class="text-secondary">An unexpected error occurred. Try refreshing the page.</p>
-        <pre>@CurrentException.Message</pre>
         <button class="btn btn-secondary" style="margin-top: var(--space-4);" @onclick="Recover">
             <TsakIcon Name="refresh" Size="14" /> Try again
         </button>
@@ -20,6 +22,8 @@ else
 @code {
     protected override Task OnErrorAsync(Exception exception)
     {
+        // Keep the detail server-side (the UI shows only a generic message — review item 4.7).
+        Logger.LogError(exception, "Unhandled UI error caught by TsakErrorBoundary");
         return Task.CompletedTask;
     }
 }

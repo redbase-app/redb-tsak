@@ -66,5 +66,8 @@
         # AS2/EDI (3.5.1). Without this line the connector never reaches Libs/shared, so a module
         # asking for an `as2://` endpoint finds no component in a Tsak worker at all.
         'redb.Route.As2'
+        # SOAP connector. Same rule as As2 — without this line a module using a `soap://` endpoint
+        # finds no component in a Tsak worker.
+        'redb.Route.Soap'
     )
 }

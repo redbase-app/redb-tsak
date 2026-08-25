@@ -38,4 +38,10 @@ public interface ITsakCoordinator
     /// </summary>
     /// <param name="module">Updated module.</param>
     Task ProcessModuleUpdatedAsync(ITsakModule module);
+
+    /// <summary>
+    /// Waits until every enqueued registry-event has been processed by the background consumer.
+    /// Lets startup (and tests) wait for topology changes to settle instead of racing the handlers.
+    /// </summary>
+    Task WaitForIdleAsync(CancellationToken ct = default);
 }

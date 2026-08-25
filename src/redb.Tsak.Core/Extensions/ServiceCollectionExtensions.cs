@@ -248,6 +248,10 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ContextInfoCollector>();
         services.AddSingleton<LifecycleAuditService>();
         services.AddSingleton<HealthCheckService>();
+        // Control-plane health (review item 4.1): if the _system context fails to start, readiness must
+        // report the node as unhealthy instead of silently serving as if fully operational.
+        services.AddSingleton<ControlPlaneHealth>();
+        services.AddSingleton<IHealthContributor, ControlPlaneHealthContributor>();
         services.AddHostedService<MetricsCollectionService>();
 
         // Log ring buffer — in-memory circular buffer for live log viewing

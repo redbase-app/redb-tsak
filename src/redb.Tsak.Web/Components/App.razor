@@ -13,7 +13,9 @@
     <Routes @rendermode="@RenderMode.InteractiveServer" />
 
     <script src="_framework/blazor.web.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    @* Self-hosted (review 4.10): no runtime CDN dependency (works air-gapped) and no third-party
+       script loaded without integrity checking. Pinned to Chart.js v4.4.7. *@
+    <script src="js/chart.umd.min.js"></script>
     <script src="js/charts.js"></script>
     <script src="js/logs.js"></script>
 </body>

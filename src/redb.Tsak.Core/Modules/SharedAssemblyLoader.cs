@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Collections.Immutable;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.Loader;
@@ -18,7 +19,11 @@ public sealed class SharedAssemblyLoader
 {
     private readonly ILogger<SharedAssemblyLoader> _logger;
     private readonly string _sharedPath;
-    private readonly List<Assembly> _loadedAssemblies = [];
+    // Published snapshot of loaded shared assemblies. Immutable + swapped atomically under _loadLock,
+    // so a concurrent reader (TsakContextManager.CreateContext enumerates LoadedAssemblies during a
+    // hot-reload) never sees a torn/cleared set — review item 3.4.
+    private ImmutableArray<Assembly> _loadedAssemblies = ImmutableArray<Assembly>.Empty;
+    private readonly object _loadLock = new();
     private readonly ConcurrentDictionary<string, DateTime> _fileTimestamps = new(StringComparer.OrdinalIgnoreCase);
     private bool _resolvingHandlerRegistered;
 
@@ -50,11 +55,29 @@ public sealed class SharedAssemblyLoader
     /// <returns>Number of newly loaded assemblies.</returns>
     public int LoadSharedAssemblies()
     {
+        var scanned = ScanAndLoad(out var loaded);
+        if (scanned.Count > 0)
+            lock (_loadLock)
+                _loadedAssemblies = _loadedAssemblies.AddRange(scanned); // append (incremental-safe)
+        return loaded;
+    }
+
+    /// <summary>
+    /// Scans the shared directory and loads any not-yet-timestamped DLLs into the Default ALC.
+    /// Returns the assemblies to publish (reused-preloaded + newly loaded) and, via <paramref name="loaded"/>,
+    /// the count genuinely loaded here. Updates <see cref="_fileTimestamps"/> but does NOT touch the
+    /// published <see cref="_loadedAssemblies"/> — the caller publishes atomically under the lock.
+    /// </summary>
+    private List<Assembly> ScanAndLoad(out int loaded)
+    {
+        loaded = 0;
+        var result = new List<Assembly>();
+
         var fullPath = Path.GetFullPath(_sharedPath);
         if (!Directory.Exists(fullPath))
         {
             _logger.LogDebug("Shared path {Path} does not exist, skipping", fullPath);
-            return 0;
+            return result;
         }
 
         RegisterResolvingHandler(fullPath);
@@ -63,7 +86,6 @@ public sealed class SharedAssemblyLoader
         var nativeDirs = GetNativeLibraryDirs(fullPath);
 
         var dllFiles = Directory.GetFiles(fullPath, "*.dll");
-        var loaded = 0;
 
         foreach (var dll in dllFiles)
         {
@@ -78,7 +100,7 @@ public sealed class SharedAssemblyLoader
             var simpleName = Path.GetFileNameWithoutExtension(dll);
             if (LoadedAssemblyTracker.TryGet(simpleName, out var preloaded) && preloaded is not null)
             {
-                _loadedAssemblies.Add(preloaded);
+                result.Add(preloaded);
                 _fileTimestamps[dll] = File.GetLastWriteTimeUtc(dll);
                 // Surface framework/providers that the early bootstrap (SharedRuntime) byte-loaded
                 // before Serilog existed — otherwise they are invisible in the log file, unlike the
@@ -92,7 +114,7 @@ public sealed class SharedAssemblyLoader
             {
                 var bytes = File.ReadAllBytes(dll);
                 var assembly = AssemblyLoadContext.Default.LoadFromStream(new MemoryStream(bytes));
-                _loadedAssemblies.Add(assembly);
+                result.Add(assembly);
                 _fileTimestamps[dll] = File.GetLastWriteTimeUtc(dll);
                 loaded++;
 
@@ -141,7 +163,7 @@ public sealed class SharedAssemblyLoader
         if (loaded > 0)
             _logger.LogInformation("Loaded {Count} shared assemblies from {Path}", loaded, fullPath);
 
-        return loaded;
+        return result;
     }
 
     /// <summary>
@@ -184,11 +206,16 @@ public sealed class SharedAssemblyLoader
     /// <returns>Number of assemblies in the new load.</returns>
     public int ReloadSharedAssemblies()
     {
-        _loadedAssemblies.Clear();
+        _logger.LogInformation("Reloading shared assemblies from {Path}", _sharedPath);
         _fileTimestamps.Clear();
 
-        _logger.LogInformation("Reloading shared assemblies from {Path}", _sharedPath);
-        return LoadSharedAssemblies();
+        // Build the fresh set, THEN swap atomically — readers never observe an empty/torn set mid-reload
+        // (review item 3.4). Assemblies stay in the Default ALC (it can't unload); already-tracked ones
+        // are reused via the preloaded path in ScanAndLoad, so no duplicate loads.
+        var scanned = ScanAndLoad(out var loaded);
+        lock (_loadLock)
+            _loadedAssemblies = ImmutableArray.CreateRange(scanned);
+        return loaded;
     }
 
     private void RegisterResolvingHandler(string fullSharedPath)

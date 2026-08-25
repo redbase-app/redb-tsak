@@ -1,4 +1,6 @@
-@inject IAuthService Auth
+@page "/login"
+@layout BlankLayout
+@attribute [Microsoft.AspNetCore.Authorization.AllowAnonymous]
 
 <div class="login-backdrop">
     <div class="login-card">
@@ -10,93 +12,49 @@
         <h2 class="login-title">Sign In</h2>
         <p class="login-subtitle">Cluster dashboard</p>
 
-        @if (_error is not null)
+        @if (Error is not null)
         {
             <div class="login-error">
                 <TsakIcon Name="alert-circle" Size="16" />
-                <span>@_error</span>
+                <span>@ErrorMessage</span>
             </div>
         }
 
-        <div class="float-field">
-            <input id="login"
-                   type="text"
-                   placeholder=" "
-                   autocomplete="username"
-                   @bind="_login"
-                   @bind:event="oninput"
-                   @onkeydown="OnKeyDown"
-                   disabled="@_loading" />
-            <label for="login">Login</label>
-        </div>
+        @* Native full-page POST — an interactive circuit cannot call SignInAsync (the response has
+           already started), so login goes through the /auth/login endpoint which sets the cookie and
+           redirects. data-enhance=false keeps Blazor from intercepting the submit. *@
+        <form method="post" action="auth/login" data-enhance="false">
+            <AntiforgeryToken />
+            <input type="hidden" name="returnUrl" value="@ReturnUrl" />
 
-        <div class="float-field">
-            <input id="password"
-                   type="password"
-                   placeholder=" "
-                   autocomplete="current-password"
-                   @bind="_password"
-                   @bind:event="oninput"
-                   @onkeydown="OnKeyDown"
-                   disabled="@_loading" />
-            <label for="password">Password</label>
-        </div>
+            <div class="float-field">
+                <input id="login" name="login" type="text" placeholder=" " autocomplete="username" required />
+                <label for="login">Login</label>
+            </div>
 
-        <div class="login-actions">
-            <button class="btn btn-primary login-btn"
-                    @onclick="DoLogin"
-                    disabled="@(_loading || string.IsNullOrWhiteSpace(_login) || string.IsNullOrWhiteSpace(_password))">
-                @if (_loading)
-                {
-                    <span class="spinner"></span>
-                    <span>Signing in…</span>
-                }
-                else
-                {
+            <div class="float-field">
+                <input id="password" name="password" type="password" placeholder=" "
+                       autocomplete="current-password" required />
+                <label for="password">Password</label>
+            </div>
+
+            <div class="login-actions">
+                <button type="submit" class="btn btn-primary login-btn">
                     <TsakIcon Name="key" Size="16" />
                     <span>Sign In</span>
-                }
-            </button>
-        </div>
+                </button>
+            </div>
+        </form>
     </div>
 </div>
 
 @code {
-    private string _login = "";
-    private string _password = "";
-    private string? _error;
-    private bool _loading;
+    [SupplyParameterFromQuery] private string? Error { get; set; }
+    [SupplyParameterFromQuery] private string? ReturnUrl { get; set; }
 
-    private async Task DoLogin()
+    private string ErrorMessage => Error switch
     {
-        if (string.IsNullOrWhiteSpace(_login) || string.IsNullOrWhiteSpace(_password)) return;
-
-        _loading = true;
-        _error = null;
-        StateHasChanged();
-
-        try
-        {
-            var ok = await Auth.LoginAsync(_login, _password);
-            if (!ok)
-                _error = "Invalid login or password.";
-        }
-        catch (Exception ex)
-        {
-            _error = $"Authentication failed: {ex.Message}";
-        }
-        finally
-        {
-            _password = "";
-            _loading = false;
-        }
-    }
-
-    private async Task OnKeyDown(KeyboardEventArgs e)
-    {
-        if (e.Key == "Enter")
-        {
-            await DoLogin();
-        }
-    }
+        "locked" => "Too many failed attempts. Try again later.",
+        _ => "Invalid login or password."
+    };
 }

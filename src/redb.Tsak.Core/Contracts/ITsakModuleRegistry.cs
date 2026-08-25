@@ -23,18 +23,19 @@ public interface ITsakModuleRegistry
     /// <returns>Number of modules discovered.</returns>
     Task<int> DiscoverModulesAsync(IEnumerable<string> assemblyPaths);
 
-    /// <summary>Registers a single module manually.</summary>
-    void RegisterModule(ITsakModule module);
+    /// <summary>Registers a single module manually (awaits the store — no sync-over-async).</summary>
+    Task RegisterModuleAsync(ITsakModule module);
 
-    /// <summary>Unregisters a module by name.</summary>
+    /// <summary>Unregisters a module by name (awaits the store).</summary>
     /// <returns>True if module was found and removed.</returns>
-    bool UnregisterModule(string moduleName);
+    Task<bool> UnregisterModuleAsync(string moduleName);
 
-    /// <summary>Unregisters a module without firing events (used during package reload to preserve state).</summary>
+    /// <summary>Unregisters a module without firing events (used during package reload to preserve state).
+    /// Touches no store, so it stays synchronous.</summary>
     bool UnregisterModuleSilent(string moduleName);
 
-    /// <summary>Replaces a module in the registry without firing events (used by hot-swap).</summary>
-    void ReplaceModuleSilent(ITsakModule module);
+    /// <summary>Replaces a module in the registry without firing events (used by hot-swap; awaits the store).</summary>
+    Task ReplaceModuleSilentAsync(ITsakModule module);
 
     /// <summary>Returns all registered modules.</summary>
     IReadOnlyList<ITsakModule> GetAllModules();

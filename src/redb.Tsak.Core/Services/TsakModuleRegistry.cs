@@ -255,18 +255,18 @@ public class TsakModuleRegistry : ITsakModuleRegistry
         return total;
     }
 
-    public void RegisterModule(ITsakModule module)
+    public async Task RegisterModuleAsync(ITsakModule module)
     {
         if (_modules.TryAdd(module.ModuleName, module))
         {
-            _store.SaveAsync(new TsakModuleRecord
+            await _store.SaveAsync(new TsakModuleRecord
             {
                 ModuleName = module.ModuleName,
                 Version = module.Version,
                 Description = module.Description,
                 Dependencies = module.Dependencies.ToList(),
                 Status = TsakModuleStatus.Loaded
-            }).GetAwaiter().GetResult();
+            }).ConfigureAwait(false);
 
             _logger.LogInformation("Registered module {Module} v{Version}", module.ModuleName, module.Version);
             ModuleAdded?.Invoke(this, module);
@@ -277,13 +277,13 @@ public class TsakModuleRegistry : ITsakModuleRegistry
         }
     }
 
-    public bool UnregisterModule(string moduleName)
+    public async Task<bool> UnregisterModuleAsync(string moduleName)
     {
         if (!_modules.TryRemove(moduleName, out var removed))
             return false;
 
         _moduleFilePaths.TryRemove(moduleName, out _);
-        _store.RemoveAsync(moduleName).GetAwaiter().GetResult();
+        await _store.RemoveAsync(moduleName).ConfigureAwait(false);
 
         _logger.LogInformation("Unregistered module {Module}", moduleName);
         ModuleRemoved?.Invoke(this, moduleName);
@@ -311,18 +311,18 @@ public class TsakModuleRegistry : ITsakModuleRegistry
     /// Replaces a module in the registry without firing any events.
     /// Used by HotReloadService to avoid double context creation.
     /// </summary>
-    public void ReplaceModuleSilent(ITsakModule module)
+    public async Task ReplaceModuleSilentAsync(ITsakModule module)
     {
         var old = _modules.GetValueOrDefault(module.ModuleName);
         _modules[module.ModuleName] = module;
-        _store.SaveAsync(new TsakModuleRecord
+        await _store.SaveAsync(new TsakModuleRecord
         {
             ModuleName = module.ModuleName,
             Version = module.Version,
             Description = module.Description,
             Dependencies = module.Dependencies.ToList(),
             Status = TsakModuleStatus.Loaded
-        }).GetAwaiter().GetResult();
+        }).ConfigureAwait(false);
         (old as IDisposable)?.Dispose();
         _logger.LogDebug("Replaced module {Module} silently (no events)", module.ModuleName);
     }

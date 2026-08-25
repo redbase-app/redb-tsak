@@ -134,33 +134,59 @@ public sealed class DlqService
         if (!IsAvailable)
             return new ExchangeReplayResult { Success = false, Message = "DLQ is not available (no database)." };
 
-        var provider = Provider;
-        var connStr = DlqStorage.ResolveConnectionString(_configuration, provider)!;
-
-        DlqRow? row;
+        // Atomic claim FIRST (review item 3.3): flip pending → replaying, but only if still pending.
+        // The DB serializes the conditional UPDATE, so of two concurrent replays exactly one wins the
+        // claim and actually replays — the other is told it is already being handled. This is what
+        // stops a double-click / two operators from replaying the same failed exchange twice. A crash
+        // between claim and replay leaves the row in 'replaying' (visible, not lost) rather than
+        // silently pending-and-forgotten.
+        int claimed;
         try
         {
-            await using var conn = DlqStorage.CreateConnection(provider, connStr);
-            await conn.OpenAsync(ct);
-            await using var cmd = conn.CreateCommand();
-            cmd.CommandText = DlqStorage.SelectOneSql(provider);
-            AddParam(cmd, "entry_id", entryId);
-            await using var reader = await cmd.ExecuteReaderAsync(ct);
-            row = await reader.ReadAsync(ct) ? MapFull(reader) : null;
+            claimed = await ClaimForReplayAsync(entryId, ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
+            return new ExchangeReplayResult { Success = false, Message = $"Claim failed: {ex.Message}", EntryId = entryId };
+        }
+
+        if (claimed == 0)
+        {
+            // Not pending: not found, already replayed, or another replay claimed it first.
+            var current = await TryLoadRowAsync(entryId, ct).ConfigureAwait(false);
+            return current is null
+                ? new ExchangeReplayResult { Success = false, Message = "Entry not found.", EntryId = entryId }
+                : new ExchangeReplayResult { Success = false, EntryId = entryId, Message =
+                    $"Entry is not available for replay (status '{current.Status}') — already replayed or being replayed." };
+        }
+
+        // We own the claim. Load the full payload.
+        DlqRow? row;
+        try
+        {
+            row = await TryLoadRowAsync(entryId, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            await ReleaseClaimAsync(entryId, ct).ConfigureAwait(false);
             return new ExchangeReplayResult { Success = false, Message = $"Load failed: {ex.Message}", EntryId = entryId };
         }
 
-        if (row is null)
+        if (row is null) // deleted between claim and load — nothing left to release
             return new ExchangeReplayResult { Success = false, Message = "Entry not found.", EntryId = entryId };
+
         if (!row.Replayable)
+        {
+            await ReleaseClaimAsync(entryId, ct).ConfigureAwait(false);
             return new ExchangeReplayResult { Success = false, Message = "Entry body did not round-trip; not replayable.", EntryId = entryId };
+        }
 
         var context = _contextManager.GetContext(row.ContextName);
         if (context is null)
+        {
+            await ReleaseClaimAsync(entryId, ct).ConfigureAwait(false);
             return new ExchangeReplayResult { Success = false, Message = $"Context '{row.ContextName}' is not loaded.", EntryId = entryId };
+        }
 
         try
         {
@@ -175,8 +201,44 @@ public sealed class DlqService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "DLQ replay failed for entry {Entry} (route {Route})", entryId, row.RouteId);
+            // Release the claim so the entry can be retried rather than being stuck in 'replaying'.
+            await ReleaseClaimAsync(entryId, ct).ConfigureAwait(false);
             return new ExchangeReplayResult { Success = false, Message = $"Replay failed: {ex.Message}", EntryId = entryId };
         }
+    }
+
+    /// <summary>Atomic pending → replaying claim. Returns rows affected (1 = won, 0 = lost/not pending).</summary>
+    private async Task<int> ClaimForReplayAsync(string entryId, CancellationToken ct)
+    {
+        var provider = Provider;
+        var connStr = DlqStorage.ResolveConnectionString(_configuration, provider)!;
+        await using var conn = DlqStorage.CreateConnection(provider, connStr);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = DlqStorage.ClaimForReplaySql(provider);
+        AddParam(cmd, "entry_id", entryId);
+        AddParam(cmd, "from_status", "pending");
+        AddParam(cmd, "to_status", "replaying");
+        AddDateParam(cmd, provider, "claimed_at", DateTimeOffset.UtcNow);
+        return await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>Release a claim back to pending (with replayed_at cleared) so the entry can be retried.</summary>
+    private Task ReleaseClaimAsync(string entryId, CancellationToken ct) =>
+        UpdateStatusAsync(entryId, "pending", null, ct);
+
+    /// <summary>Loads one full DLQ row (with payload) or null if it no longer exists.</summary>
+    private async Task<DlqRow?> TryLoadRowAsync(string entryId, CancellationToken ct)
+    {
+        var provider = Provider;
+        var connStr = DlqStorage.ResolveConnectionString(_configuration, provider)!;
+        await using var conn = DlqStorage.CreateConnection(provider, connStr);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = DlqStorage.SelectOneSql(provider);
+        AddParam(cmd, "entry_id", entryId);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct) ? MapFull(reader) : null;
     }
 
     public async Task<bool> DiscardAsync(string entryId, CancellationToken ct = default)
@@ -223,7 +285,8 @@ public sealed class DlqService
 
     private sealed record DlqRow(
         string EntryId, string ContextName, string RouteId, string MarkerName,
-        string BodyKind, string? BodyType, string? BodyData, string HeadersJson, string PropertiesJson, bool Replayable);
+        string BodyKind, string? BodyType, string? BodyData, string HeadersJson, string PropertiesJson, bool Replayable,
+        string Status);
 
     private static FailedExchangeEntry MapSummary(DbDataReader r) => new()
     {
@@ -245,7 +308,7 @@ public sealed class DlqService
         GetString(r, "entry_id") ?? "", GetString(r, "context_name") ?? "", GetString(r, "route_id") ?? "",
         GetString(r, "marker_name") ?? "", GetString(r, "body_kind") ?? "none", GetString(r, "body_type"),
         GetString(r, "body_data"), GetString(r, "headers_json") ?? "{}", GetString(r, "properties_json") ?? "{}",
-        GetBool(r, "replayable"));
+        GetBool(r, "replayable"), GetString(r, "status") ?? "pending");
 
     private static void AddParam(DbCommand cmd, string name, object? value)
     {

@@ -1,4 +1,4 @@
-@inject IAuthService Auth
+@using Microsoft.AspNetCore.Components.Authorization
 @inject INodeClientProvider NodeProvider
 @inject IJSRuntime JS
 
@@ -18,17 +18,34 @@
         <button class="btn btn-icon btn-ghost" @onclick="ToggleTheme" title="Toggle theme">
             <TsakIcon Name="@_themeIcon" Size="18" />
         </button>
-        <span class="text-sm text-secondary">@Auth.DisplayName</span>
-        <TsakBadge Text="@(Auth.Role ?? "—")" Variant="@(Auth.IsAdmin ? "online" : "info")" ShowDot="false" />
-        <button class="btn btn-ghost btn-sm" @onclick="Logout">
-            <TsakIcon Name="logout" Size="16" />
-            <span>Logout</span>
-        </button>
+        <span class="text-sm text-secondary">@_displayName</span>
+        <TsakBadge Text="@(_role ?? "—")" Variant="@(_isAdmin ? "online" : "info")" ShowDot="false" />
+        <form method="post" action="auth/logout" class="topbar-logout-form">
+            <AntiforgeryToken />
+            <button type="submit" class="btn btn-ghost btn-sm">
+                <TsakIcon Name="logout" Size="16" />
+                <span>Logout</span>
+            </button>
+        </form>
     </div>
 </header>
 
 @code {
+    [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
+
     private string _themeIcon = "sun";
+    private string? _displayName;
+    private string? _role;
+    private bool _isAdmin;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (AuthState is null) return;
+        var user = (await AuthState).User;
+        _displayName = user.FindFirst("display_name")?.Value ?? user.Identity?.Name;
+        _role = user.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value;
+        _isAdmin = user.IsInRole("admin");
+    }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -44,11 +61,6 @@
     {
         var newTheme = await JS.InvokeAsync<string>("tsakTheme.toggle");
         _themeIcon = newTheme == "dark" ? "sun" : "moon";
-    }
-
-    private void Logout()
-    {
-        Auth.Logout();
     }
 
     private string GetPageTitle()

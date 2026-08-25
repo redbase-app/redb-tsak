@@ -73,7 +73,9 @@ public class SystemContextBuilder
             return null;
         }
 
-        var host = _configuration.GetValue("Tsak:Api:Host", "0.0.0.0");
+        // Secure by default: bind loopback. Local runs work out of the box; exposing the management
+        // plane on 0.0.0.0/an external address is now an explicit choice, not the default.
+        var host = _configuration.GetValue("Tsak:Api:Host", "127.0.0.1");
         var port = _configuration.GetValue("Tsak:Api:Port", 9090);
         var authEnabled = _configuration.GetValue("Tsak:Auth:Enabled", false);
 
@@ -83,7 +85,32 @@ public class SystemContextBuilder
             .GetSection("Tsak:Api:AuthExempt")
             .Get<string[]>() ?? new[] { "/api/health/*", "/api/health" };
 
-        _logger.LogInformation("Building _system context: http://{Host}:{Port}, auth={Auth}", host, port, authEnabled);
+        // Consolidated port summary so an operator sees EVERY configured port in one startup line, instead
+        // of hunting through the API, echo and Prometheus setup separately.
+        var echoPathSummary = _configuration.GetValue("Tsak:Api:Echo:Path", "/api/echo");
+        var promEnabled = _configuration.GetValue("Tsak:Metrics:Prometheus:Enabled", false);
+        var promPort = _configuration.GetValue("Tsak:Metrics:Prometheus:Port", 9464);
+        var promSummary = promEnabled
+            ? $"/metrics on http://{host}:{port}/metrics (scrapes OTel listener http://localhost:{promPort}/metrics)"
+            : "disabled";
+        _logger.LogInformation(
+            "Tsak ports — management API: http://{Host}:{Port} (auth={Auth}); echo: http://{Host}:{Port}{Echo} "
+            + "(AutoStart=false); Prometheus: {Prom}",
+            host, port, authEnabled, host, port, echoPathSummary, promSummary);
+
+        // Loud warning: management plane exposed off-loopback with no auth = full unauthenticated admin.
+        var isLoopback = string.Equals(host, "127.0.0.1", StringComparison.Ordinal)
+            || string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(host, "::1", StringComparison.Ordinal);
+        if (!isLoopback && !authEnabled)
+        {
+            _logger.LogWarning(
+                "SECURITY: the Tsak management API is bound to a non-loopback address ({Host}:{Port}) with "
+                + "authentication DISABLED. Anyone who can reach this port gets full unauthenticated admin "
+                + "(stop/remove contexts, upload modules, issue keys, dump config). Set Tsak:Auth:Enabled=true "
+                + "or bind Tsak:Api:Host to 127.0.0.1 before exposing this port.",
+                host, port);
+        }
 
         // 1. Create the context via context manager
         var context = _contextManager.CreateContext(SystemContextName, _serviceProvider, new Dictionary<string, object?>());
@@ -124,23 +151,26 @@ public class SystemContextBuilder
             routeContext.AddService(typeof(ApiKeyService), apiKeyService);
         }
 
-        // 5a. Optional per-IP throttle on /api/auth/* (brute-force protection).
-        // Disabled when limit <= 0. Defaults: 10 attempts per 60 s per remote IP.
+        // 5a. Per-IP brute-force throttle on the ACTUAL authentication surface (review item 4.5).
+        // Every non-exempt API request carries a key, so key-guessing can be attempted against ANY
+        // endpoint — not just /api/auth/*. The previous gate was path-limited AND counted every request
+        // (so it could not be applied surface-wide without throttling legitimate authenticated traffic).
+        // This throttle instead counts key-auth FAILURES per client IP across the whole surface and locks
+        // the IP out after Limit failures within WindowSeconds; a valid key clears the counter, so real
+        // clients are never affected. Disabled when Limit <= 0.
         var authThrottleLimit = _configuration.GetValue("Tsak:Api:AuthThrottle:Limit", 10);
         var authThrottleWindowSec = _configuration.GetValue("Tsak:Api:AuthThrottle:WindowSeconds", 60);
-        var authThrottlePathPrefix = _configuration.GetValue("Tsak:Api:AuthThrottle:PathPrefix", "/api/auth/");
-        KeyedThrottleProcessor? authThrottle = null;
+        var authThrottleLockoutSec = _configuration.GetValue("Tsak:Api:AuthThrottle:LockoutSeconds", 120);
+        // Only honour X-Forwarded-For when an operator asserts a trusted reverse proxy sits in front
+        // (default false — a client can otherwise spoof XFF to evade or poison the per-IP buckets).
+        var authThrottleTrustProxy = _configuration.GetValue("Tsak:Api:AuthThrottle:TrustProxyHeaders", false);
+        FailedAttemptThrottle? authThrottle = null;
         if (authEnabled && authThrottleLimit > 0 && apiKeyService is not null)
         {
-            // Inner processor only applies the auth check — outer KeyedThrottle gates concurrency per-IP.
-            var authProcessor = new AuthorizeProcessor(apiKeyService);
-            authThrottle = new KeyedThrottleProcessor(
-                next: authProcessor,
-                keyExtractor: ex => ex.In.Headers.TryGetValue(HttpHeaders.RemoteAddress, out var ip)
-                    ? ip?.ToString() ?? "unknown" : "unknown",
-                maxPerPeriod: authThrottleLimit,
-                period: TimeSpan.FromSeconds(authThrottleWindowSec),
-                logger: _serviceProvider.GetService<ILoggerFactory>()?.CreateLogger("Tsak.AuthThrottle"));
+            authThrottle = new FailedAttemptThrottle(
+                maxAttempts: authThrottleLimit,
+                window: TimeSpan.FromSeconds(authThrottleWindowSec),
+                lockoutDuration: TimeSpan.FromSeconds(authThrottleLockoutSec));
         }
 
         // 5b. Role enforcement (Tsak:Auth:EnforceRoles, default true when auth is on).
@@ -148,7 +178,9 @@ public class SystemContextBuilder
         // touch technical endpoints: auth-exempt paths (k8s probes under /api/health/*)
         // skip the whole block, and the echo / Prometheus routes have their own pipelines.
         var enforceRoles = _configuration.GetValue("Tsak:Auth:EnforceRoles", true);
-        var rolelessKeysAreAdmin = _configuration.GetValue("Tsak:Auth:RolelessKeysAreAdmin", true);
+        // Fail-closed by default: a key with no roles gets NO access to role-gated endpoints. (Set
+        // Tsak:Auth:RolelessKeysAreAdmin=true only to keep pre-RBAC keys working as admin during migration.)
+        var rolelessKeysAreAdmin = _configuration.GetValue("Tsak:Auth:RolelessKeysAreAdmin", false);
         RoleAuthorizationProcessor? roleAuthorizer = null;
         if (authEnabled && enforceRoles)
         {
@@ -175,18 +207,28 @@ public class SystemContextBuilder
 
                 if (apiKeyService is not null && !IsAuthExempt(exchange, exemptPatterns))
                 {
-                    // Use throttle gate when path matches the configured auth prefix.
-                    var path = exchange.In.Headers.TryGetValue(HttpHeaders.Path, out var p)
-                        ? p?.ToString() : null;
-                    if (authThrottle is not null && path is not null
-                        && path.StartsWith(authThrottlePathPrefix, StringComparison.OrdinalIgnoreCase))
+                    // Per-IP brute-force lockout on the whole auth surface (4.5). The key here is the
+                    // AuthorizeProcessor carries NO required roles, so a stopped exchange means the KEY
+                    // was missing/invalid (401) — the brute-force signal — never a role denial (403,
+                    // enforced separately below). So only genuine key-auth failures feed the throttle,
+                    // and a valid key clears the counter.
+                    var clientIp = ExtractClientIp(exchange, authThrottleTrustProxy);
+                    if (authThrottle is not null && authThrottle.IsLockedOut(clientIp))
                     {
-                        await authThrottle.Process(exchange, ct);
+                        ApiResponse.TooManyRequests(exchange,
+                            "Too many failed authentication attempts. Try again later.");
+                        exchange.Stop();
                     }
                     else
                     {
                         var authorizer = new AuthorizeProcessor(apiKeyService);
                         await authorizer.Process(exchange, ct);
+
+                        if (authThrottle is not null)
+                        {
+                            if (exchange.IsStopped) authThrottle.RecordFailure(clientIp); // invalid/missing key
+                            else authThrottle.RecordSuccess(clientIp);                    // valid key clears state
+                        }
                     }
 
                     // Role check for the authenticated caller. Unreachable for auth-exempt
@@ -241,12 +283,28 @@ public class SystemContextBuilder
             var metricsPort = _configuration.GetValue("Tsak:Metrics:Prometheus:Port", 9464);
             var scrapeUrl = $"http://localhost:{metricsPort}/metrics";
             var metricsUri = $"http:{host}:{port}/metrics?host={host}&port={port}&inOut=true";
+
+            // Optional auth for /metrics (review item 4.6). Off by default: /metrics rides the Api port,
+            // which now binds loopback by default (2.1), and Prometheus scrapers usually don't send a
+            // key. Operators who expose the Api port externally can require a valid API key by setting
+            // Tsak:Metrics:Prometheus:RequireAuth=true.
+            var metricsAuth = _configuration.GetValue("Tsak:Metrics:Prometheus:RequireAuth", false)
+                              && apiKeyService is not null
+                ? new Security.AuthorizeProcessor(apiKeyService)
+                : null;
+
             routeContext.AddRoutes(r =>
             {
                 r.From(metricsUri)
                     .RouteId("system-metrics")
                     .Process(async (exchange, ct) =>
                     {
+                        if (metricsAuth is not null)
+                        {
+                            await metricsAuth.Process(exchange, ct);
+                            if (exchange.IsStopped) return; // 401 already written by the authorizer
+                        }
+
                         exchange.Out ??= exchange.In.Clone();
                         try
                         {
@@ -427,6 +485,42 @@ public class SystemContextBuilder
     }
 
     /// <summary>
+    /// Resolves the client IP used to key the per-IP auth throttle (review item 4.5). By default this is
+    /// the transport peer (<c>redbHttp.RemoteAddress</c>). When <paramref name="trustProxy"/> is set (an
+    /// operator asserting exactly one trusted reverse proxy fronts the node), the <b>right-most</b> hop of
+    /// <c>X-Forwarded-For</c> is used instead — that is the address the trusted proxy itself appended
+    /// (i.e. the real peer it accepted the connection from), which the client cannot forge. The left-most
+    /// hops are whatever the client sent and are attacker-controllable, so they are NOT used. XFF is
+    /// ignored entirely unless trusted, because a client can otherwise spoof it to evade or poison the
+    /// buckets. Falls back to the peer address, then <c>"unknown"</c> (so a header-less request still
+    /// shares one bucket rather than bypassing the throttle).
+    /// <para><b>Deployment note (F2):</b> when the node sits behind a reverse proxy you MUST set
+    /// <c>TrustProxyHeaders=true</c>. With it off (the default), <c>RemoteAddress</c> is the proxy's IP for
+    /// every request, so all clients share one bucket and a single attacker can lock the whole API out.
+    /// The default is off only because trusting XFF is unsafe when NOT behind a trusted proxy.</para>
+    /// </summary>
+    internal static string ExtractClientIp(IExchange exchange, bool trustProxy)
+    {
+        if (trustProxy)
+        {
+            var xff = exchange.In.getHeader("X-Forwarded-For")?.ToString();
+            if (!string.IsNullOrWhiteSpace(xff))
+            {
+                // Right-most entry is the hop the trusted proxy appended = the real peer it saw. Left-most
+                // entries are client-supplied and spoofable, so we must NOT trust them (single-proxy model).
+                var parts = xff.Split(',');
+                var last = parts[^1].Trim();
+                if (last.Length > 0)
+                    return last;
+            }
+        }
+
+        return exchange.In.Headers.TryGetValue(HttpHeaders.RemoteAddress, out var ip)
+            ? ip?.ToString() ?? "unknown"
+            : "unknown";
+    }
+
+    /// <summary>
     /// Checks if the request path is exempt from authentication.
     /// Patterns are read from <c>Tsak:Api:AuthExempt</c> (default: K8s health probes
     /// <c>/api/health/*</c> and <c>/api/health</c>). A trailing <c>*</c> means prefix
@@ -559,6 +653,14 @@ public class SystemContextBuilder
 
         var store = _serviceProvider.GetService<IApiKeyStore>() ?? new ConfigApiKeyStore(_configuration);
         var userProvider = _serviceProvider.GetService<redb.Core.Providers.IUserProvider>();
-        return new ApiKeyService(store, System.Text.Encoding.UTF8.GetBytes(secret), userProvider);
+        var svc = new ApiKeyService(store, System.Text.Encoding.UTF8.GetBytes(secret), userProvider);
+
+        // Revocation-sensitivity knobs (review item 2.7). CacheTtl is the full lifetime; the shorter
+        // RevocationCheckInterval bounds how long a key revoked on another node stays accepted here.
+        var cacheTtl = _configuration.GetValue("Tsak:Auth:CacheTtlSeconds", 300);
+        var revoCheck = _configuration.GetValue("Tsak:Auth:RevocationCheckSeconds", 30);
+        svc.CacheTtl = TimeSpan.FromSeconds(cacheTtl <= 0 ? 300 : cacheTtl);
+        svc.RevocationCheckInterval = TimeSpan.FromSeconds(revoCheck < 0 ? 30 : revoCheck);
+        return svc;
     }
 }

@@ -120,11 +120,13 @@ else
                     <td class="text-sm">@FormatSize(context.Size)</td>
                     <td class="text-sm">@context.LastModified.ToString("yyyy-MM-dd HH:mm:ss")</td>
                     <td>
-                        <a class="btn btn-secondary btn-sm"
-                           href="@($"api/proxy/{NodeId}/logs/download/{context.Name}")"
-                           target="_blank" download>
-                            <TsakIcon Name="download" Size="14" /> ZIP
-                        </a>
+                        <AuthorizedView AdminOnly="true">
+                            <a class="btn btn-secondary btn-sm"
+                               href="@($"api/proxy/{NodeId}/logs/download/{context.Name}")"
+                               target="_blank" download>
+                                <TsakIcon Name="download" Size="14" /> ZIP
+                            </a>
+                        </AuthorizedView>
                     </td>
                 </RowContent>
             </TsakGrid>
@@ -161,6 +163,13 @@ else
 
     private PeriodicTimer? _timer;
     private CancellationTokenSource? _cts;
+    // Component-scoped token: API calls abort when the component is disposed (navigated away) (4.9).
+    // Guard the disposed state — reading _cts.Token after Dispose throws ObjectDisposedException; a call
+    // that started before Dispose already holds the (now-cancelled) token, so returning None here is safe.
+    private CancellationToken Ct
+    {
+        get { try { return _cts?.Token ?? default; } catch (ObjectDisposedException) { return default; } }
+    }
 
     private LogEntry[] FilteredEntries
     {
@@ -214,7 +223,7 @@ else
 
         try
         {
-            var response = await client.GetLogsAsync(afterId: _lastId, limit: 500);
+            var response = await client.GetLogsAsync(afterId: _lastId, limit: 500, ct: Ct);
             if (response is not { Available: true, Entries: { } entries }) return;
 
             _bufferCapacity = response.BufferCapacity;
@@ -262,7 +271,7 @@ else
         _filesLoading = true;
         try
         {
-            var response = await client.GetLogFilesAsync();
+            var response = await client.GetLogFilesAsync(Ct);
             _logFiles = response is { Available: true } ? response.Files : [];
         }
         catch { _logFiles = []; }

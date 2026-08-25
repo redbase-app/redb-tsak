@@ -372,6 +372,13 @@ else
     // Polling
     private PeriodicTimer? _timer;
     private CancellationTokenSource? _cts;
+    // Component-scoped token: API calls abort when the component is disposed (navigated away) (4.9).
+    // Guard the disposed state — reading _cts.Token after Dispose throws ObjectDisposedException; a call
+    // that started before Dispose already holds the (now-cancelled) token, so returning None here is safe.
+    private CancellationToken Ct
+    {
+        get { try { return _cts?.Token ?? default; } catch (ObjectDisposedException) { return default; } }
+    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -458,9 +465,9 @@ else
         }
 
         // Load overview data
-        _health = await client.GetHealthAsync();
-        _sysInfo = await client.GetInfoAsync();
-        _metrics = await client.GetMetricsAsync();
+        _health = await client.GetHealthAsync(Ct);
+        _sysInfo = await client.GetInfoAsync(Ct);
+        _metrics = await client.GetMetricsAsync(Ct);
 
         // Load tab data for active tab
         await LoadTabData(client);
@@ -473,22 +480,22 @@ else
         switch (_activeTab)
         {
             case "Contexts":
-                _contexts = await client.ListContextsAsync();
+                _contexts = await client.ListContextsAsync(Ct);
                 break;
             case "Scheduler":
-                var status = await client.GetSchedulerStatusAsync();
-                var jobs = await client.ListScheduledJobsAsync();
+                var status = await client.GetSchedulerStatusAsync(Ct);
+                var jobs = await client.ListScheduledJobsAsync(Ct);
                 _scheduler = new SchedulerData(status, jobs);
                 break;
             case "Modules":
-                _modules = await client.ListModulesAsync();
+                _modules = await client.ListModulesAsync(Ct);
                 break;
             case "Monitoring":
-                _monHistory = await client.GetMetricsHistoryAsync(_monMinutes);
+                _monHistory = await client.GetMetricsHistoryAsync(_monMinutes, Ct);
                 await UpdateMonitoringChartsAsync();
                 break;
             case "Logs":
-                var response = await client.GetLogsAsync(limit: 200);
+                var response = await client.GetLogsAsync(limit: 200, ct: Ct);
                 _logs = response is { Available: true, Entries: { } entries } ? entries : [];
                 break;
         }
@@ -501,7 +508,7 @@ else
         _monChartsCreated = false;
         var client = NodeProvider.GetClient(NodeId);
         if (client is null) return;
-        _monHistory = await client.GetMetricsHistoryAsync(_monMinutes);
+        _monHistory = await client.GetMetricsHistoryAsync(_monMinutes, Ct);
         await UpdateMonitoringChartsAsync();
         StateHasChanged();
     }
@@ -539,7 +546,7 @@ else
             var client = NodeProvider.GetClient(NodeId)
                 ?? throw new InvalidOperationException($"No API client for node {NodeId}");
             await action(client);
-            _contexts = await client.ListContextsAsync();
+            _contexts = await client.ListContextsAsync(Ct);
             Toast.Success($"Context {actionName}");
         }
         catch (Exception ex)
@@ -569,8 +576,8 @@ else
                 ?? throw new InvalidOperationException($"No API client for node {NodeId}");
             await action(client);
             _scheduler = new SchedulerData(
-                await client.GetSchedulerStatusAsync(),
-                await client.ListScheduledJobsAsync());
+                await client.GetSchedulerStatusAsync(Ct),
+                await client.ListScheduledJobsAsync(Ct));
             Toast.Success($"Scheduler {actionName}");
         }
         catch (Exception ex)

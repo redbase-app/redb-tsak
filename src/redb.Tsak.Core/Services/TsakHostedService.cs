@@ -118,7 +118,13 @@ public class TsakHostedService : BackgroundService
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Failed to start REST API (_system context), continuing without it");
+                    // The node keeps running its business contexts, but with NO management/control-plane
+                    // it is not fully operational — escalate loudly AND flag readiness (review item 4.1)
+                    // so it is not silently reported healthy.
+                    _logger.LogCritical(ex,
+                        "Failed to start REST API (_system context) — node has NO control-plane; readiness will "
+                        + "report UNHEALTHY. Business contexts continue.");
+                    _serviceProvider.GetService<Monitoring.ControlPlaneHealth>()?.MarkFailed(ex.Message);
                 }
             }
 

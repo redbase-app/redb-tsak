@@ -154,6 +154,16 @@ else
         try
         {
             var client = NodeProvider.GetClient(NodeId);
+            if (client is null)
+            {
+                // Node not in the current topology (removed, or not yet discovered) — show a clean
+                // empty/unavailable state instead of throwing a NullReferenceException (review 4.8).
+                _unavailable = true;
+                _error = $"Node '{NodeId}' is not available.";
+                _entries = [];
+                return;
+            }
+
             var result = await client.GetFailedExchangesAsync(
                 context: NullIfBlank(_context), route: NullIfBlank(_route), status: NullIfBlank(_status),
                 limit: _pageSize, offset: _page * _pageSize);
@@ -186,10 +196,13 @@ else
 
     private async Task Replay(string id)
     {
+        var client = NodeProvider.GetClient(NodeId);
+        if (client is null) { Toast.Error($"Node '{NodeId}' is not available."); return; }
+
         _busy = id;
         try
         {
-            var result = await NodeProvider.GetClient(NodeId).ReplayExchangeAsync(id);
+            var result = await client.ReplayExchangeAsync(id);
             if (result.Success) Toast.Success("Replayed");
             else Toast.Warning(result.Message);
             await LoadAsync(resetPage: false);
@@ -200,10 +213,13 @@ else
 
     private async Task Discard(string id)
     {
+        var client = NodeProvider.GetClient(NodeId);
+        if (client is null) { Toast.Error($"Node '{NodeId}' is not available."); return; }
+
         _busy = id;
         try
         {
-            var result = await NodeProvider.GetClient(NodeId).DiscardExchangeAsync(id);
+            var result = await client.DiscardExchangeAsync(id);
             if (result.Success) Toast.Success("Discarded");
             else Toast.Warning(result.Message);
             await LoadAsync(resetPage: false);

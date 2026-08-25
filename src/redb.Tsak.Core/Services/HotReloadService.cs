@@ -25,6 +25,11 @@ public sealed class HotReloadService : IDisposable
 
     /// <summary>Number of non-collectible ALCs accumulated (never freed until process restart).</summary>
     private int _leakedAlcCount;
+    // Idempotent disposal + coordination with an in-progress scan (review item 4.12): Dispose unloads
+    // ALCs, so a scan running concurrently must finish first (the gate) and a scan starting after
+    // disposal must bail (_disposed).
+    private int _disposed;
+    private readonly SemaphoreSlim _scanGate = new(1, 1);
 
     /// <summary>Number of non-collectible ALCs that were orphaned and can't be unloaded. For diagnostics/monitoring.</summary>
     public int LeakedAlcCount => Volatile.Read(ref _leakedAlcCount);
@@ -41,6 +46,10 @@ public sealed class HotReloadService : IDisposable
 
     // module name → number of consecutive scans where DLL was missing (debounce for file replacement)
     private readonly ConcurrentDictionary<string, int> _pendingRemovals = new(StringComparer.OrdinalIgnoreCase);
+
+    // .tpkg path → (size, mtime, consecutive-stable-scan count) — copy-stability debounce for additions
+    // so a half-written package is not opened mid-copy (review item 4.11).
+    private readonly ConcurrentDictionary<string, (long Size, DateTime Mtime, int Streak)> _additionStability = new(StringComparer.OrdinalIgnoreCase);
 
     // config file path → last known write time (tracks context.json and {Module}.config.json changes)
     private readonly ConcurrentDictionary<string, DateTime> _configFileTimestamps = new(StringComparer.OrdinalIgnoreCase);
@@ -205,6 +214,26 @@ public sealed class HotReloadService : IDisposable
     /// </summary>
     public async Task<int> ScanAndReloadAsync(IEnumerable<string> paths, CancellationToken ct = default)
     {
+        if (Volatile.Read(ref _disposed) == 1)
+            return 0;
+
+        // Serialize scans and coordinate with Dispose: a scan holds the gate for its whole run, so
+        // Dispose (which also takes the gate) can never unload an ALC out from under a live scan (4.12).
+        await _scanGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (Volatile.Read(ref _disposed) == 1)
+                return 0;
+            return await ScanAndReloadCoreAsync(paths, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _scanGate.Release();
+        }
+    }
+
+    private async Task<int> ScanAndReloadCoreAsync(IEnumerable<string> paths, CancellationToken ct = default)
+    {
         var reloaded = 0;
 
         // Check shared layer changes first — if any shared DLL changed, restart all contexts
@@ -256,11 +285,13 @@ public sealed class HotReloadService : IDisposable
                         }
                         else
                         {
-                            // Potential new module — load and check for ITsakModule.
-                            // Register in tracker so other modules' ALCs can resolve this as a dependency.
+                            // Potential new module — load into its OWN isolated ALC only. Do NOT also
+                            // byte-load it into the Default ALC (review item 3.7b): that produced a
+                            // second, distinct copy of the module's types in Default while the module
+                            // actually runs as the ALC copy — a type-identity split-brain and a leak.
+                            // A module's own assembly is not a shared dependency; cross-module shared
+                            // types belong in the shared layer (which IS tracked).
                             var fullDll = Path.GetFullPath(dll);
-                            var dllBytes = File.ReadAllBytes(fullDll);
-                            LoadedAssemblyTracker.LoadOrReuse(moduleName, dllBytes);
 
                             var newAlc = new ModuleAssemblyLoadContext(moduleName, _assemblyProbePaths, _collectible);
                             var assembly = newAlc.LoadFromBytes(fullDll);
@@ -271,7 +302,7 @@ public sealed class HotReloadService : IDisposable
                             if (newModule is not null)
                             {
                                 _logger.LogInformation("New module discovered: {Module} v{Version}", newModule.ModuleName, newVersion);
-                                _registry.RegisterModule(newModule);
+                                await _registry.RegisterModuleAsync(newModule);
                                 _loadedModules[moduleName] = new LoadedModuleInfo(newAlc, dll, newVersion);
                                 reloaded++;
                             }
@@ -295,22 +326,34 @@ public sealed class HotReloadService : IDisposable
             {
                 try
                 {
-                    var lastWrite = File.GetLastWriteTimeUtc(tpkg);
+                    var tpkgInfo = new FileInfo(tpkg);
+                    var lastWrite = tpkgInfo.LastWriteTimeUtc;
 
-                    // Check if file changed since last scan
+                    // Skip if unchanged since the last SUCCESSFUL process. The tracked time is now written
+                    // only after a successful open/verify (4.11), so a transient failure is retried rather
+                    // than permanently skipped.
                     if (_ignoredDlls.TryGetValue(tpkg, out var trackedWrite) && lastWrite <= trackedWrite)
+                    {
+                        _additionStability.TryRemove(tpkg, out _);
+                        continue;
+                    }
+
+                    // Copy-stability debounce (4.11): a freshly-dropped package may still be copying.
+                    // Require its size+mtime to hold steady for AdditionStabilityScans scans before opening
+                    // it, so we never read a half-written ZIP. Mirrors RemovalDebounceScans for deletions.
+                    if (!IsPackageStableForLoad(tpkg, tpkgInfo.Length, lastWrite))
                         continue;
 
-                    _ignoredDlls[tpkg] = lastWrite;
-
-                    // Load-boundary trust gate: verify the signature before ANY code from this
-                    // package is loaded. Covers both API uploads and operator file drops.
+                    // Load-boundary trust gate: verify the signature before ANY code from this package is
+                    // loaded. On failure we do NOT record the timestamp, so the package is retried once its
+                    // detached .sig is copied in (or the file is fixed).
                     if (!PassesSignatureGate(tpkg))
                         continue;
 
                     if (_packageModules.TryGetValue(tpkg, out var oldModuleNames) && oldModuleNames.Count > 0)
                     {
-                        // Package update — reload preserving state (autoStart etc.)
+                        // Package update — reload preserving state (autoStart etc.). ReloadPackageAsync
+                        // records the tracked timestamp itself only after a successful reload.
                         reloaded += await ReloadPackageAsync(tpkg, oldModuleNames, ct).ConfigureAwait(false);
                     }
                     else
@@ -319,7 +362,7 @@ public sealed class HotReloadService : IDisposable
                         var package = ModulePackage.Open(tpkg, probePaths: _assemblyProbePaths,
                             logger: _logger, collectible: _collectible);
                         if (package is null)
-                            continue;
+                            continue; // corrupt/partial — do NOT record; retry next scan
 
                         var newModuleNames = new List<string>();
 
@@ -344,7 +387,7 @@ public sealed class HotReloadService : IDisposable
 
                                 _logger.LogInformation("New module {Module} from package {Pkg}",
                                     module.ModuleName, package.Manifest.Name);
-                                _registry.RegisterModule(module);
+                                await _registry.RegisterModuleAsync(module);
                                 _loadedModules[module.ModuleName] = new LoadedModuleInfo(package.Alc, tpkg, module.Version);
                                 newModuleNames.Add(module.ModuleName);
                                 reloaded++;
@@ -361,6 +404,12 @@ public sealed class HotReloadService : IDisposable
                             // No modules found — dispose the ALC
                             package.Dispose();
                         }
+
+                        // Opened & verified successfully — NOW record the tracked time (4.11), so an
+                        // earlier mid-copy failure did not permanently skip this package. (A package with
+                        // no modules still opened cleanly and should not be re-opened every scan.)
+                        _ignoredDlls[tpkg] = lastWrite;
+                        _additionStability.TryRemove(tpkg, out _);
                     }
                 }
                 catch (Exception ex)
@@ -379,6 +428,32 @@ public sealed class HotReloadService : IDisposable
         reloaded += configReloads;
 
         return reloaded;
+    }
+
+    /// <summary>
+    /// Copy-stability debounce for a newly-seen / changed <c>.tpkg</c> (review item 4.11): returns true
+    /// only once the file's size and last-write time have held steady for
+    /// <see cref="HotReloadOptions.AdditionStabilityScans"/> consecutive scans, so a half-written package
+    /// is never opened mid-copy. Any change to size or mtime resets the streak.
+    /// </summary>
+    internal bool IsPackageStableForLoad(string path, long size, DateTime mtime)
+    {
+        var threshold = Math.Max(1, _options.AdditionStabilityScans);
+        var cur = _additionStability.AddOrUpdate(
+            path,
+            _ => (size, mtime, 1),
+            (_, prev) => prev.Size == size && prev.Mtime == mtime
+                ? (prev.Size, prev.Mtime, prev.Streak + 1)
+                : (size, mtime, 1));
+
+        if (cur.Streak < threshold)
+        {
+            _logger.LogDebug(
+                "Package {Pkg} still settling (stable scan {Count}/{Threshold}) — waiting for the copy to finish",
+                Path.GetFileName(path), cur.Streak, threshold);
+            return false;
+        }
+        return true;
     }
 
     /// <summary>
@@ -522,6 +597,13 @@ public sealed class HotReloadService : IDisposable
                 _ignoredDlls.TryRemove(ignored, out _);
         }
 
+        // Clean stale copy-stability entries for packages that vanished mid-settle (4.11)
+        foreach (var pending in _additionStability.Keys.ToArray())
+        {
+            if (!existingFiles.Contains(Path.GetFullPath(pending)))
+                _additionStability.TryRemove(pending, out _);
+        }
+
         var removed = 0;
         var debounceThreshold = Math.Max(1, _options.RemovalDebounceScans);
 
@@ -616,7 +698,7 @@ public sealed class HotReloadService : IDisposable
             }
 
             // 2. Unregister from module registry
-            _registry.UnregisterModule(moduleName);
+            await _registry.UnregisterModuleAsync(moduleName);
 
             // 3. Clean up current ALC (skip for package-owned modules — their ALC
             //    is disposed atomically when the package itself is removed)
@@ -747,7 +829,7 @@ public sealed class HotReloadService : IDisposable
 
                 _logger.LogInformation("Loading module {Module} from package {Pkg}",
                     module.ModuleName, package.Manifest.Name);
-                _registry.ReplaceModuleSilent(module);
+                await _registry.ReplaceModuleSilentAsync(module);
                 _loadedModules[module.ModuleName] = new LoadedModuleInfo(package.Alc, tpkgPath, module.Version);
                 newModuleNames.Add(module.ModuleName);
                 allNewModules.Add(module);
@@ -762,9 +844,13 @@ public sealed class HotReloadService : IDisposable
             await _coordinator.ProcessBatchAsync(allNewModules).ConfigureAwait(false);
         }
 
-        // 5. Update package tracking
+        // 5. Update package tracking. Record the tracked write-time only now, after a successful reload
+        //    (4.11) — the scan loop no longer records it eagerly, so a failed reload (validation/open
+        //    returned 0 above) is retried on the next scan instead of being permanently skipped.
         _packageModules[tpkgPath] = newModuleNames;
         _packageInstances[tpkgPath] = package;
+        _ignoredDlls[tpkgPath] = package.LastWriteUtc;
+        _additionStability.TryRemove(tpkgPath, out _);
 
         _logger.LogInformation("Package {Pkg} reloaded: {Count} modules",
             Path.GetFileName(tpkgPath), newModuleNames.Count);
@@ -781,17 +867,19 @@ public sealed class HotReloadService : IDisposable
     {
         ITsakModule? newModule = null;
         ModuleAssemblyLoadContext? newAlc = null;
+        // Once we unregister the old module the registry is on the swap-in-progress state; ANY later
+        // failure must roll back to the old version, not leave the registry pointing at a broken new
+        // module (review item 3.2).
+        var registryMutated = false;
 
         try
         {
-            // 1. Load new assembly in fresh ALC (from bytes — file never locked).
-            //    Also replace in centralized tracker so dependencies resolved by
-            //    other modules see the new version.
+            // 1. Load new assembly in a fresh ALC (from bytes — file never locked). NOTE: we do NOT
+            //    publish it to the shared LoadedAssemblyTracker yet — other modules must not resolve
+            //    the new, unvalidated-and-unstarted assembly. The tracker is switched only after the
+            //    new version has started successfully (step 8).
             newAlc = new ModuleAssemblyLoadContext(Path.GetFileNameWithoutExtension(newDllPath), _assemblyProbePaths, _collectible);
             var fullDllPath = Path.GetFullPath(newDllPath);
-            var bytes = File.ReadAllBytes(fullDllPath);
-            var asmName = Path.GetFileNameWithoutExtension(newDllPath);
-            LoadedAssemblyTracker.Replace(asmName, bytes);
             var assembly = newAlc.LoadFromBytes(fullDllPath);
 
             // 2. Discover module in the loaded assembly
@@ -820,6 +908,7 @@ public sealed class HotReloadService : IDisposable
             // 4. Silently unregister old module (no events → state preserved in store,
             //    autoStart=false survives). Same pattern as ReloadPackageAsync.
             _registry.UnregisterModuleSilent(moduleName);
+            registryMutated = true;
 
             // 5. Archive old version for rollback
             if (_loadedModules.TryGetValue(moduleName, out var oldInfo))
@@ -844,24 +933,34 @@ public sealed class HotReloadService : IDisposable
             }
 
             // 6. Replace module in registry (silent — no events, coordinator is called directly)
-            _registry.ReplaceModuleSilent(newModule);
+            await _registry.ReplaceModuleSilentAsync(newModule);
 
-            // 7. Start new module context
-            using var startCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            startCts.CancelAfter(TimeSpan.FromSeconds(_options.StartupTimeoutSeconds));
-
+            // 7. Start new module context. ANY failure here (not just cancel/timeout) rolls back to the
+            //    old version — otherwise the old module is unregistered and the registry is left on a
+            //    broken new one.
             try
             {
                 await _coordinator.ProcessModuleAddedAsync(newModule).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is OperationCanceledException or TimeoutException)
+            catch (Exception ex)
             {
-                _logger.LogError(ex, "New version of {Module} failed to start within timeout, rolling back",
+                _logger.LogError(ex, "New version of {Module} failed to start, rolling back to previous version",
                     moduleName);
-                return await RollbackAsync(moduleName, ct).ConfigureAwait(false) ? false : false;
+                var rolledBack = await RollbackAsync(moduleName, ct).ConfigureAwait(false);
+                newAlc?.TryUnload(); // tracker was never switched to the new bytes — nothing to revert there
+                if (!rolledBack)
+                    _logger.LogError("Rollback of {Module} after failed swap did not restore a previous version — module may be down",
+                        moduleName);
+                return false;
             }
 
-            // 8. Update tracking
+            // 8. Started successfully — finalize tracking. The module's OWN entry assembly is NOT
+            //    published to the shared LoadedAssemblyTracker: it lives only in newAlc (isolated),
+            //    exactly as the .tpkg path treats entry points (ModulePackage — entry points are never
+            //    tracked). Publishing it would Assembly.Load a second, non-unloadable copy into the
+            //    Default ALC (a leak that isn't even counted in _leakedAlcCount) and risk a type-identity
+            //    split-brain; cross-module shared types must flow through the shared/companion layer,
+            //    which IS tracked. (Review item F-7.)
             _loadedModules[moduleName] = new LoadedModuleInfo(newAlc, newDllPath, newVersion);
 
             if (!_collectible)
@@ -880,11 +979,22 @@ public sealed class HotReloadService : IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Hot swap failed for {Module}, staying on current version", moduleName);
-
-            // Cleanup failed ALC
-            if (newModule is null)
+            if (registryMutated)
+            {
+                // We already unregistered the old module (steps 4–6 mutated the registry). Restore the
+                // old version rather than leaving the registry on a half-swapped/broken module.
+                _logger.LogError(ex, "Hot swap of {Module} failed after unregistering the old version, rolling back", moduleName);
+                var rolledBack = await RollbackAsync(moduleName, ct).ConfigureAwait(false);
                 newAlc?.TryUnload();
+                if (!rolledBack)
+                    _logger.LogError("Rollback of {Module} did not restore a previous version — module may be down", moduleName);
+            }
+            else
+            {
+                // Failure before switching (load/discover/validate). The old module is untouched.
+                _logger.LogError(ex, "Hot swap failed for {Module} before switching, staying on current version", moduleName);
+                newAlc?.TryUnload();
+            }
 
             return false;
         }
@@ -921,9 +1031,8 @@ public sealed class HotReloadService : IDisposable
 
             // Re-discover and register old version (load via ALC from bytes — no lock)
             var rollbackAlc = new ModuleAssemblyLoadContext(Path.GetFileNameWithoutExtension(previous.DllPath), _assemblyProbePaths, _collectible);
-            var rollbackBytes = File.ReadAllBytes(previous.DllPath);
-            var rollbackAsmName = Path.GetFileNameWithoutExtension(previous.DllPath);
-            LoadedAssemblyTracker.Replace(rollbackAsmName, rollbackBytes);
+            // Entry assembly stays ALC-private — NOT republished to the shared tracker (see the F-7 note
+            // in HotSwapAsync step 8). Republishing would leak a duplicate copy into the Default ALC.
             var rollbackAssembly = rollbackAlc.LoadFromBytes(previous.DllPath);
             var rollbackSourceDir = Path.GetDirectoryName(Path.GetFullPath(previous.DllPath));
             var modules = TsakModuleRegistry.DiscoverModulesInAssembly(rollbackAssembly, rollbackSourceDir);
@@ -937,7 +1046,7 @@ public sealed class HotReloadService : IDisposable
                 return false;
             }
 
-            _registry.ReplaceModuleSilent(oldModule);
+            await _registry.ReplaceModuleSilentAsync(oldModule);
             await _coordinator.ProcessModuleAddedAsync(oldModule).ConfigureAwait(false);
 
             _loadedModules[moduleName] = previous;
@@ -993,22 +1102,36 @@ public sealed class HotReloadService : IDisposable
 
     public void Dispose()
     {
-        // Dispose package ALCs first (covers all package-owned modules atomically)
-        foreach (var pkg in _packageInstances.Values)
-            pkg.Dispose();
-        _packageInstances.Clear();
+        // Idempotent (4.12): a second Dispose is a no-op.
+        if (Interlocked.Exchange(ref _disposed, 1) == 1)
+            return;
 
-        // Dispose remaining bare-DLL ALCs (skip package-owned — already handled above)
-        foreach (var info in _loadedModules.Values)
+        // Wait for any in-progress scan to finish before unloading its ALCs (coordinate, not just via
+        // a cancellation token). A scan blocked on the gate here will see _disposed and bail on release.
+        _scanGate.Wait();
+        try
         {
-            if (info.Alc is not null && !info.DllPath.EndsWith(".tpkg", StringComparison.OrdinalIgnoreCase))
-                info.Alc.TryUnload();
+            // Dispose package ALCs first (covers all package-owned modules atomically)
+            foreach (var pkg in _packageInstances.Values)
+                pkg.Dispose();
+            _packageInstances.Clear();
+
+            // Dispose remaining bare-DLL ALCs (skip package-owned — already handled above)
+            foreach (var info in _loadedModules.Values)
+            {
+                if (info.Alc is not null && !info.DllPath.EndsWith(".tpkg", StringComparison.OrdinalIgnoreCase))
+                    info.Alc.TryUnload();
+            }
+
+            foreach (var history in _previousVersions.Values)
+            {
+                foreach (var info in history)
+                    info.Alc?.TryUnload();
+            }
         }
-
-        foreach (var history in _previousVersions.Values)
+        finally
         {
-            foreach (var info in history)
-                info.Alc?.TryUnload();
+            _scanGate.Release();
         }
     }
 

@@ -13,7 +13,17 @@ public sealed class TsakApiClient : ITsakApiClient
     /// <summary>Default request timeout used when neither the constructor nor a per-call <see cref="CancellationToken"/> overrides it.</summary>
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(5);
 
+    /// <summary>
+    /// Default timeout for log-file downloads. The server buffers the whole file into a ZIP before
+    /// responding, so a large file can take far longer than <see cref="DefaultTimeout"/> — a dedicated,
+    /// longer deadline avoids cutting the download mid-flight (review item 4.9).
+    /// </summary>
+    public static readonly TimeSpan DefaultDownloadTimeout = TimeSpan.FromMinutes(5);
+
     private readonly HttpClient _http;
+    // Separate client for downloads: the shared 5s HttpClient.Timeout is global and cannot be widened
+    // per-call, so log-file downloads use their own client with a longer timeout (4.9).
+    private readonly HttpClient _downloadHttp;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -31,18 +41,28 @@ public sealed class TsakApiClient : ITsakApiClient
     /// (diagnostics dump, force-stop, module install) pass a larger value here, or supply a
     /// per-call <see cref="CancellationToken"/> with the desired deadline.
     /// </param>
-    public TsakApiClient(string baseUrl, string? apiKey = null, TimeSpan? timeout = null)
+    /// <param name="downloadTimeout">
+    /// Optional timeout for log-file downloads (the dedicated download client). Defaults to
+    /// <see cref="DefaultDownloadTimeout"/> (5 min). Independent of <paramref name="timeout"/> so large
+    /// downloads are not cut by the short default request timeout (review item 4.9).
+    /// </param>
+    public TsakApiClient(string baseUrl, string? apiKey = null, TimeSpan? timeout = null, TimeSpan? downloadTimeout = null)
     {
-        _http = new HttpClient
-        {
-            BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/"),
-            Timeout = timeout ?? DefaultTimeout
-        };
+        var baseUri = new Uri(baseUrl.TrimEnd('/') + "/");
+        _http = new HttpClient { BaseAddress = baseUri, Timeout = timeout ?? DefaultTimeout };
+        _downloadHttp = new HttpClient { BaseAddress = baseUri, Timeout = downloadTimeout ?? DefaultDownloadTimeout };
         if (!string.IsNullOrEmpty(apiKey))
+        {
             _http.DefaultRequestHeaders.Add("X-API-Key", apiKey);
+            _downloadHttp.DefaultRequestHeaders.Add("X-API-Key", apiKey);
+        }
     }
 
-    public void Dispose() => _http.Dispose();
+    public void Dispose()
+    {
+        _http.Dispose();
+        _downloadHttp.Dispose();
+    }
 
     // ── Auth ──────────────────────────────────────────────────────────
 
@@ -368,7 +388,10 @@ public sealed class TsakApiClient : ITsakApiClient
     /// <inheritdoc />
     public async Task<byte[]> DownloadLogFileAsync(string filename, CancellationToken ct = default)
     {
-        var response = await _http.GetAsync(
+        // Use the dedicated download client (longer timeout) so a large log ZIP is not cut by the 5s
+        // default request timeout (4.9). The caller's token still aborts the transfer (e.g. the browser
+        // cancelling the download flows through as HttpContext.RequestAborted).
+        var response = await _downloadHttp.GetAsync(
             $"api/logs/files/{Uri.EscapeDataString(filename)}", ct);
         if (!response.IsSuccessStatusCode)
             throw ApiException.Create((int)response.StatusCode, $"Failed to download log file '{filename}'");

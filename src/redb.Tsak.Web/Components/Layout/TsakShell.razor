@@ -1,34 +1,27 @@
 @inherits LayoutComponentBase
-@inject IAuthService Auth
 @inject ToastService Toast
 @implements IDisposable
 
-@if (!Auth.IsAuthenticated)
-{
-    <redb.Tsak.Web.Components.Pages.Login />
-}
-else
-{
-    <div class="shell">
-        <TsakSidebar />
-        <div class="shell-main">
-            <TsakTopBar />
-            <main class="shell-content">
-                <TsakErrorBoundary>
-                    @Body
-                </TsakErrorBoundary>
-            </main>
-        </div>
+@* Anonymous access is blocked by AuthorizeRouteView (redirects to /login), so the shell only ever
+   renders for an authenticated principal read from the auth cookie. *@
+<div class="shell">
+    <TsakSidebar />
+    <div class="shell-main">
+        <TsakTopBar />
+        <main class="shell-content">
+            <TsakErrorBoundary>
+                @Body
+            </TsakErrorBoundary>
+        </main>
     </div>
-    <TsakToast @ref="_toast" />
-}
+</div>
+<TsakToast @ref="_toast" />
 
 @code {
     private TsakToast? _toast;
 
     protected override void OnInitialized()
     {
-        Auth.OnAuthStateChanged += OnAuthChanged;
         Toast.OnShow += OnToast;
     }
 
@@ -37,14 +30,8 @@ else
         _toast?.Show(message, level, durationMs);
     }
 
-    private void OnAuthChanged()
-    {
-        InvokeAsync(StateHasChanged);
-    }
-
     public void Dispose()
     {
-        Auth.OnAuthStateChanged -= OnAuthChanged;
         Toast.OnShow -= OnToast;
     }
 }

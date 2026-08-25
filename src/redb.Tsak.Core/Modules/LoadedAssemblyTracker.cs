@@ -53,13 +53,24 @@ public static class LoadedAssemblyTracker
         {
             var loaded = Assembly.Load(bytes);
             var actualName = loaded.GetName().Name ?? assemblyName;
-            _assemblies.TryAdd(actualName, loaded);
-            return loaded;
+            // The REAL simple name is the canonical key (it's what the runtime's Default.Resolving asks
+            // for). If that identity is ALREADY tracked (e.g. loaded from shared/ or a prior call under
+            // the matching name), the assembly we just loaded is a DUPLICATE — keep the canonical
+            // instance and alias the caller's key to IT, never to the duplicate (review: ALC finding #2).
+            // Then also alias under the caller's key (typically the file basename) so a later call with
+            // the same basename reuses this instance rather than byte-loading a second copy (3.5).
+            var canonical = _assemblies.GetOrAdd(actualName, loaded);
+            if (!string.Equals(actualName, assemblyName, StringComparison.OrdinalIgnoreCase))
+                _assemblies.TryAdd(assemblyName, canonical);
+            return canonical;
         }));
 
         var result = lazy.Value;
         _loadLocks.TryRemove(assemblyName, out _);
-        return _assemblies.TryGetValue(assemblyName, out var tracked) ? tracked : result;
+        // Prefer the canonical (real-name) instance, then the caller-key alias, then the lazy result.
+        return _assemblies.TryGetValue(result.GetName().Name ?? assemblyName, out var byReal) ? byReal
+             : _assemblies.TryGetValue(assemblyName, out var tracked) ? tracked
+             : result;
     }
 
     /// <summary>
@@ -75,6 +86,9 @@ public static class LoadedAssemblyTracker
         var loaded = Assembly.Load(bytes);
         var actualName = loaded.GetName().Name ?? assemblyName;
         _assemblies[actualName] = loaded;
+        // Alias under the caller's key too (3.5) so a later LoadOrReuse(fileBasename) reuses this.
+        if (!string.Equals(actualName, assemblyName, StringComparison.OrdinalIgnoreCase))
+            _assemblies[assemblyName] = loaded;
         return loaded;
     }
 

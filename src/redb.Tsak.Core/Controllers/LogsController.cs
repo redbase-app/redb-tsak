@@ -62,7 +62,13 @@ public class LogsController : RedbController
         return new LogFilesResponse { Available = true, Files = files };
     }
 
+    // Admin-only (review item 2.8): a whole log file is a bulk-exfil path — its body can carry raw
+    // endpoint URIs with passwords and payload fragments. The proper fix is redaction at the core
+    // logging layer (docs/SECURITY_URI_REDACTION_PLAN.md, outside redb.Tsak); until then, only admins
+    // may pull entire files. Live-tail via GET /api/logs stays Operator (ring buffer, same risk but
+    // the interactive path operators need).
     [HttpGet("files/{filename}")]
+    [RequiresRole(TsakRoles.Admin)]
     public object DownloadLogFile([FromRoute("filename")] string filename)
     {
         // Sanitize filename to prevent path traversal

@@ -211,6 +211,13 @@ else if (_topology is not null)
     private TsakChart? _donutChart;
     private PeriodicTimer? _timer;
     private CancellationTokenSource? _cts;
+    // Component-scoped token: API calls abort when the component is disposed (navigated away) (4.9).
+    // Guard the disposed state — reading _cts.Token after Dispose throws ObjectDisposedException; a call
+    // that started before Dispose already holds the (now-cancelled) token, so returning None here is safe.
+    private CancellationToken Ct
+    {
+        get { try { return _cts?.Token ?? default; } catch (ObjectDisposedException) { return default; } }
+    }
     private readonly List<double> _onlineHistory = new();
 
     // Per-node dashboard
@@ -284,7 +291,7 @@ else if (_topology is not null)
     private async Task LoadNodeDashboard()
     {
         if (_selectedClient is null) { _dashboard = null; return; }
-        try { _dashboard = await _selectedClient.GetDashboardAsync(); }
+        try { _dashboard = await _selectedClient.GetDashboardAsync(Ct); }
         catch { _dashboard = null; }
 
         if (_watchdogPanel is not null) await _watchdogPanel.RefreshAsync();

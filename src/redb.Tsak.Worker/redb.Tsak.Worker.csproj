@@ -36,7 +36,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\redb.Tsak.Core\redb.Tsak.Core.csproj" />
-    <PackageReference Include="redb.Tsak.Core.Pro" Version="3.6.0" />    <!-- Connector transports moved to Libs/shared/ — loaded at runtime by SharedAssemblyLoader.
+    <PackageReference Include="redb.Tsak.Core.Pro" Version="3.7.0" />    <!-- Connector transports moved to Libs/shared/ — loaded at runtime by SharedAssemblyLoader.
          Use scripts/build-shared.ps1 to build and copy connectors. -->
   </ItemGroup>
 
@@ -48,6 +48,18 @@
   <ItemGroup>
     <Content Remove="Libs\**" />
     <None Remove="Libs\**" />
+  </ItemGroup>
+
+  <!-- modules/ is the DEV drop dir: hot-reloaded *.tpkg packages and their context.json.
+       EXACTLY the same trap as Libs/ above, hit again on 3.6.0 — the default SDK content glob
+       baked worker/modules/context.json into both the image and the archive. That file was a
+       developer's local redb.Identity config: Password=1 connection strings and two e2e client
+       secrets, in a redb.Tsak distribution where Identity config has no business being.
+       The distributable ships this directory EMPTY — the Dockerfile creates it, and
+       build-archives.ps1 adds a README explaining what the operator puts there. -->
+  <ItemGroup>
+    <Content Remove="modules\**" />
+    <None Remove="modules\**" />
   </ItemGroup>
   <!-- Only Libs/shared/ (shared connector DLLs, built by scripts/build-shared.ps1) is packaged. -->
   <ItemGroup>

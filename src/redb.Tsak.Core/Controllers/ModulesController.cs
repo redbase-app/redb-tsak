@@ -60,10 +60,10 @@ public class ModulesController : RedbController
     [HttpDelete("/{name}")]
     [RequiresRole(TsakRoles.Admin)]
     [AuditAdminAction(ActionName = "UnregisterModule", TargetParam = "name")]
-    public object? UnregisterModule([FromRoute("name")] string name)
+    public async Task<object?> UnregisterModule([FromRoute("name")] string name)
     {
         var registry = GetRegistry();
-        var removed = registry.UnregisterModule(name);
+        var removed = await registry.UnregisterModuleAsync(name);
         if (!removed)
         {
             ApiResponse.NotFound(Exchange, $"Module '{name}' not found.");

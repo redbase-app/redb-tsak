@@ -3,8 +3,17 @@
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>3.6.0</Version>
-    <PackageVersion>3.6.0</PackageVersion>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!--
+      CS1591 (public member without XML doc) is suppressed here, unlike redb.Route where it is
+      deliberately left on. Turning the doc file on without this floods the build with thousands of
+      warnings on members that predate the policy; the file itself is what consumers need for
+      IntelliSense. The doc-syntax warnings (CS1570 malformed XML, CS1573 missing param,
+      CS1574 unresolved cref) stay visible on purpose - those are real defects in existing comments.
+    -->
+    <NoWarn>$(NoWarn);1591</NoWarn>
+    <Version>3.7.0</Version>
+    <PackageVersion>3.7.0</PackageVersion>
     <Authors>RedBase</Authors>
     <Company>RedBase</Company>
     <Product>redb.Tsak</Product>

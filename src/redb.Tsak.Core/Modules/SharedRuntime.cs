@@ -112,6 +112,15 @@ public static class SharedRuntime
                         return loaded;
                     }
                     catch (FileLoadException) { /* identity/version mismatch → forward below */ }
+                    catch (Exception ex)
+                    {
+                        // A Resolving handler must NEVER throw — that aborts the runtime's whole
+                        // resolution instead of letting it try version-tolerant forwarding or another
+                        // handler. A transient IOException (file locked mid-copy by build-shared),
+                        // UnauthorizedAccessException, or a partial/corrupt image (BadImageFormatException)
+                        // are all soft-skipped here and we fall through to forwarding (review item 3.6).
+                        log?.Invoke($"[shared] soft-skip loading '{name.Name}' from shared dir: {ex.GetType().Name}: {ex.Message}");
+                    }
                 }
             }
 

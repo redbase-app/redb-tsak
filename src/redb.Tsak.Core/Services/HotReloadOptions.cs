@@ -28,6 +28,15 @@ public class HotReloadOptions
     public int RemovalDebounceScans { get; set; } = 1;
 
     /// <summary>
+    /// Number of consecutive scans a newly-seen (or changed) <c>.tpkg</c> must keep the same size and
+    /// last-write time before it is opened/verified. Prevents reading a half-written package while an
+    /// operator is still copying it in (review item 4.11). Default: 2 (one settle cycle). Set to 1 to
+    /// disable the wait. With ScanIntervalSeconds=30 and AdditionStabilityScans=2 the effective wait is
+    /// up to ~30s after the copy stops changing the file.
+    /// </summary>
+    public int AdditionStabilityScans { get; set; } = 2;
+
+    /// <summary>
     /// Use collectible AssemblyLoadContext for module isolation. Default: false.
     /// When true, old module versions are fully unloaded from memory on hot-swap.
     /// When false (default), old versions stay in memory but there are no compatibility

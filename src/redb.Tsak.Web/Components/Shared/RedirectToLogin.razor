@@ -1,0 +1,14 @@
+@inject NavigationManager Nav
+
+@code {
+    // Sends an unauthenticated visitor to /login, preserving where they were headed so the login
+    // endpoint can bounce them back after sign-in.
+    protected override void OnInitialized()
+    {
+        var returnUrl = Nav.ToBaseRelativePath(Nav.Uri);
+        var target = string.IsNullOrEmpty(returnUrl) || returnUrl.StartsWith("login")
+            ? "login"
+            : $"login?returnUrl={Uri.EscapeDataString("/" + returnUrl)}";
+        Nav.NavigateTo(target, forceLoad: false);
+    }
+}

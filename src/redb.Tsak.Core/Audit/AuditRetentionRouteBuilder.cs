@@ -39,6 +39,11 @@ public sealed class AuditRetentionRouteBuilder : RouteBuilder
     {
         From($"cron://{RouteIdName}?schedule={CronSchedule}")
             .RouteId(RouteIdName)
+            // Cluster-singleton: only the leader runs the daily sweep. In standalone the AlwaysLeader
+            // fallback still runs it; in a multi-node cluster it runs once, not once per node. The
+            // prune is an idempotent DELETE-by-cutoff, so a run missed during a leader failover is
+            // harmless — the next day's sweep covers the same window.
+            .Cluster(true)
             .Process(async (IExchange exchange, CancellationToken ct) =>
             {
                 if (!_audit.IsAvailable || _retentionDays <= 0) return;

@@ -45,11 +45,11 @@ public sealed class RoleAuthorizationProcessor : IProcessor
 
     /// <param name="registry">The same registry the dispatcher uses, so both resolve identically.</param>
     /// <param name="rolelessKeysAreAdmin">
-    /// Back-compat switch (<c>Tsak:Auth:RolelessKeysAreAdmin</c>, default <c>true</c>): keys issued
-    /// before roles were enforced carry no roles at all. Treating them as <c>admin</c> preserves the
-    /// previous behaviour for existing deployments; set to <c>false</c> to deny them instead.
+    /// Back-compat switch (<c>Tsak:Auth:RolelessKeysAreAdmin</c>, default <c>false</c> = fail-closed):
+    /// a key with no roles is DENIED role-gated endpoints. Set to <c>true</c> only to keep pre-RBAC keys
+    /// (issued before roles were enforced, carrying no roles) working as <c>admin</c> during migration.
     /// </param>
-    public RoleAuthorizationProcessor(ControllerRegistry registry, bool rolelessKeysAreAdmin = true)
+    public RoleAuthorizationProcessor(ControllerRegistry registry, bool rolelessKeysAreAdmin = false)
     {
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
         _rolelessKeysAreAdmin = rolelessKeysAreAdmin;

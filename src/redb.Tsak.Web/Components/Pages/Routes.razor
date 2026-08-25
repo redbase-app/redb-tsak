@@ -132,6 +132,13 @@ else
 
     private PeriodicTimer? _timer;
     private CancellationTokenSource? _cts;
+    // Component-scoped token: API calls abort when the component is disposed (navigated away) (4.9).
+    // Guard the disposed state — reading _cts.Token after Dispose throws ObjectDisposedException; a call
+    // that started before Dispose already holds the (now-cancelled) token, so returning None here is safe.
+    private CancellationToken Ct
+    {
+        get { try { return _cts?.Token ?? default; } catch (ObjectDisposedException) { return default; } }
+    }
 
     private record RouteEntry(string ContextName, TsakRouteInfo Route);
 
@@ -179,13 +186,13 @@ else
 
         try
         {
-            var contexts = await client.ListContextsAsync();
+            var contexts = await client.ListContextsAsync(Ct);
             var entries = new List<RouteEntry>();
             foreach (var ctx in contexts)
             {
                 try
                 {
-                    var routes = await client.ListRoutesAsync(ctx.Name);
+                    var routes = await client.ListRoutesAsync(ctx.Name, Ct);
                     entries.AddRange(routes.Select(r => new RouteEntry(ctx.Name, r)));
                 }
                 catch { /* skip failing contexts */ }
@@ -212,9 +219,9 @@ else
                 ?? throw new InvalidOperationException($"No API client for node {NodeId}");
 
             if (start)
-                await client.StartRouteAsync(entry.ContextName, entry.Route.RouteId);
+                await client.StartRouteAsync(entry.ContextName, entry.Route.RouteId, Ct);
             else
-                await client.StopRouteAsync(entry.ContextName, entry.Route.RouteId);
+                await client.StopRouteAsync(entry.ContextName, entry.Route.RouteId, ct: Ct);
 
             await LoadData();
             Toast.Success($"Route '{entry.Route.RouteId}' {(start ? "started" : "stopped")}");
@@ -237,7 +244,7 @@ else
             var client = NodeProvider.GetClient(NodeId)
                 ?? throw new InvalidOperationException($"No API client for node {NodeId}");
 
-            await client.ForceStopRouteAsync(entry.ContextName, entry.Route.RouteId);
+            await client.ForceStopRouteAsync(entry.ContextName, entry.Route.RouteId, Ct);
             await LoadData();
             Toast.Success($"Route '{entry.Route.RouteId}' force-stopped");
         }

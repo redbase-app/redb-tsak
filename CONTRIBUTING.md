@@ -56,7 +56,7 @@ Before opening a feature request:
 
 ```bash
 # Clone
-git clone https://github.com/redbase-app/redb.git
+git clone https://github.com/redbase-app/redb-tsak.git
 cd redb
 
 # Restore

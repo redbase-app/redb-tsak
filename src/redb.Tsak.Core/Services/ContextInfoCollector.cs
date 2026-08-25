@@ -93,19 +93,20 @@ public class ContextInfoCollector
         }).ToArray();
     }
 
-    /// <summary>Collect EAV-compatible snapshots for heartbeat propagation.</summary>
-    public Dictionary<string, TsakContextInfo> CollectSnapshots()
+    /// <summary>Collect redb-compatible snapshots for heartbeat propagation. Async so the periodic
+    /// heartbeat path never blocks a pool thread on the store-backed auto-start read (review item 3.8).</summary>
+    public async Task<Dictionary<string, TsakContextInfo>> CollectSnapshotsAsync()
     {
         var contexts = _contextManager.GetAllContexts();
         var result = new Dictionary<string, TsakContextInfo>(contexts.Count, StringComparer.OrdinalIgnoreCase);
 
         foreach (var (name, ctx) in contexts)
-            result[name] = BuildSnapshot(name, ctx);
+            result[name] = await BuildSnapshotAsync(name, ctx).ConfigureAwait(false);
 
         return result;
     }
 
-    private TsakContextInfo BuildSnapshot(string name, IRouteContext ctx)
+    private async Task<TsakContextInfo> BuildSnapshotAsync(string name, IRouteContext ctx)
     {
         var endpoints = ctx.GetEndpoints();
         var components = ctx.GetComponentNames();
@@ -163,7 +164,7 @@ public class ContextInfoCollector
             ContextName = name,
             Status = ctx.IsStarted ? "Running" : "Stopped",
             IsAnonymous = name.Contains("_dyn_", StringComparison.Ordinal),
-            AutoStart = _contextManager.ShouldAutoStart(name),
+            AutoStart = await _contextManager.ShouldAutoStartAsync(name).ConfigureAwait(false),
             StartedAt = ctx.IsStarted ? DateTimeOffset.UtcNow : null,
             ModuleNames = [], // filled by caller if needed
             Components = components.ToArray(),

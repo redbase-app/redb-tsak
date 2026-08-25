@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Threading.Channels;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using redb.Tsak.Core.Contracts;
@@ -11,12 +12,30 @@ namespace redb.Tsak.Core.Services;
 /// Two context types: Named (from config, multi-module) and Anonymous (one module each).
 /// Based on lt.tsak ModuleContextCoordinator.
 /// </summary>
-public class TsakCoordinator : ITsakCoordinator
+public class TsakCoordinator : ITsakCoordinator, IDisposable
 {
     private readonly ITsakContextManager _contextManager;
     private readonly IConfiguration _configuration;
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<TsakCoordinator> _logger;
+
+    // Registry events are EventHandler<T> (synchronous, void). Instead of handling them as
+    // fire-and-forget `async void` (unordered, unobservable, and impossible to wait on), each event is
+    // ENQUEUED here and a single background consumer AWAITS the handler in FIFO order (review items
+    // 1.7/3.8). This gives true async processing with no `async void`, deterministic ordering, and a
+    // WaitForIdleAsync drain so startup/tests can wait for topology changes to finish.
+    private readonly Channel<QueuedEvent> _eventQueue =
+        Channel.CreateUnbounded<QueuedEvent>(new UnboundedChannelOptions { SingleReader = true });
+    private Task? _consumerTask;
+    private int _initialized;
+    // _pending and _idleSignal are guarded by _idleLock together: the busy↔idle transition and the
+    // signal reset/complete MUST be atomic, or a lost-wakeup hangs WaitForIdleAsync (the consumer could
+    // complete a signal a concurrent Enqueue just swapped out, stranding the real waiter's signal).
+    private readonly object _idleLock = new();
+    private int _pending;
+    private TaskCompletionSource _idleSignal = CreateIdleSignal(completed: true);
+
+    private sealed record QueuedEvent(Func<Task> Work, string EventName, string Subject);
 
     // module → context name mapping
     private readonly ConcurrentDictionary<string, string> _moduleContextMap = new(StringComparer.OrdinalIgnoreCase);
@@ -41,14 +60,111 @@ public class TsakCoordinator : ITsakCoordinator
 
     public void Initialize(ITsakModuleRegistry registry)
     {
+        // Idempotent: subscribe exactly once, even if Initialize is called again with the same registry
+        // — otherwise events would be handled (and processed) multiple times.
+        if (Interlocked.Exchange(ref _initialized, 1) == 1)
+            return;
+
         _registry = registry;
 
-        registry.ModuleAdded += async (_, module) => await ProcessModuleAddedAsync(module);
-        registry.ModuleRemoved += async (_, name) => await ProcessModuleRemovedAsync(name);
-        registry.ModuleUpdated += async (_, module) => await ProcessModuleUpdatedAsync(module);
-        registry.ModulesBatchAdded += async (_, modules) => await ProcessBatchAsync(modules);
+        // Registry events (synchronous EventHandler<T>) are ENQUEUED, not handled inline as async void.
+        // A single background consumer awaits each handler in order — see the field comment above.
+        registry.ModuleAdded += (_, module) => Enqueue(() => ProcessModuleAddedAsync(module), "ModuleAdded", module.ModuleName);
+        registry.ModuleRemoved += (_, name) => Enqueue(() => ProcessModuleRemovedAsync(name), "ModuleRemoved", name);
+        registry.ModuleUpdated += (_, module) => Enqueue(() => ProcessModuleUpdatedAsync(module), "ModuleUpdated", module.ModuleName);
+        registry.ModulesBatchAdded += (_, modules) => Enqueue(() => ProcessBatchAsync(modules), "ModulesBatchAdded", $"{modules.Count} modules");
+
+        _consumerTask ??= Task.Run(ConsumeEventsAsync);
 
         _logger.LogInformation("Coordinator initialized, subscribed to registry events");
+    }
+
+    /// <summary>
+    /// Waits until every enqueued registry-event has been processed. Lets startup and tests wait for
+    /// topology changes to settle instead of racing the (formerly fire-and-forget) handlers.
+    /// </summary>
+    public async Task WaitForIdleAsync(CancellationToken ct = default)
+    {
+        while (true)
+        {
+            Task idleTask;
+            lock (_idleLock)
+            {
+                if (_pending == 0)
+                    return;
+                // While _pending > 0 the signal is always the uncompleted one installed on the last
+                // idle→busy transition, so this captures a genuinely-pending task (no busy-spin).
+                idleTask = _idleSignal.Task;
+            }
+            await idleTask.WaitAsync(ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Enqueues a registry-event handler for the single background consumer to await in order.</summary>
+    private void Enqueue(Func<Task> work, string eventName, string subject)
+    {
+        // Mark busy BEFORE writing, so a WaitForIdleAsync called right after enqueuing cannot observe
+        // a stale "idle" signal. The transition and the signal swap are one atomic step under the lock.
+        lock (_idleLock)
+        {
+            if (_pending++ == 0)
+                _idleSignal = CreateIdleSignal(completed: false);
+        }
+
+        if (!_eventQueue.Writer.TryWrite(new QueuedEvent(work, eventName, subject)))
+        {
+            // Queue already completed (coordinator disposed) — undo the pending bump.
+            lock (_idleLock)
+            {
+                if (--_pending == 0)
+                    _idleSignal.TrySetResult();
+            }
+        }
+    }
+
+    /// <summary>Single background consumer: awaits each queued handler in FIFO order, catching+logging
+    /// per item so one bad module can never crash the node or stall the queue.</summary>
+    private async Task ConsumeEventsAsync()
+    {
+        await foreach (var item in _eventQueue.Reader.ReadAllAsync().ConfigureAwait(false))
+        {
+            try
+            {
+                await item.Work().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "Coordinator '{Event}' handler failed for '{Subject}' — node stays up, this topology change was skipped",
+                    item.EventName, item.Subject);
+            }
+            finally
+            {
+                lock (_idleLock)
+                {
+                    if (--_pending == 0)
+                        _idleSignal.TrySetResult(); // safe under lock: RunContinuationsAsynchronously
+                }
+            }
+        }
+    }
+
+    private static TaskCompletionSource CreateIdleSignal(bool completed)
+    {
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (completed)
+            tcs.TrySetResult();
+        return tcs;
+    }
+
+    /// <inheritdoc />
+    public void Dispose()
+    {
+        _eventQueue.Writer.TryComplete();
+        // Best-effort drain so in-flight topology changes finish; never block shutdown indefinitely.
+        try { _consumerTask?.Wait(TimeSpan.FromSeconds(5)); }
+        catch { /* shutdown — ignore */ }
+        GC.SuppressFinalize(this);
     }
 
     public async Task ProcessBatchAsync(IReadOnlyList<ITsakModule> modules)
@@ -64,7 +180,8 @@ public class TsakCoordinator : ITsakCoordinator
             var (contextName, isNamed) = DetermineContextForModule(module);
             if (isNamed)
             {
-                ValidateContextNameClaim(contextName, module.ModuleName);
+                if (!TryClaimContextName(contextName, module.ModuleName))
+                    continue; // collision logged — skip this module, keep processing the batch
 
                 if (!namedContextModules.TryGetValue(contextName, out var list))
                 {
@@ -107,7 +224,8 @@ public class TsakCoordinator : ITsakCoordinator
 
         if (isNamed)
         {
-            ValidateContextNameClaim(contextName, module.ModuleName);
+            if (!TryClaimContextName(contextName, module.ModuleName))
+                return; // collision logged — skip this module (node stays up)
 
             // Named context: recreate with ALL configured modules (existing + new)
             var allModulesForContext = GetAllModulesForNamedContext(contextName, module);
@@ -323,25 +441,35 @@ public class TsakCoordinator : ITsakCoordinator
     /// Validates that a named ContextName is not already claimed by an unrelated module.
     /// Modules in the same appsettings Modules[] section are allowed to share a context name.
     /// </summary>
-    private void ValidateContextNameClaim(string contextName, string moduleName)
+    /// <summary>
+    /// Claims a context name for a module. Returns <c>true</c> if the name is free (or already this
+    /// module's / same appsettings group), <c>false</c> on a genuine collision. Must NOT throw: it runs
+    /// under the registry event handlers, and a throw there (previously an
+    /// <c>InvalidOperationException</c>) escaped as an unobserved <c>async void</c> exception and
+    /// killed the whole node. A collision is now a logged rejection — the offending module is skipped,
+    /// the node stays up and other modules keep loading.
+    /// </summary>
+    private bool TryClaimContextName(string contextName, string moduleName)
     {
         if (!_claimedContextNames.TryGetValue(contextName, out var claimedBy))
         {
             _claimedContextNames[contextName] = moduleName;
-            return;
+            return true;
         }
 
         if (string.Equals(claimedBy, moduleName, StringComparison.OrdinalIgnoreCase))
-            return;
+            return true;
 
         // Allow if both modules are in the same appsettings Modules[] section
         if (AreModulesInSameAppSettingsGroup(claimedBy, moduleName))
-        {
-            return;
-        }
+            return true;
 
-        throw new InvalidOperationException(
-            $"Context name '{contextName}' already claimed by module '{claimedBy}', cannot assign to '{moduleName}'");
+        _logger.LogError(
+            "Context name '{ContextName}' already claimed by module '{ClaimedBy}' — module '{ModuleName}' " +
+            "will be SKIPPED (context-name collision). Give it a distinct context or group them in the same "
+            + "appsettings Modules[] section.",
+            contextName, claimedBy, moduleName);
+        return false;
     }
 
     /// <summary>

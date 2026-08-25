@@ -1,11 +1,31 @@
-@inject IAuthService Auth
+@using Microsoft.AspNetCore.Components.Authorization
 
-@if (!AdminOnly || Auth.IsAdmin)
+@if (_show)
 {
     @ChildContent
 }
 
 @code {
+    [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
+
     [Parameter] public bool AdminOnly { get; set; }
     [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    private bool _show;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!AdminOnly)
+        {
+            // Any authenticated dashboard user. AuthorizeRouteView already blocks anonymous access,
+            // so a rendered page implies an authenticated principal — but check to be explicit.
+            var state = AuthState is null ? null : await AuthState;
+            _show = state?.User?.Identity?.IsAuthenticated ?? false;
+            return;
+        }
+
+        // Admin-gated. The role comes from a signed auth cookie, so it cannot be forged client-side.
+        var st = AuthState is null ? null : await AuthState;
+        _show = st?.User?.IsInRole("admin") ?? false;
+    }
 }

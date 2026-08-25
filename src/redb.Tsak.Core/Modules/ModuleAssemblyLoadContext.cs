@@ -62,15 +62,18 @@ public sealed class ModuleAssemblyLoadContext : AssemblyLoadContext
             && tracked is not null)
             return tracked;
 
-        // Not in host or tracker — probe module directories.
-        // Load into Default ALC and register in tracker so other ALCs reuse it.
+        // Not in host or tracker — probe module directories. This is a PRIVATE module dependency
+        // (a shared/host/contract assembly would have resolved above via Default or the tracker), so
+        // load it into THIS module's ALC, not the Default ALC (review item 3.7a). That keeps it
+        // unloadable together with the module, and lets two modules carry DIFFERENT versions of the
+        // same private dependency instead of silently sharing whichever loaded first into Default.
         foreach (var dir in _probePaths)
         {
             var candidate = Path.Combine(dir, assemblyName.Name + ".dll");
             if (File.Exists(candidate))
             {
                 var bytes = File.ReadAllBytes(candidate);
-                return LoadedAssemblyTracker.LoadOrReuse(assemblyName.Name!, bytes);
+                return LoadFromStream(new MemoryStream(bytes));
             }
         }
 

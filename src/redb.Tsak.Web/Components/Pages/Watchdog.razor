@@ -199,6 +199,13 @@ else
 
     private PeriodicTimer? _timer;
     private CancellationTokenSource? _cts;
+    // Component-scoped token: API calls abort when the component is disposed (navigated away) (4.9).
+    // Guard the disposed state — reading _cts.Token after Dispose throws ObjectDisposedException; a call
+    // that started before Dispose already holds the (now-cancelled) token, so returning None here is safe.
+    private CancellationToken Ct
+    {
+        get { try { return _cts?.Token ?? default; } catch (ObjectDisposedException) { return default; } }
+    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -224,16 +231,16 @@ else
 
         try
         {
-            _state = await client.GetWatchdogStatusAsync();
+            _state = await client.GetWatchdogStatusAsync(Ct);
             try
             {
                 var events = await client.GetLifecycleEventsAsync(
-                    type: nameof(LifecycleEventType.WatchdogAutoRestart), limit: 50);
+                    type: nameof(LifecycleEventType.WatchdogAutoRestart), limit: 50, ct: Ct);
                 _watchdogEvents = events;
             }
             catch { }
 
-            try { _alertStatus = await client.GetAlertStatusAsync(); }
+            try { _alertStatus = await client.GetAlertStatusAsync(Ct); }
             catch { }
         }
         catch { }
@@ -248,7 +255,7 @@ else
         _testResult = null;
         try
         {
-            _testResult = await client.TestAlertAsync();
+            _testResult = await client.TestAlertAsync(Ct);
             if (_testResult.Delivered) Toast.Success("Test alert delivered to all channels");
             else Toast.Warning(_testResult.Message ?? "Some channels failed — see details");
         }
@@ -264,7 +271,7 @@ else
         if (client is null) return;
         try
         {
-            await client.EnableWatchdogAsync();
+            await client.EnableWatchdogAsync(Ct);
             await LoadData();
             Toast.Success("Watchdog enabled");
         }
@@ -277,7 +284,7 @@ else
         if (client is null) return;
         try
         {
-            await client.DisableWatchdogAsync();
+            await client.DisableWatchdogAsync(Ct);
             await LoadData();
             Toast.Success("Watchdog disabled");
         }

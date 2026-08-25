@@ -87,6 +87,19 @@ public static class DlqStorage
         return $"UPDATE {TableName} SET status = @status, replayed_at = @replayed_at WHERE entry_id = {idParam}";
     }
 
+    /// <summary>
+    /// Atomic replay claim: flips a single entry <c>@from_status</c> → <c>@to_status</c>, but only if it
+    /// is still in <c>@from_status</c>. The DB serializes the conditional UPDATE, so exactly one
+    /// concurrent caller sees <c>affected == 1</c> (the winner) — the rest see <c>0</c>. Prevents two
+    /// operators / a double-click from replaying the same failed exchange twice.
+    /// </summary>
+    public static string ClaimForReplaySql(Audit.AuditProvider provider)
+    {
+        var idParam = provider == Audit.AuditProvider.Postgres ? "@entry_id::uuid" : "@entry_id";
+        return $"UPDATE {TableName} SET status = @to_status, replayed_at = @claimed_at " +
+               $"WHERE entry_id = {idParam} AND status = @from_status";
+    }
+
     public static string DeleteOneSql(Audit.AuditProvider provider)
     {
         var idParam = provider == Audit.AuditProvider.Postgres ? "@entry_id::uuid" : "@entry_id";

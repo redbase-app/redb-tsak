@@ -60,6 +60,26 @@ public class TsakContextManager : ITsakContextManager
 
     public IRouteContext CreateContext(string contextName, IServiceProvider serviceProvider, IDictionary<string, object?> configuration)
     {
+        // Serialize with start/stop/restart/remove (review item 3.1). CreateContext mutates both
+        // _contexts and _namedRedbContainers; running it outside _lifecycleLock let a concurrent
+        // RemoveContextAsync TryRemove *before* the TryAdd here, leaving an orphaned context and a
+        // leaked named-redb container the remover believed was gone. Lock order is always
+        // coordinator-per-context → _lifecycleLock (no lifecycle path re-enters the coordinator), so it
+        // cannot invert; no lifecycle method calls CreateContext, so there is no re-entrancy either.
+        _lifecycleLock.Wait();
+        try
+        {
+            // Fail fast under the lock, before building anything or touching _namedRedbContainers.
+            if (_contexts.ContainsKey(contextName))
+                throw new InvalidOperationException($"Context '{contextName}' already exists.");
+            return CreateContextCore(contextName, serviceProvider, configuration);
+        }
+        finally { _lifecycleLock.Release(); }
+    }
+
+    /// <summary>Builds and publishes a context. Caller MUST hold <see cref="_lifecycleLock"/>.</summary>
+    private IRouteContext CreateContextCore(string contextName, IServiceProvider serviceProvider, IDictionary<string, object?> configuration)
+    {
         var loggerFactory = serviceProvider.GetService<ILoggerFactory>();
         var context = new RouteContext(serviceProvider, contextName, loggerFactory);
 

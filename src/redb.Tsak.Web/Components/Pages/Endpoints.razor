@@ -226,6 +226,13 @@ else
     // Polling
     private PeriodicTimer? _timer;
     private CancellationTokenSource? _cts;
+    // Component-scoped token: API calls abort when the component is disposed (navigated away) (4.9).
+    // Guard the disposed state — reading _cts.Token after Dispose throws ObjectDisposedException; a call
+    // that started before Dispose already holds the (now-cancelled) token, so returning None here is safe.
+    private CancellationToken Ct
+    {
+        get { try { return _cts?.Token ?? default; } catch (ObjectDisposedException) { return default; } }
+    }
 
     // Computed stats
     private int TotalEndpoints => _contexts?.Sum(c => c.Endpoints.Length) ?? 0;
@@ -268,11 +275,11 @@ else
 
         try
         {
-            var summaries = await client.ListContextsAsync();
+            var summaries = await client.ListContextsAsync(Ct);
             var details = new List<ContextDetail>(summaries.Length);
             foreach (var s in summaries)
             {
-                try { details.Add(await client.GetContextAsync(s.Name)); }
+                try { details.Add(await client.GetContextAsync(s.Name, Ct)); }
                 catch { /* skip failing contexts */ }
             }
             _contexts = details.ToArray();
