@@ -29,34 +29,43 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [3.7.1] — 2026-08-26
 
-> **Почему 3.7.1 и что стало с 3.7.0.** 3.7.0 отозван: он собран на .NET 9 и несёт известные
-> уязвимости в зависимостях (см. **Security** ниже). Пакеты 3.7.0 на nuget.org разлистены, релизы
-> `v3.7.0` на публичных зеркалах удалены. Разлистованная версия остаётся устанавливаемой по
-> точному номеру — но ставить её не нужно, 3.7.1 её полностью заменяет.
+> **Why 3.7.1, and what happened to 3.7.0.** 3.7.0 is withdrawn: it was built on .NET 9 and carries
+> known vulnerabilities in its dependencies (see **Security** below). Every 3.7.0 package is unlisted
+> on nuget.org and the `v3.7.0` releases were deleted from the public mirrors. An unlisted version
+> still installs by exact number — but there is no reason to: 3.7.1 replaces it completely.
 >
-> Патч, а не минор: публичная поверхность API не меняется. Добавление `net10.0` к списку целевых
-> платформ ничего не ломает у существующих потребителей, а `net8.0` и `net9.0` сохранены.
+> A patch, not a minor: the public API surface does not change. Adding `net10.0` to the target list
+> breaks nothing for existing consumers, and `net8.0` / `net9.0` are kept.
 
-### Changed — сборка переехала на .NET 10
+### Changed — the build moved to .NET 10
 
-Приложения и артефакты собирались на net9, при том что ядро и `redb.Route` давно мультитаргетились
-`net8.0;net9.0;net10.0`. Расхождение вылезло на 3.7.0: образы и архивы уехали как net9.
+The applications and artifacts were built on net9 while the core and `redb.Route` had long
+multi-targeted `net8.0;net9.0;net10.0`. The gap surfaced on 3.7.0: images and archives shipped as net9.
 
-Библиотеки `redb.Tsak.*` и `redb.Identity.*` теперь объявляют `net8.0;net9.0;net10.0` — ровно как
-ядро и Route, вся экосистема стала однородной. Хост-приложения и тесты прибиты к одному `net10.0`.
-Образы, архивы и теги `-net10`.
+The `redb.Tsak.*` and `redb.Identity.*` libraries now declare `net8.0;net9.0;net10.0` — exactly like
+the core and Route, so the whole ecosystem is uniform. Host applications and tests are pinned to a
+single `net10.0`. Images, archives and tags are `-net10`.
 
-`.NET 8` и `.NET 9` уходят из поддержки Microsoft **10 ноября 2026**, обе версии в один день:
-срок STS-девятки выровняли с LTS-восьмёркой. `.NET 10` поддерживается до **14 ноября 2028**.
-`net8.0` и `net9.0` пока остаются в списке целевых платформ библиотек.
+.NET 8 and .NET 9 both reach end of support on **10 November 2026** — the same day, Microsoft aligned
+the STS 9 date with LTS 8. .NET 10 is supported until **14 November 2028**. `net8.0` and `net9.0`
+remain in the libraries' target list for now.
 
-### Security — шесть уязвимостей высокого уровня
+### Security — six high-severity advisories
 
-Найдены при переводе на .NET 10: смена TFM заставила пересобрать дерево с нуля, и NuGet-аудит
-заговорил. При инкрементальной сборке он молчал, поэтому всё это уехало в 3.7.0.
-- Уязвимых зависимостей в самих пакетах `redb.Tsak.*` не найдено. Образы и архивы пересобраны на
-  .NET 10 и на исправленных пакетах ядра и `redb.Route`.
-- Теги образов: `<version>-net10` вместо `<version>-net9`; Web и Stack ships на net10.
+Found while moving to .NET 10: changing the TFM forced a from-scratch rebuild and the NuGet audit
+spoke up. It stays silent on an incremental build, which is how all of this reached 3.7.0.
+- No vulnerable dependency was found in the `redb.Tsak.*` packages themselves. Images and archives
+  are rebuilt on .NET 10 and on the fixed core / `redb.Route` packages.
+- Image tags are now `<version>-net10` instead of `<version>-net9`; Web and Stack ship on net10.
+
+### Fixed — the image smoke gate was never running
+
+`-All` did not set `$Test`, so Stage 5 was skipped on every full pipeline run — the same gate that
+caught the 3.4.0 worker dying with SIGSEGV. Turning it back on immediately exposed a broken probe:
+the stack profile tested `pidof supervisord`, but supervisord is a python script, so the process name
+is `python3` and the probe could never match. It now asks `supervisorctl status`, which is also the
+stricter question — it fails when *either* supervised program is down, while any `pidof` check passes
+as long as one of the two survives.
 
 ## [3.7.0] — 2026-08-25
 
