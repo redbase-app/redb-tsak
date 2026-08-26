@@ -24,14 +24,14 @@ Both scripts read it. Adding a connector means adding one line here, nowhere els
 ## `build-shared.ps1` — populate the layer
 
 ```powershell
-# dev: connectors + framework into src/redb.Tsak.Worker/Libs/shared (Debug, net9.0)
+# dev: connectors + framework into src/redb.Tsak.Worker/Libs/shared (Debug, net10.0)
 ./scripts/build-shared.ps1 -IncludeFramework
 
 # rebuild just two of them
 ./scripts/build-shared.ps1 -IncludeFramework -Clean -Only IbmMq,RabbitMQ
 
 # publish mode: one directory per TFM under <OutRoot>, Release
-./scripts/build-shared.ps1 -Configuration Release -Tfms net8.0,net9.0 -OutRoot publish/staging -IncludeFramework
+./scripts/build-shared.ps1 -Configuration Release -Tfms net8.0,net9.0,net10.0 -OutRoot publish/staging -IncludeFramework
 ```
 
 `-IncludeFramework` is what makes the Worker actually start; without it you get connectors only and

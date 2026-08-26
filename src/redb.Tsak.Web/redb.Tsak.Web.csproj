@@ -1,6 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
+    <!-- Один TFM: это хост-приложение, а не библиотека. Directory.Build.props мультитаргетный ради пакетов. -->
+    <!-- Directory.Build.props declares TargetFrameworks (plural) for the LIBRARIES. When both are
+         set MSBuild takes the plural one, so a bare <TargetFramework> here is silently ignored and
+         this project multi-targets anyway. Clearing it is what actually pins the single TFM. -->
+    <TargetFrameworks></TargetFrameworks>
+    <TargetFramework>net10.0</TargetFramework>
     <RootNamespace>redb.Tsak.Web</RootNamespace>
   </PropertyGroup>
 
@@ -16,7 +22,7 @@
   <ItemGroup>
     <ProjectReference Include="..\redb.Tsak.Client\redb.Tsak.Client.csproj" />
     <ProjectReference Include="..\redb.Tsak.Contracts\redb.Tsak.Contracts.csproj" />
-    <PackageReference Include="redb.Tsak.Web.Pro" Version="3.7.0" />
+    <PackageReference Include="redb.Tsak.Web.Pro" Version="3.7.1" />
   </ItemGroup>
 
 </Project>

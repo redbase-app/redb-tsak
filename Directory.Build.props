@@ -1,6 +1,6 @@
 <Project>
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
@@ -12,8 +12,8 @@
       CS1574 unresolved cref) stay visible on purpose - those are real defects in existing comments.
     -->
     <NoWarn>$(NoWarn);1591</NoWarn>
-    <Version>3.7.0</Version>
-    <PackageVersion>3.7.0</PackageVersion>
+    <Version>3.7.1</Version>
+    <PackageVersion>3.7.1</PackageVersion>
     <Authors>RedBase</Authors>
     <Company>RedBase</Company>
     <Product>redb.Tsak</Product>

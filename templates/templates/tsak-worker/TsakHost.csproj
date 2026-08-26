@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk.Worker">
 
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
@@ -9,8 +9,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="redb.Tsak.Core" Version="3.7.0" />
-    <PackageReference Include="redb.Tsak.Core.Pro" Version="3.7.0" Condition="'$(pro)' == 'true'" />
+    <PackageReference Include="redb.Tsak.Core" Version="3.7.1" />
+    <PackageReference Include="redb.Tsak.Core.Pro" Version="3.7.1" Condition="'$(pro)' == 'true'" />
     <PackageReference Include="Serilog.AspNetCore" Version="8.0.2" />
     <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
     <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />

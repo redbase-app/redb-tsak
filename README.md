@@ -253,7 +253,7 @@ docker run -d --name tsak \
 | `ghcr.io/redbase-app/redb-tsak-web`    | Standalone Web UI       | ~250 MB | `8085` |
 | `ghcr.io/redbase-app/redb-tsak-stack`  | Worker + Web (supervisord) | ~430 MB | `9090`, `8085` |
 
-Tags: `latest`, `<version>` (e.g. `2.0.0`), `<version>-net9` (Worker also `-net8`, `-net10`).
+Tags: `latest`, `<version>` (e.g. `2.0.0`), `<version>-net10`.
 
 **With PostgreSQL (durable RTTI-storage state, multi-node, cluster):**
 
@@ -614,7 +614,7 @@ param(
 )
 $ErrorActionPreference = "Stop"
 
-$tfm     = "net9.0"
+$tfm     = "net10.0"
 $pkgName = "tsum"
 $staging = Join-Path $env:TEMP "${pkgName}_tpkg_staging"
 $tpkg    = Join-Path $PSScriptRoot "output\$pkgName.tpkg"
@@ -1314,9 +1314,9 @@ Pre-built images are published to GitHub Container Registry for every release �
 | `ghcr.io/redbase-app/redb-tsak-stack`  | Single-host install (Worker + Web in one container, like `rabbitmq:management`) | `9090`, `8085` |
 
 Available tags:
-- `latest`, `<version>` — net9 build (default).
-- `<version>-net8`, `<version>-net9`, `<version>-net10` — Worker only; pick a TFM that matches your shared connector ABI.
-- `<version>-net9` — Web and Stack are net9 only.
+- `latest`, `<version>` — net10 build (default).
+- `<version>-net10` — Worker tag with an explicit TFM; pick one that matches your shared connector ABI.
+- Web and Stack ship on net10 only.
 
 ### Production run (Worker + external Postgres)
 

@@ -1,6 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk.Worker">
 
   <PropertyGroup>
+    <!-- Один TFM: это хост-приложение, а не библиотека. Directory.Build.props мультитаргетный ради пакетов. -->
+    <!-- Directory.Build.props declares TargetFrameworks (plural) for the LIBRARIES. When both are
+         set MSBuild takes the plural one, so a bare <TargetFramework> here is silently ignored and
+         this project multi-targets anyway. Clearing it is what actually pins the single TFM. -->
+    <TargetFrameworks></TargetFrameworks>
+    <TargetFramework>net10.0</TargetFramework>
     <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
   </PropertyGroup>
 
@@ -36,7 +42,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\redb.Tsak.Core\redb.Tsak.Core.csproj" />
-    <PackageReference Include="redb.Tsak.Core.Pro" Version="3.7.0" />    <!-- Connector transports moved to Libs/shared/ — loaded at runtime by SharedAssemblyLoader.
+    <PackageReference Include="redb.Tsak.Core.Pro" Version="3.7.1" />    <!-- Connector transports moved to Libs/shared/ — loaded at runtime by SharedAssemblyLoader.
          Use scripts/build-shared.ps1 to build and copy connectors. -->
   </ItemGroup>
 

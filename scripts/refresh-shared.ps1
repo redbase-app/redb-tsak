@@ -33,7 +33,7 @@
     Build configuration. Default: Release.
 
 .PARAMETER Tfm
-    Target framework. Default: net9.0.
+    Target framework. Default: net10.0.
 
 .EXAMPLE
     ./scripts/refresh-shared.ps1 -Lib redb.Route.Http
@@ -43,7 +43,7 @@ param(
     [Parameter(Mandatory)][string]$Lib,
     [string]$SharedDir = "",
     [string]$Configuration = "Release",
-    [string]$Tfm = "net9.0",
+    [string]$Tfm = "net10.0",
     # Same as in build-shared.ps1: empty = monorepo layout, otherwise a standalone redb-route checkout.
     [string]$RouteSrc = ""
 )

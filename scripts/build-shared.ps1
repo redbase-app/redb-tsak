@@ -9,12 +9,12 @@
 
       * DEV mode (default, no -OutRoot):
           - output: src/redb.Tsak.Worker/Libs/shared
-          - single TFM (net9.0), Configuration=Debug
+          - single TFM (net10.0), Configuration=Debug
           - filters out DLLs already present in Worker bin AND in the .NET shared framework
           - hard-fails (exit 1) if any connector fails to build
 
       * PUBLISH mode (-OutRoot given):
-          - output: <OutRoot>/shared-<tfm-without-dots>   (e.g. shared-net90) per TFM
+          - output: <OutRoot>/shared-<tfm-without-dots>   (e.g. shared-net100) per TFM
           - one dir per -Tfms entry, Configuration=Release (pass -Configuration Release)
           - filters out DLLs already present in the .NET shared framework only
             (no single Worker bin exists at multi-TFM publish time)
@@ -24,7 +24,7 @@
     Build configuration. Default: Debug (dev). Publish pipeline passes Release.
 
 .PARAMETER Tfms
-    Target framework monikers. Default: net9.0. Publish may pass e.g. net8.0,net9.0.
+    Target framework monikers. Default: net10.0. Publish may pass e.g. net8.0,net10.0.
 
 .PARAMETER OutRoot
     When set, switches to PUBLISH mode and writes shared-<tfm> dirs under this root
@@ -45,11 +45,11 @@
 .EXAMPLE
     ./scripts/build-shared.ps1
     ./scripts/build-shared.ps1 -Clean -Only IbmMq,RabbitMQ
-    ./scripts/build-shared.ps1 -Configuration Release -Tfms net8.0,net9.0 -OutRoot publish/staging
+    ./scripts/build-shared.ps1 -Configuration Release -Tfms net8.0,net10.0 -OutRoot publish/staging
 #>
 param(
     [string]$Configuration = "Debug",
-    [string[]]$Tfms = @('net9.0'),
+    [string[]]$Tfms = @('net10.0'),
     [string]$OutRoot = "",
     [switch]$IncludeFramework,
     [switch]$Clean,
@@ -64,7 +64,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# pwsh -File passes "-Tfms net8.0,net9.0" / "-Only a,b" as a single element — normalize.
+# pwsh -File passes "-Tfms net8.0,net10.0" / "-Only a,b" as a single element — normalize.
 $Tfms = @($Tfms | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 
@@ -116,7 +116,7 @@ if ($Only.Count -gt 0) {
 $dotnetRoot = Split-Path (Get-Command dotnet).Source
 
 function Get-RuntimeDir([string]$tfm) {
-    $tfmVersion = $tfm -replace '^net', ''            # net9.0 -> 9.0
+    $tfmVersion = $tfm -replace '^net', ''            # net10.0 -> 9.0
     $dir = Get-ChildItem (Join-Path (Join-Path $dotnetRoot "shared") "Microsoft.NETCore.App") -Directory -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -match "^$([regex]::Escape($tfmVersion))\." } |
         Sort-Object Name -Descending | Select-Object -First 1 -ExpandProperty FullName
