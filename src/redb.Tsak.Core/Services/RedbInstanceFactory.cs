@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Configuration;
 using redb.Core;
 using redb.Core.Configuration;
 using redb.Core.Extensions;
@@ -124,6 +125,19 @@ internal static class RedbInstanceFactory
 
     private static void ApplyConfig(RedbServiceConfiguration c, IDictionary<string, object?> config)
     {
+        // Reflection-based pass first, so every RedbServiceConfiguration property is reachable and an
+        // unrecognised key gets reported instead of vanishing. The hand-written block below then runs
+        // unchanged and stays authoritative — it also carries the legacy key names (EnsureCreated
+        // defaulting to false here, the *Minutes spellings), which the binder must not second-guess.
+        Extensions.RedbConfigBinder.Apply(
+            c,
+            new ConfigurationBuilder()
+                .AddInMemoryCollection(config.ToDictionary(kv => kv.Key, kv => kv.Value?.ToString()))
+                .Build(),
+            "Redb",
+            m => Console.Error.WriteLine(m));
+
+
         // EnsureCreated defaults to false for named instances (schema assumed to exist)
         c.EnsureCreated = GetBool(config, "EnsureCreated");
 

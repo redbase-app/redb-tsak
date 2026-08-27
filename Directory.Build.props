@@ -12,8 +12,8 @@
       CS1574 unresolved cref) stay visible on purpose - those are real defects in existing comments.
     -->
     <NoWarn>$(NoWarn);1591</NoWarn>
-    <Version>3.7.1</Version>
-    <PackageVersion>3.7.1</PackageVersion>
+    <Version>3.7.2</Version>
+    <PackageVersion>3.7.2</PackageVersion>
     <Authors>RedBase</Authors>
     <Company>RedBase</Company>
     <Product>redb.Tsak</Product>

@@ -27,6 +27,40 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [3.7.2] — 2026-08-27
+
+> Shipped alongside the ecosystem, which moves on one number. The core release fixes a regression in
+> `array.Contains`; the fix below is what this repository contributes to the same version — and it is
+> the release where it reaches the packages, not only the images.
+
+### Fixed — most of `RedbServiceConfiguration` could not be configured at all
+
+`Tsak:Redb:StringCollation` and `Tsak:Redb:EnablePvtPrefilter` — both added to the core in 3.7 — did
+nothing. Setting them in `context.json` or as `Tsak__Redb__*` changed no behaviour and produced no
+diagnostic, so the only way to discover it was to read the Tsak source.
+
+They were not special. Both config paths copied properties across one hand-written line at a time,
+and the lists had gone stale: of the **37** public properties on `RedbServiceConfiguration` the named
+path carried **15** and the unnamed one **12** — and the two sets were not subsets of each other, so
+the same key behaved differently depending on whether the instance had a name. Among the unreachable
+ones were all four `DefaultCheckPermissionsOn*`, `SystemUserId`, `MissingObjectStrategy`,
+`IdResetStrategy` and `ThrowOnSchemeMismatch`: behaviour and access control, not tuning knobs.
+
+Both paths now run a reflection-based binder first, so a new core property is configurable the moment
+it exists, and every hand-written assignment still runs afterwards and stays authoritative — existing
+behaviour is unchanged, including the legacy `*Minutes` key spellings and the `Tsak:Redb:Cache`
+subsection with its own vocabulary.
+
+**The silence was the real defect.** An unrecognised key used to vanish without a word, which is why
+a typo and a missing feature looked identical. Unknown keys are now reported, and the settings that
+were actually applied are logged at startup.
+
+Note on upgrading: keys that previously did nothing now take effect. If a deployed `context.json`
+carries something like `DefaultCheckPermissionsOnQuery: true`, it was inert before and will not be
+after.
+
+---
+
 ## [3.7.1] — 2026-08-26
 
 > **Why 3.7.1, and what happened to 3.7.0.** 3.7.0 is withdrawn: it was built on .NET 9 and carries

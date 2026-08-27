@@ -160,6 +160,10 @@ public static class ServiceCollectionExtensions
 
                 options.Configure(c =>
                 {
+                    // Binder first, explicit decisions after: everything below stays authoritative,
+                    // and the binder only reaches properties nothing here was setting.
+                    RedbConfigBinder.Apply(c, configuration.GetSection("Tsak:Redb"), "Tsak:Redb",
+                        m => Console.Error.WriteLine(m));
                     c.PropsSaveStrategy = strategy;
                     c.EnsureCreated = true;
                     ApplyCacheConfig(c, configuration);
@@ -184,6 +188,10 @@ public static class ServiceCollectionExtensions
 
                 options.Configure(c =>
                 {
+                    // Binder first, explicit decisions after: everything below stays authoritative,
+                    // and the binder only reaches properties nothing here was setting.
+                    RedbConfigBinder.Apply(c, configuration.GetSection("Tsak:Redb"), "Tsak:Redb",
+                        m => Console.Error.WriteLine(m));
                     c.PropsSaveStrategy = strategy;
                     c.EnsureCreated = true;
                     ApplyCacheConfig(c, configuration);

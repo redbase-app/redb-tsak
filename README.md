@@ -217,6 +217,7 @@ redb.Tsak/
 ├── API_GUIDE.md                 REST API: endpoint map, pipeline, auth, probes
 ├── MODULE_DEPLOYMENT.md         Module upload/rollback trust model & signing
 ├── CONFIG_GUIDE.md              5-layer configuration model
+├── PARAMETERS.md                Every Tsak:* setting, defaults, and the traps
 ├── DEPLOYMENT.md                Running the published images
 ├── CHANGELOG.md                 Per-version changes
 ├── CONTRIBUTING.md              Contribution guide
