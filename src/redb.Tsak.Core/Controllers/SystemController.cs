@@ -138,9 +138,18 @@ public class SystemController : RedbController
         var contextMgr = Context.GetService<ITsakContextManager>();
         var moduleReg = Context.GetService<ITsakModuleRegistry>();
 
+        // NOTE: GetEntryAssembly() is host-dependent — the Worker under the default deployment,
+        // the web host when the dashboard runs standalone.
+        var entry = Assembly.GetEntryAssembly();
+
         return new Dto.SystemInfoResponse
         {
-            Version = Assembly.GetEntryAssembly()?.GetName().Version?.ToString() ?? "unknown",
+            Version = entry?.GetName().Version?.ToString() ?? "unknown",
+            // Same source as the startup banner: the informational version ("3.7.2") rather
+            // than the four-part assembly version ("3.7.2.0").
+            InformationalVersion = entry?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+                ?.InformationalVersion?.Split('+')[0]
+                ?? entry?.GetName().Version?.ToString(),
             StartedAt = StartTime.UtcDateTime,
             Uptime = (DateTimeOffset.UtcNow - StartTime).ToString(),
             ContextCount = contextMgr?.GetAllContexts().Count ?? 0,
@@ -213,7 +222,7 @@ public class SystemController : RedbController
                 else
                     source = "runtime";
 
-                return new
+                return name.Name is null ? null : new Dto.LoadedAssemblyInfo
                 {
                     Name = name.Name,
                     Version = name.Version?.ToString(),
@@ -221,13 +230,14 @@ public class SystemController : RedbController
                     Location = location
                 };
             })
-            .Where(x => x.Name is not null)
+            .Where(x => x is not null)
+            .Select(x => x!)
             .OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        var redb = items.Where(x => x.Name!.StartsWith("redb.", StringComparison.OrdinalIgnoreCase))
+        var redb = items.Where(x => x.Name.StartsWith("redb.", StringComparison.OrdinalIgnoreCase))
                         .ToArray();
-        return new
+        return new Dto.AssembliesResponse
         {
             Count = items.Length,
             RedbCount = redb.Length,

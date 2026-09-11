@@ -1,4 +1,6 @@
 @page "/auth"
+@* Admin tier: matches the worker API (AuthController is Admin-only — key inventory and user management; review 2026-09-02 В13). *@
+@attribute [Authorize(Policy = "Admin")]
 @inject INodeClientProvider NodeProvider
 @inject ToastService Toast
 @using redb.Tsak.Contracts

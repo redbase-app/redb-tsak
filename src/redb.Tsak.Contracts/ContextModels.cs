@@ -126,6 +126,15 @@ public sealed record TsakEndpointInfo
     public long Errors { get; init; }
     public long Warnings { get; init; }
     public long BytesIn { get; init; }
+    public long BytesOut { get; init; }
+
+    /// <summary>
+    /// Requests shed by an admission limit (e.g. <c>maxConcurrentRequests</c>) before a pipeline
+    /// ran — the transport answered 429/503, no exchange was created, so they are counted in
+    /// neither <see cref="MessagesIn"/> nor <see cref="Errors"/>.
+    /// </summary>
+    public long Rejected { get; init; }
+
     public double ThroughputPerSecond { get; init; }
     public string HealthStatus { get; init; } = "Healthy";
     public string? HealthReason { get; init; }

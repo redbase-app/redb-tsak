@@ -34,6 +34,12 @@ internal static class SharedRuntimeBootstrap
         // fail-fast and the minor compat-gate cover it — otherwise a mismatched copy is swallowed
         // silently instead of aborting the start. Keep in sync with scripts/shared-manifest.psd1.
         "redb.Route.Http.Hosting",
+        // XML route artifacts (the Route-XML wave): compile-ref of redb.Tsak.Core (XmlRouteModule)
+        // and of redb.Route.Http (the <rest> contribution). It reaches Libs/shared transitively
+        // either way, but it must ALSO be declared here so the byte-preload fail-fast and the
+        // minor compat-gate cover it — an undeclared assembly is swallowed silently on mismatch
+        // instead of aborting the start. Keep in sync with scripts/shared-manifest.psd1.
+        "redb.Route.Xml",
         "redb.Route.Quartz",
         "redb.Route.Sql",
         "redb.Postgres",

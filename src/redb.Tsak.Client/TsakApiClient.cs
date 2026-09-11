@@ -577,6 +577,13 @@ public sealed class TsakApiClient : ITsakApiClient
     }
 
     /// <inheritdoc />
+    public async Task<AssembliesResponse> GetAssembliesAsync(CancellationToken ct = default)
+    {
+        var response = await _http.GetAsync("api/system/assemblies", ct);
+        return await ReadAsync<AssembliesResponse>(response, ct);
+    }
+
+    /// <inheritdoc />
     public async Task<EffectiveConfigResult> GetConfigAsync(CancellationToken ct = default)
     {
         var response = await _http.GetAsync("api/system/config", ct);

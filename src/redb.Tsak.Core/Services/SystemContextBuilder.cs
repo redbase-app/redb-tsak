@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using redb.Route.Abstractions;
 using redb.Route.Core;
 using redb.Route.Controllers;
@@ -161,9 +162,28 @@ public class SystemContextBuilder
         var authThrottleLimit = _configuration.GetValue("Tsak:Api:AuthThrottle:Limit", 10);
         var authThrottleWindowSec = _configuration.GetValue("Tsak:Api:AuthThrottle:WindowSeconds", 60);
         var authThrottleLockoutSec = _configuration.GetValue("Tsak:Api:AuthThrottle:LockoutSeconds", 120);
-        // Only honour X-Forwarded-For when an operator asserts a trusted reverse proxy sits in front
-        // (default false — a client can otherwise spoof XFF to evade or poison the per-IP buckets).
-        var authThrottleTrustProxy = _configuration.GetValue("Tsak:Api:AuthThrottle:TrustProxyHeaders", false);
+        // Client address for the throttle. The shared Kestrel host resolves X-Forwarded-For against
+        // Tsak:Http:TrustedProxies before any consumer runs, so redbHttp.RemoteAddress already IS the
+        // client whenever that list is set, whatever the length of the proxy chain. The older
+        // Tsak:Api:AuthThrottle:TrustProxyHeaders flag took the right-most XFF hop itself, which is the
+        // client only behind exactly one proxy; it stays honoured as a shim when the host list is empty,
+        // with a warning, and is ignored when the host resolves.
+        var hostTrustedProxies = _serviceProvider.GetService<IOptions<HttpHostingOptions>>()?.Value.TrustedProxies;
+        var hostResolvesProxies = hostTrustedProxies?.IsEnabled == true;
+        var legacyTrustProxyFlag = _configuration.GetValue("Tsak:Api:AuthThrottle:TrustProxyHeaders", false);
+        var authThrottleTrustProxy = legacyTrustProxyFlag && !hostResolvesProxies;
+        if (legacyTrustProxyFlag && hostResolvesProxies)
+        {
+            _logger.LogInformation(
+                "Tsak:Api:AuthThrottle:TrustProxyHeaders is ignored: Tsak:Http:TrustedProxies is set and the host resolves the client address");
+        }
+        else if (legacyTrustProxyFlag)
+        {
+            _logger.LogWarning(
+                "Tsak:Api:AuthThrottle:TrustProxyHeaders is deprecated and assumes exactly ONE reverse proxy " +
+                "(right-most X-Forwarded-For hop). Behind a chain of proxies that hop is the next proxy, not the " +
+                "client, and every caller shares one throttle bucket. Set Tsak:Http:TrustedProxies instead");
+        }
         FailedAttemptThrottle? authThrottle = null;
         if (authEnabled && authThrottleLimit > 0 && apiKeyService is not null)
         {
@@ -485,29 +505,29 @@ public class SystemContextBuilder
     }
 
     /// <summary>
-    /// Resolves the client IP used to key the per-IP auth throttle (review item 4.5). By default this is
-    /// the transport peer (<c>redbHttp.RemoteAddress</c>). When <paramref name="trustProxy"/> is set (an
-    /// operator asserting exactly one trusted reverse proxy fronts the node), the <b>right-most</b> hop of
-    /// <c>X-Forwarded-For</c> is used instead — that is the address the trusted proxy itself appended
-    /// (i.e. the real peer it accepted the connection from), which the client cannot forge. The left-most
-    /// hops are whatever the client sent and are attacker-controllable, so they are NOT used. XFF is
-    /// ignored entirely unless trusted, because a client can otherwise spoof it to evade or poison the
-    /// buckets. Falls back to the peer address, then <c>"unknown"</c> (so a header-less request still
+    /// Resolves the client IP used to key the per-IP auth throttle (review item 4.5). The address is
+    /// <c>redbHttp.RemoteAddress</c>: the socket peer, or, when <c>Tsak:Http:TrustedProxies</c> is set, the
+    /// client the shared Kestrel host already resolved from <c>X-Forwarded-For</c> against that list
+    /// (any chain length, unparseable hop stops the walk, untrusted peer ignored). That resolution is the
+    /// supported path; this method then has nothing to parse.
+    /// <para>
+    /// <paramref name="legacyRightmostHop"/> is the deprecated <c>Tsak:Api:AuthThrottle:TrustProxyHeaders</c>
+    /// shim, honoured only while the host list is empty: the <b>right-most</b> hop of <c>X-Forwarded-For</c>
+    /// is taken as the client. That hop is the address the nearest proxy appended, so a client cannot
+    /// forge it, but it is the client only behind exactly ONE proxy. Behind a chain it is the next proxy
+    /// in line, every caller lands in that one bucket, and a valid key from anyone clears the counter for
+    /// everyone. Falls back to the peer address, then <c>"unknown"</c> (so a header-less request still
     /// shares one bucket rather than bypassing the throttle).
-    /// <para><b>Deployment note (F2):</b> when the node sits behind a reverse proxy you MUST set
-    /// <c>TrustProxyHeaders=true</c>. With it off (the default), <c>RemoteAddress</c> is the proxy's IP for
-    /// every request, so all clients share one bucket and a single attacker can lock the whole API out.
-    /// The default is off only because trusting XFF is unsafe when NOT behind a trusted proxy.</para>
+    /// </para>
     /// </summary>
-    internal static string ExtractClientIp(IExchange exchange, bool trustProxy)
+    internal static string ExtractClientIp(IExchange exchange, bool legacyRightmostHop)
     {
-        if (trustProxy)
+        if (legacyRightmostHop)
         {
             var xff = exchange.In.getHeader("X-Forwarded-For")?.ToString();
             if (!string.IsNullOrWhiteSpace(xff))
             {
-                // Right-most entry is the hop the trusted proxy appended = the real peer it saw. Left-most
-                // entries are client-supplied and spoofable, so we must NOT trust them (single-proxy model).
+                // Deprecated single-proxy model: the right-most entry is what the one trusted proxy appended.
                 var parts = xff.Split(',');
                 var last = parts[^1].Trim();
                 if (last.Length > 0)

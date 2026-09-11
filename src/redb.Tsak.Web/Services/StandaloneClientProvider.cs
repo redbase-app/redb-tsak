@@ -17,6 +17,7 @@ public sealed class StandaloneClientProvider : INodeClientProvider
     private readonly IConfiguration _configuration;
     private readonly ILogger<StandaloneClientProvider> _logger;
     private readonly ConcurrentDictionary<string, TsakApiClient> _clients = new();
+    private readonly ConcurrentDictionary<string, TsakApiClient> _controlClients = new();
     private ClusterTopology? _topology;
 
     public StandaloneClientProvider(
@@ -99,10 +100,22 @@ public sealed class StandaloneClientProvider : INodeClientProvider
     }
 
     /// <inheritdoc />
-    public TsakApiClient? GetClient(string nodeId)
+    public TsakApiClient? GetClient(string nodeId) => Resolve(nodeId, _clients, controlTimeout: false);
+
+    /// <inheritdoc />
+    public TsakApiClient? GetControlClient(string nodeId) => Resolve(nodeId, _controlClients, controlTimeout: true);
+
+    private TsakApiClient? Resolve(string nodeId, ConcurrentDictionary<string, TsakApiClient> cache, bool controlTimeout)
     {
-        if (_clients.TryGetValue(nodeId, out var client))
+        if (cache.TryGetValue(nodeId, out var client))
             return client;
+
+        if (_topology is null)
+        {
+            // Deep link on a fresh process: the config topology is cheap — build it now instead
+            // of returning a dead page until another page happens to load it (review 2026-09-02, С26).
+            LoadTopologyAsync().GetAwaiter().GetResult();
+        }
 
         var node = _topology?.Nodes.FirstOrDefault(n => n.NodeId == nodeId);
         if (node is null || string.IsNullOrEmpty(node.ApiEndpoint))
@@ -126,9 +139,12 @@ public sealed class StandaloneClientProvider : INodeClientProvider
             }
         }
 
-        client = new TsakApiClient(node.ApiEndpoint, apiKey);
-        _clients[nodeId] = client;
-        return client;
+        // GetOrAdd so a racing second resolve never leaks the losing client's sockets
+        // (review 2026-09-02, С26). Control clients get the patient timeout (С12).
+        var timeout = controlTimeout
+            ? TimeSpan.FromSeconds(_configuration.GetValue("Tsak:Web:ControlTimeoutSeconds", 60))
+            : (TimeSpan?)null;
+        return cache.GetOrAdd(nodeId, _ => new TsakApiClient(node.ApiEndpoint, apiKey, timeout));
     }
 
     /// <inheritdoc />
@@ -138,8 +154,11 @@ public sealed class StandaloneClientProvider : INodeClientProvider
 
     public void Dispose()
     {
-        foreach (var client in _clients.Values)
-            client.Dispose();
-        _clients.Clear();
+        foreach (var cache in new[] { _clients, _controlClients })
+        {
+            foreach (var client in cache.Values)
+                client.Dispose();
+            cache.Clear();
+        }
     }
 }

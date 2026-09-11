@@ -45,11 +45,26 @@ public sealed class LoginThrottle
         lock (e) { return _now() < e.LockedUntil; }
     }
 
-    /// <summary>Record a failed attempt; may transition the key into lockout.</summary>
-    public void RecordFailure(string key)
+    /// <summary>
+    /// Entries are only removed on a successful login for their exact key, and keys are
+    /// attacker-chosen (usernames, IPs) — without a sweep the map grows without bound
+    /// (review 2026-09-02, В15; mirrors FailedAttemptThrottle's threshold).
+    /// </summary>
+    private const int SweepThreshold = 10_000;
+
+    /// <summary>
+    /// Record a failed attempt; may transition the key into lockout.
+    /// <paramref name="maxAttemptsOverride"/> lets a caller use a wider budget for a coarser
+    /// bucket (e.g. the per-IP spray bucket) on the same shared instance.
+    /// </summary>
+    public void RecordFailure(string key, int? maxAttemptsOverride = null)
     {
         if (string.IsNullOrEmpty(key)) return;
         var now = _now();
+        var maxAttempts = maxAttemptsOverride is > 0 ? maxAttemptsOverride.Value : MaxAttempts;
+
+        if (_entries.Count > SweepThreshold)
+            SweepExpired(now);
 
         // GetOrAdd hands back a single shared Entry; the read-modify-write below MUST be under the
         // entry lock. The previous AddOrUpdate mutated the entry in place and returned the same
@@ -66,12 +81,23 @@ public sealed class LoginThrottle
                 entry.WindowStart = now;
             }
             entry.Failures++;
-            if (entry.Failures >= MaxAttempts)
+            if (entry.Failures >= maxAttempts)
             {
                 entry.LockedUntil = now + LockoutDuration;
                 entry.Failures = 0;          // reset so the next lockout needs a fresh burst
                 entry.WindowStart = now + LockoutDuration;
             }
+        }
+    }
+
+    /// <summary>Drop entries whose window and lockout both elapsed — they carry no state.</summary>
+    private void SweepExpired(DateTimeOffset now)
+    {
+        foreach (var (key, e) in _entries)
+        {
+            bool expired;
+            lock (e) { expired = now >= e.LockedUntil && now - e.WindowStart > Window; }
+            if (expired) _entries.TryRemove(key, out _);
         }
     }
 

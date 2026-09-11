@@ -55,6 +55,7 @@
     private string ErrorMessage => Error switch
     {
         "locked" => "Too many failed attempts. Try again later.",
+        "stale" => "The form expired. Please try signing in again.",
         _ => "Invalid login or password."
     };
 }

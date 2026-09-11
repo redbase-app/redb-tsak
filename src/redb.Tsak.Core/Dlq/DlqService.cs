@@ -102,13 +102,7 @@ public sealed class DlqService
             await conn.OpenAsync(ct);
             await using var cmd = conn.CreateCommand();
             cmd.CommandText = DlqStorage.SelectSql(provider);
-            AddParam(cmd, "context", context);
-            AddParam(cmd, "route", route);
-            AddParam(cmd, "status", status);
-            AddDateParam(cmd, provider, "since", since);
-            AddDateParam(cmd, provider, "until", until);
-            AddParam(cmd, "limit", limit);
-            AddParam(cmd, "offset", offset);
+            BindQueryParameters(cmd, provider, context, route, status, since, until, limit, offset);
 
             var entries = new List<FailedExchangeEntry>();
             await using var reader = await cmd.ExecuteReaderAsync(ct);
@@ -310,32 +304,53 @@ public sealed class DlqService
         GetString(r, "body_data"), GetString(r, "headers_json") ?? "{}", GetString(r, "properties_json") ?? "{}",
         GetBool(r, "replayable"), GetString(r, "status") ?? "pending");
 
-    private static void AddParam(DbCommand cmd, string name, object? value)
+    /// <summary>
+    /// Binds the parameters of <see cref="DlqStorage.SelectSql"/> with explicit types (see
+    /// <see cref="DbParameterBinding"/> for why a typed null matters on PostgreSQL). Internal so the
+    /// bound shape can be checked without a database.
+    /// </summary>
+    internal static void BindQueryParameters(
+        DbCommand cmd, AuditProvider provider,
+        string? context, string? route, string? status,
+        DateTimeOffset? since, DateTimeOffset? until,
+        int limit, int offset)
     {
-        var p = cmd.CreateParameter();
-        p.ParameterName = name;
-        p.Value = value ?? DBNull.Value;
-        cmd.Parameters.Add(p);
+        DbParameterBinding.AddString(cmd, "context", context);
+        DbParameterBinding.AddString(cmd, "route", route);
+        DbParameterBinding.AddString(cmd, "status", status);
+        DbParameterBinding.AddTimestamp(cmd, provider, "since", since);
+        DbParameterBinding.AddTimestamp(cmd, provider, "until", until);
+        DbParameterBinding.AddInt32(cmd, "limit", limit);
+        DbParameterBinding.AddInt32(cmd, "offset", offset);
     }
 
     /// <summary>
-    /// Binds a timestamp parameter as the type the column expects: a native <see cref="DateTimeOffset"/>
-    /// (UTC) for Postgres (<c>timestamptz</c>) and SQL Server (<c>datetimeoffset</c>) — a bare ISO
-    /// string has no implicit cast to those in a comparison, so the retention sweep and date-filtered
-    /// queries would throw — and an ISO-8601 <c>"o"</c> string for SQLite, whose column is TEXT and
-    /// relies on lexicographic == chronological ordering (kept identical to how rows were written).
+    /// Typed binding by CLR type. A null string is a typed null: an untyped <see cref="DBNull"/> reaches
+    /// PostgreSQL as <c>unknown</c> and breaks the <c>(@x IS NULL OR col = @x)</c> shape with 42P08.
     /// </summary>
-    private static void AddDateParam(DbCommand cmd, AuditProvider provider, string name, DateTimeOffset? value)
+    private static void AddParam(DbCommand cmd, string name, object? value)
     {
-        var p = cmd.CreateParameter();
-        p.ParameterName = name;
-        p.Value = value is null
-            ? DBNull.Value
-            : provider == AuditProvider.Sqlite
-                ? value.Value.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture)
-                : value.Value.ToUniversalTime();
-        cmd.Parameters.Add(p);
+        switch (value)
+        {
+            case null:
+            case string:
+                DbParameterBinding.AddString(cmd, name, (string?)value);
+                return;
+            case bool b:
+                DbParameterBinding.AddBoolean(cmd, name, b);
+                return;
+            case int i:
+                DbParameterBinding.AddInt32(cmd, name, i);
+                return;
+            default:
+                throw new ArgumentException(
+                    $"No typed binding for parameter '{name}' of type {value.GetType().Name}.", nameof(value));
+        }
     }
+
+    /// <summary>Timestamp in the column's own type per provider; see <see cref="DbParameterBinding.AddTimestamp"/>.</summary>
+    private static void AddDateParam(DbCommand cmd, AuditProvider provider, string name, DateTimeOffset? value)
+        => DbParameterBinding.AddTimestamp(cmd, provider, name, value);
 
     private static string? Truncate(string? v, int max) => v is null || v.Length <= max ? v : v[..max];
 

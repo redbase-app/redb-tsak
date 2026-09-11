@@ -45,6 +45,13 @@ spec:
             # Note: the OTel scrape listener binds loopback :9464 inside the pod and is
             # proxied out via /metrics on 9090 — no separate containerPort to expose.
           env:
+            # ── Cluster addressing ──
+            # The endpoint other nodes and the dashboard reach THIS pod at. Without it every pod
+            # registers a hostname other pods cannot resolve (review 2026-09-02, К6).
+            - name: POD_IP
+              valueFrom: { fieldRef: { fieldPath: status.podIP } }
+            - name: Tsak__Cluster__ApiEndpoint
+              value: "http://$(POD_IP):9090"
             # ── Observability ──
             - { name: Tsak__Metrics__Prometheus__Enabled, value: "true" }
             - { name: Tsak__Metrics__Prometheus__Port,    value: "9464" }

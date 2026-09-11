@@ -209,19 +209,22 @@ else
 
     protected override async Task OnInitializedAsync()
     {
-        await LoadData();
+        // _cts BEFORE the initial load — a component disposed mid-load must not start an
+        // unstoppable orphan poll loop afterwards (review 2026-09-02, С19).
         _cts = new CancellationTokenSource();
-        _ = PollLoop(_cts.Token);
+        await LoadData();
+        if (!_cts.IsCancellationRequested)
+            _ = PollLoop(_cts.Token);
     }
 
-    private async Task PollLoop(CancellationToken ct)
+    private Task PollLoop(CancellationToken ct)
     {
         _timer = new PeriodicTimer(TimeSpan.FromSeconds(15));
-        while (await _timer.WaitForNextTickAsync(ct))
+        return PollLoops.RunAsync(_timer, ct, async () =>
         {
             await LoadData();
             await InvokeAsync(StateHasChanged);
-        }
+        });
     }
 
     private async Task LoadData()

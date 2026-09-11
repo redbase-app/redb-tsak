@@ -12,9 +12,9 @@ namespace redb.Tsak.Core.Audit;
 /// PVT round-trip on every filter.
 /// <para>
 /// All filtering and paging happens server-side; nothing is materialised and filtered in
-/// memory. Timestamps are passed as ISO-8601 strings, which every provider compares correctly
-/// against its own column type (<c>timestamptz</c>, <c>datetimeoffset</c>, or the ISO-8601
-/// <c>TEXT</c> used by SQLite).
+/// memory. Every parameter is bound through <see cref="DbParameterBinding"/> with an explicit
+/// type: timestamps as the column's own type per provider, and null filters as typed nulls, which
+/// is what keeps the <c>(@x IS NULL OR col = @x)</c> shape parseable on PostgreSQL.
 /// </para>
 /// </summary>
 public sealed class AuditQueryService
@@ -64,13 +64,7 @@ public sealed class AuditQueryService
 
             await using var cmd = conn.CreateCommand();
             cmd.CommandText = AuditStorage.SelectSql(provider);
-            AddParam(cmd, "actor", actor);
-            AddParam(cmd, "action", action);
-            AddParam(cmd, "target", target);
-            AddParam(cmd, "since", Format(since));
-            AddParam(cmd, "until", Format(until));
-            AddParam(cmd, "limit", limit);
-            AddParam(cmd, "offset", offset);
+            BindQueryParameters(cmd, provider, actor, action, target, since, until, limit, offset);
 
             var entries = new List<AuditEntry>();
             await using var reader = await cmd.ExecuteReaderAsync(ct);
@@ -106,21 +100,31 @@ public sealed class AuditQueryService
 
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = AuditStorage.DeleteOlderThanSql();
-        AddParam(cmd, "cutoff", Format(cutoff));
+        DbParameterBinding.AddTimestamp(cmd, provider, "cutoff", cutoff);
 
         return await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    private static void AddParam(DbCommand cmd, string name, object? value)
+    /// <summary>
+    /// Binds the parameters of <see cref="AuditStorage.SelectSql"/>, in the order and with the types the
+    /// statement needs. Separate from <see cref="QueryAsync"/> so the binding can be checked without a
+    /// database: the shape of the bound command is the whole difference between a page that loads and
+    /// PostgreSQL's <c>42P08</c>.
+    /// </summary>
+    internal static void BindQueryParameters(
+        DbCommand cmd, AuditProvider provider,
+        string? actor, string? action, string? target,
+        DateTimeOffset? since, DateTimeOffset? until,
+        int limit, int offset)
     {
-        var p = cmd.CreateParameter();
-        p.ParameterName = name;
-        p.Value = value ?? DBNull.Value;
-        cmd.Parameters.Add(p);
+        DbParameterBinding.AddString(cmd, "actor", actor);
+        DbParameterBinding.AddString(cmd, "action", action);
+        DbParameterBinding.AddString(cmd, "target", target);
+        DbParameterBinding.AddTimestamp(cmd, provider, "since", since);
+        DbParameterBinding.AddTimestamp(cmd, provider, "until", until);
+        DbParameterBinding.AddInt32(cmd, "limit", limit);
+        DbParameterBinding.AddInt32(cmd, "offset", offset);
     }
-
-    private static string? Format(DateTimeOffset? value) =>
-        value?.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
 
     private static AuditEntry Map(DbDataReader r) => new()
     {

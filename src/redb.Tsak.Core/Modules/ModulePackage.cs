@@ -35,6 +35,24 @@ public sealed class ModulePackage : IDisposable
     /// <summary>Companion (non-entry-point) assemblies loaded into Default ALC via Tracker.</summary>
     public List<Assembly> CompanionAssemblies { get; } = [];
 
+    /// <summary>
+    /// XML route artifacts (Route-XML Ф5.1), read during <see cref="Open(byte[],string,DateTime,string[],ILogger,bool,bool,bool)"/>
+    /// from the SAME verified bytes the signature gate checked — never re-read from disk.
+    /// Order follows <see cref="ModuleManifest.Artifacts"/>. Empty for packages without artifacts.
+    /// </summary>
+    public IReadOnlyList<(string Name, string Content)> XmlArtifacts => _xmlArtifacts;
+    private readonly List<(string Name, string Content)> _xmlArtifacts = [];
+
+    /// <summary>
+    /// Directory the package's <see cref="ModuleManifest.Resources"/> entries were extracted to
+    /// (the package itself is never unpacked; artifact file-references need real file paths).
+    /// Null when the package carries no XML artifacts. Deleted by <see cref="Dispose"/>.
+    /// </summary>
+    public string? ResourcesRoot { get; private set; }
+
+    /// <summary>The package's context.xml content, when the package carries one (read in Open).</summary>
+    public string? ContextXml { get; private set; }
+
     private ModulePackage(ModuleManifest manifest, string packagePath, DateTime lastWriteUtc, ILogger? logger)
     {
         Manifest = manifest;
@@ -65,9 +83,36 @@ public sealed class ModulePackage : IDisposable
 
         try
         {
-            var lastWrite = File.GetLastWriteTimeUtc(tpkgPath);
+            // Read once and open from the buffer — the same bytes a signature gate may have
+            // verified must be the bytes that get loaded (review 2026-09-02, К3: the old
+            // verify-then-reopen let the file be swapped between the check and the load).
+            var bytes = File.ReadAllBytes(tpkgPath);
+            return Open(bytes, tpkgPath, File.GetLastWriteTimeUtc(tpkgPath), probePaths, logger, forceReload, collectible);
+        }
+        catch (Exception ex)
+        {
+            logger?.LogError(ex, "Failed to open package {Path}", tpkgPath);
+            return null;
+        }
+    }
 
-            using var zip = ZipFile.OpenRead(tpkgPath);
+    /// <summary>
+    /// Opens a .tpkg from an in-memory buffer (the caller verified these exact bytes).
+    /// <paramref name="isolatedCompanions"/> loads companion DLLs into the package's own ALC
+    /// instead of publishing them to the process-wide tracker — for staged validation, whose
+    /// probe must not leak a rejected package's dependencies into the Default ALC
+    /// (review 2026-09-02, С23).
+    /// </summary>
+    public static ModulePackage? Open(
+        byte[] packageBytes, string tpkgPath, DateTime lastWriteUtc,
+        string[]? probePaths = null, ILogger? logger = null,
+        bool forceReload = false, bool collectible = false, bool isolatedCompanions = false)
+    {
+        try
+        {
+            var lastWrite = lastWriteUtc;
+
+            using var zip = new ZipArchive(new MemoryStream(packageBytes), ZipArchiveMode.Read);
 
             // Read manifest
             var manifestEntry = zip.GetEntry("manifest.json");
@@ -116,15 +161,25 @@ public sealed class ModulePackage : IDisposable
                     dllStream.CopyTo(memStream);
                     var bytes = memStream.ToArray();
 
-                    var asmName = GetAssemblyNameFromBytes(bytes);
-                    var assembly = forceReload
-                        ? LoadedAssemblyTracker.Replace(asmName, bytes)
-                        : LoadedAssemblyTracker.LoadOrReuse(asmName, bytes);
+                    Assembly assembly;
+                    if (isolatedCompanions)
+                    {
+                        // Validation probe: keep the companion inside the throwaway ALC.
+                        memStream.Position = 0;
+                        assembly = alc.LoadFromStream(memStream);
+                    }
+                    else
+                    {
+                        var asmName = GetAssemblyNameFromBytes(bytes);
+                        assembly = forceReload
+                            ? LoadedAssemblyTracker.Replace(asmName, bytes)
+                            : LoadedAssemblyTracker.LoadOrReuse(asmName, bytes);
+                    }
 
                     package.CompanionAssemblies.Add(assembly);
 
-                    logger?.LogDebug("Loaded companion {DLL} from package {Name} (reused={Reused})",
-                        entry.FullName, manifest.Name, !forceReload);
+                    logger?.LogDebug("Loaded companion {DLL} from package {Name} (reused={Reused}, isolated={Isolated})",
+                        entry.FullName, manifest.Name, !forceReload, isolatedCompanions);
                 }
                 catch (Exception ex)
                 {
@@ -165,6 +220,11 @@ public sealed class ModulePackage : IDisposable
                 logger?.LogInformation("Package {Name}: {EP} entry points, {Comp} companion DLLs loaded",
                     manifest.Name, package.LoadedAssemblies.Count, package.CompanionAssemblies.Count);
 
+            // XML route artifacts (Route-XML Ф5): read from the verified zip in manifest order,
+            // and extract the resources directory so file-references resolve to real paths.
+            if (manifest.Artifacts.Count > 0)
+                package.ReadXmlArtifacts(zip, logger);
+
             return package;
         }
         catch (Exception ex)
@@ -198,10 +258,80 @@ public sealed class ModulePackage : IDisposable
         }
     }
 
+    private void ReadXmlArtifacts(ZipArchive zip, ILogger? logger)
+    {
+        // The optional context.xml at the package root (Route-XML Ф5.1 layout): context-level
+        // sections — components, beans, onInit, package blocks like <redb> — applied by
+        // XmlRouteModule BEFORE the route artifacts, from the same verified bytes.
+        if (zip.GetEntry("context.xml") is { } contextEntry)
+        {
+            using var contextReader = new StreamReader(contextEntry.Open());
+            ContextXml = contextReader.ReadToEnd();
+        }
+
+        foreach (var artifact in Manifest.Artifacts)
+        {
+            var entry = zip.GetEntry(artifact.Replace('\\', '/'));
+            if (entry is null)
+            {
+                // The packaging gate guarantees presence; a hand-edited manifest may not.
+                // Recorded as a missing artifact — XmlRouteModule fails initialization loudly.
+                logger?.LogError("Package {Name}: artifact {Artifact} listed in the manifest is not in the package",
+                    Manifest.Name, artifact);
+                continue;
+            }
+            using var reader = new StreamReader(entry.Open());
+            _xmlArtifacts.Add((artifact, reader.ReadToEnd()));
+        }
+
+        var resourcesPrefix = Manifest.Resources.Trim('/') + "/";
+        var resourceEntries = zip.Entries
+            .Where(e => e.FullName.Replace('\\', '/').StartsWith(resourcesPrefix, StringComparison.OrdinalIgnoreCase)
+                        && !string.IsNullOrEmpty(e.Name))
+            .ToList();
+
+        // A per-INSTANCE directory, not a per-content one. Several ModulePackage instances of the
+        // same file are alive at once by design (registry discovery + the hot-reload tracker + the
+        // staged-validation probe), and a content-keyed path made them share one directory — the
+        // probe's Dispose deleted the resources out from under the live module (такт 5 E2E find).
+        var root = Path.Combine(Path.GetTempPath(), "tsak-pkg",
+            $"{Manifest.Name}-{Guid.NewGuid().ToString("N")[..16]}");
+        Directory.CreateDirectory(root);
+        foreach (var entry in resourceEntries)
+        {
+            var relative = entry.FullName.Replace('\\', '/')[resourcesPrefix.Length..];
+            var target = Path.GetFullPath(Path.Combine(root, relative));
+            if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+            {
+                logger?.LogError("Package {Name}: resource entry {Entry} escapes the resources directory — skipped",
+                    Manifest.Name, entry.FullName);
+                continue;
+            }
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            entry.ExtractToFile(target, overwrite: true);
+        }
+        ResourcesRoot = root;
+        logger?.LogInformation("Package {Name}: {Artifacts} XML artifact(s), {Resources} resource file(s) → {Root}",
+            Manifest.Name, _xmlArtifacts.Count, resourceEntries.Count, root);
+    }
+
     public void Dispose()
     {
         Alc?.TryUnload();
         Alc = null;
+        if (ResourcesRoot is { } root)
+        {
+            ResourcesRoot = null;
+            try
+            {
+                Directory.Delete(root, recursive: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                _logger?.LogWarning(ex, "Package {Name}: could not delete extracted resources at {Root}",
+                    Manifest.Name, root);
+            }
+        }
     }
 
     /// <summary>

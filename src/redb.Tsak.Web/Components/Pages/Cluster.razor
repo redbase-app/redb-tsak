@@ -27,7 +27,9 @@ else
     @foreach (var group in _topology.Groups)
     {
         var groupNodes = _topology.Nodes.Where(n => n.GroupName == group.GroupName).ToList();
-        var leader = _topology.Leader;
+        // Leadership is per group (review 2026-09-02, С14): the old single Leader field showed an
+        // arbitrary group's leader star on every section.
+        var leader = _topology.Leaders.GetValueOrDefault(group.GroupName);
 
         <div class="card" style="margin-bottom: var(--space-4);">
             <div class="card-header">
@@ -146,19 +148,22 @@ else
 
     protected override async Task OnInitializedAsync()
     {
-        _topology = await NodeProvider.LoadTopologyAsync();
+        // _cts BEFORE the initial load — a component disposed mid-load must not start an
+        // unstoppable orphan poll loop afterwards (review 2026-09-02, С19).
         _cts = new CancellationTokenSource();
-        _ = PollLoop(_cts.Token);
+        _topology = await NodeProvider.LoadTopologyAsync();
+        if (!_cts.IsCancellationRequested)
+            _ = PollLoop(_cts.Token);
     }
 
-    private async Task PollLoop(CancellationToken ct)
+    private Task PollLoop(CancellationToken ct)
     {
         _timer = new PeriodicTimer(TimeSpan.FromSeconds(30));
-        while (await _timer.WaitForNextTickAsync(ct))
+        return PollLoops.RunAsync(_timer, ct, async () =>
         {
             _topology = await NodeProvider.LoadTopologyAsync(forceRefresh: true);
             await InvokeAsync(StateHasChanged);
-        }
+        });
     }
 
     private async Task Refresh()

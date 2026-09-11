@@ -104,6 +104,13 @@ public sealed record GcMetrics
 public sealed record SystemInfoResponse
 {
     public required string Version { get; init; }
+
+    /// <summary>
+    /// Informational (SemVer) version of the host process, e.g. "3.7.2" — the same value the
+    /// startup banner prints, unlike the four-part assembly <see cref="Version"/> ("3.7.2.0").
+    /// Null when the host assembly carries no informational version.
+    /// </summary>
+    public string? InformationalVersion { get; init; }
     public required DateTime StartedAt { get; init; }
     public required string Uptime { get; init; }
     public required int ContextCount { get; init; }
@@ -111,6 +118,31 @@ public sealed record SystemInfoResponse
     public required string MachineName { get; init; }
     public required int ProcessorCount { get; init; }
     public required double WorkingSetMb { get; init; }
+}
+
+/// <summary>
+/// One assembly loaded in a node's process, from <c>GET /api/system/assemblies</c>.
+/// <c>Source</c> tells where it came from: "shared" (byte-loaded from the shared layer),
+/// "bin" (app output), "runtime" (.NET), or "in-memory".
+/// </summary>
+public sealed record LoadedAssemblyInfo
+{
+    public required string Name { get; init; }
+    public string? Version { get; init; }
+    public required string Source { get; init; }
+    public required string Location { get; init; }
+}
+
+/// <summary>
+/// Response of <c>GET /api/system/assemblies</c> — which assemblies are REALLY running on a
+/// node (Admin only). <c>Redb</c> is the interesting subset (redb.* assemblies) surfaced first.
+/// </summary>
+public sealed record AssembliesResponse
+{
+    public required int Count { get; init; }
+    public required int RedbCount { get; init; }
+    public IReadOnlyList<LoadedAssemblyInfo> Redb { get; init; } = [];
+    public IReadOnlyList<LoadedAssemblyInfo> All { get; init; } = [];
 }
 
 /// <summary>

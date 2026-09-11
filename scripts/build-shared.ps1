@@ -184,8 +184,15 @@ function Build-Tfm([string]$tfm, [string]$sharedDir, [string]$runtimeDir) {
 
         if (Test-Path $tmpPub) {
             $dlls = Get-ChildItem -Path $tmpPub -Filter "*.dll" | Where-Object {
+                # The shared layer OWNS every redb.* except the two the Worker keeps in its bin on
+                # purpose (redb.Tsak.*, redb.Licensing - see PruneRedbFromBuild in the Worker csproj).
+                # Without this exemption the bin filter below drops the whole framework out of the
+                # layer whenever a Worker build left redb.* in bin, and SharedRuntimeBootstrap then
+                # refuses to start the worker: its fail-fast requires those assemblies IN the layer.
+                # The filter stays in force for third-party deps, which is what it was meant for.
+                $ownedByShared = $_.Name -like "redb.*" -and $_.Name -notlike "redb.Tsak.*" -and $_.Name -notlike "redb.Licensing.*"
                 (-not (Test-Path (Join-Path $runtimeDir $_.Name))) -and
-                ($publishMode -or -not (Test-Path (Join-Path $workerBin $_.Name)))
+                ($publishMode -or $ownedByShared -or -not (Test-Path (Join-Path $workerBin $_.Name)))
             }
             foreach ($dll in $dlls) {
                 Copy-Item $dll.FullName -Destination $sharedDir -Force
@@ -197,6 +204,19 @@ function Build-Tfm([string]$tfm, [string]$sharedDir, [string]$runtimeDir) {
             }
         }
     }
+    # Every project in the manifest must have produced its own DLL in the layer. Without this the
+    # script can report success on a layer that cannot start a worker at all: SharedRuntimeBootstrap
+    # byte-preloads the framework set from here and fail-fasts when one is missing. Caught on
+    # 2026-09-09, when the Worker-bin filter silently removed all 14 framework assemblies and the
+    # run still ended with "Done" and exit 0.
+    $missing = @($projects | Where-Object {
+        ($_ -notin $incompatible) -and -not (Test-Path (Join-Path $sharedDir "$_.dll"))
+    })
+    if ($missing.Count -gt 0) {
+        Write-Host "MISSING from ${sharedDir}: $($missing -join ', ')" -ForegroundColor Red
+        throw "Shared layer incomplete for $tfm - $($missing.Count) assembly(ies) did not land in the layer."
+    }
+
     return @{ Copied = $copied; Incompatible = $incompatible }
 }
 

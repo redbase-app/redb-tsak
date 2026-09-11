@@ -301,6 +301,9 @@ else
                 break;
 
             case "Logs":
+                @* Operator tier, matching the worker's LogsController and the Logs page: log
+                   bodies may carry payload fragments (review 2026-09-02, В13). *@
+                <AuthorizedView OperatorOnly="true">
                 <div style="max-height: 60vh; overflow-y: auto;">
                     <TsakGrid Items="_logs" T="LogEntry">
                         <EmptyContent>
@@ -329,6 +332,7 @@ else
                         </RowContent>
                     </TsakGrid>
                 </div>
+                </AuthorizedView>
                 break;
         }
     </div>
@@ -383,9 +387,12 @@ else
     protected override async Task OnInitializedAsync()
     {
         SyncTab();
-        await LoadAll();
+        // _cts BEFORE the (possibly slow) initial load: a component disposed mid-load used to
+        // start an unstoppable orphan poll loop afterwards (review 2026-09-02, С19).
         _cts = new CancellationTokenSource();
-        _ = PollLoop(_cts.Token);
+        await LoadAll();
+        if (!_cts.IsCancellationRequested)
+            _ = PollLoop(_cts.Token);
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -425,14 +432,28 @@ else
     private async Task PollLoop(CancellationToken ct)
     {
         _timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
-        while (await _timer.WaitForNextTickAsync(ct))
+        try
         {
-            await InvokeAsync(async () =>
+            while (await _timer.WaitForNextTickAsync(ct))
             {
-                await LoadAll();
-                StateHasChanged();
-            });
+                try
+                {
+                    await InvokeAsync(async () =>
+                    {
+                        await LoadAll();
+                        StateHasChanged();
+                    });
+                }
+                catch (OperationCanceledException) { break; }
+                catch (Exception ex)
+                {
+                    // One transient failure (node timeout, DB blip, JS disconnect) must not kill
+                    // auto-refresh for the rest of the circuit (review 2026-09-02, С18).
+                    Log.LogDebug(ex, "[NodeDetail] poll tick failed; retrying next tick");
+                }
+            }
         }
+        catch (OperationCanceledException) { /* disposed */ }
     }
 
     private async Task LoadAll()
@@ -441,7 +462,10 @@ else
 
         var topology = await NodeProvider.LoadTopologyAsync(forceRefresh: true);
         _node = topology.Nodes.FirstOrDefault(n => n.NodeId == NodeId);
-        _isLeader = topology.Leader?.NodeId == NodeId;
+        // Leadership is per group (review 2026-09-02, С14) — judge by THIS node's group.
+        _isLeader = _node is not null
+            && topology.Leaders.TryGetValue(_node.GroupName, out var groupLeader)
+            && groupLeader.NodeId == NodeId;
 
         if (_node is null)
         {
@@ -543,7 +567,10 @@ else
     {
         try
         {
-            var client = NodeProvider.GetClient(NodeId)
+            // Control client (review 2026-09-02, С12): a context stop/restart drains longer than
+            // the 5s polling timeout — a false client-side timeout made operators retry an
+            // operation that had already succeeded server-side.
+            var client = NodeProvider.GetControlClient(NodeId)
                 ?? throw new InvalidOperationException($"No API client for node {NodeId}");
             await action(client);
             _contexts = await client.ListContextsAsync(Ct);

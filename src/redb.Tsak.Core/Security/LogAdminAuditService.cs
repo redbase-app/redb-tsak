@@ -76,7 +76,9 @@ public sealed class LogAdminAuditService : IAdminAuditService
             DurationMs = Math.Round(e.DurationMs, 1);
             ExceptionType = e.ExceptionType;
             ExceptionMessage = e.ExceptionMessage;
-            Payload = e.Payload;
+            // The payload was the one untruncated field of the log line (review 2026-09-02, С25/К2):
+            // an oversized argument dump must not flood the ring buffer and log files.
+            Payload = e.Payload is { Length: > 4096 } p ? p[..4096] + "…(truncated)" : e.Payload;
         }
 
         [JsonPropertyName("ts")] public DateTimeOffset Ts { get; }

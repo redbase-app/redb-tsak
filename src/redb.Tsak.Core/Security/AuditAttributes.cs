@@ -22,12 +22,6 @@ public sealed class AuditAdminActionAttribute : Attribute
     public string? TargetParam { get; init; }
 }
 
-/// <summary>
-/// Marks a property of an audit-payload DTO as containing sensitive data
-/// (passwords, secrets, API keys, tokens). The property is replaced with the literal
-/// string <c>"***"</c> in the audit payload.
-/// </summary>
-[AttributeUsage(AttributeTargets.Property | AttributeTargets.Field, AllowMultiple = false, Inherited = false)]
-public sealed class AuditSensitiveAttribute : Attribute
-{
-}
+// AuditSensitiveAttribute moved to redb.Tsak.Contracts (2026-09-02): the DTOs that need the mark
+// live there, and Contracts cannot reference Core — which is why the attribute was applied to
+// nothing while it lived here (review К2).

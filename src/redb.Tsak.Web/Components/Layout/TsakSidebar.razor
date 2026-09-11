@@ -1,11 +1,13 @@
 @inject NavigationManager Nav
 @inject INodeClientProvider NodeProvider
+@using System.Reflection
 @implements IDisposable
 
 <aside class="sidebar">
     <div class="sidebar-brand">
         <TsakIcon Name="database" Size="24" />
         <span class="sidebar-brand-text">redb.Tsak</span>
+        <a class="sidebar-version" href="about" title="About">v@(DashboardVersion)</a>
     </div>
 
     <nav class="sidebar-nav">
@@ -84,11 +86,23 @@
                 <TsakIcon Name="shield" Size="18" />
                 <span>Auth & Users</span>
             </NavLink>
+            <NavLink class="sidebar-link" href="about">
+                <TsakIcon Name="info" Size="18" />
+                <span>About</span>
+            </NavLink>
         </div>
     </nav>
 </aside>
 
 @code {
+    // Same source as the About page and the startup banner: informational version with the
+    // +metadata suffix cut, falling back to the four-part assembly version.
+    private static readonly string DashboardVersion =
+        typeof(TsakSidebar).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion?.Split('+')[0]
+        ?? typeof(TsakSidebar).Assembly.GetName().Version?.ToString()
+        ?? "?";
+
     private string? _activeNodeId;
 
     protected override void OnInitialized()

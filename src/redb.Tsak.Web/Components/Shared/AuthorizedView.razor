@@ -9,23 +9,32 @@
     [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
 
     [Parameter] public bool AdminOnly { get; set; }
+    [Parameter] public bool OperatorOnly { get; set; }
     [Parameter] public RenderFragment? ChildContent { get; set; }
 
     private bool _show;
 
     protected override async Task OnParametersSetAsync()
     {
-        if (!AdminOnly)
+        // The roles come from a signed auth cookie, so they cannot be forged client-side.
+        // Pages themselves are gated by the [Authorize] in _Imports.razor (anonymous access is
+        // refused at the route); this component only differentiates tiers within a page.
+        var state = AuthState is null ? null : await AuthState;
+        var user = state?.User;
+
+        if (AdminOnly)
         {
-            // Any authenticated dashboard user. AuthorizeRouteView already blocks anonymous access,
-            // so a rendered page implies an authenticated principal — but check to be explicit.
-            var state = AuthState is null ? null : await AuthState;
-            _show = state?.User?.Identity?.IsAuthenticated ?? false;
+            _show = user?.IsInRole("admin") ?? false;
             return;
         }
 
-        // Admin-gated. The role comes from a signed auth cookie, so it cannot be forged client-side.
-        var st = AuthState is null ? null : await AuthState;
-        _show = st?.User?.IsInRole("admin") ?? false;
+        if (OperatorOnly)
+        {
+            _show = user?.IsInRole("operator") ?? false;
+            return;
+        }
+
+        // Any authenticated dashboard user.
+        _show = user?.Identity?.IsAuthenticated ?? false;
     }
 }

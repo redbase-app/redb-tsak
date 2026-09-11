@@ -5,10 +5,12 @@ namespace redb.Tsak.Core.Services.Storage;
 
 /// <summary>
 /// In-memory state store for Standalone mode. Not persistent across restarts.
+/// Ordinal, case-sensitive keys — the <see cref="ITsakStateStore"/> contract; this class used
+/// to fold case and thereby diverge from the redb-backed store (review 2026-09-02, С7).
 /// </summary>
 public class InMemoryTsakStateStore : ITsakStateStore
 {
-    private readonly ConcurrentDictionary<string, string> _state = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, string> _state = new(StringComparer.Ordinal);
 
     public Task<string?> GetAsync(string key) =>
         Task.FromResult(_state.GetValueOrDefault(key));
@@ -28,7 +30,7 @@ public class InMemoryTsakStateStore : ITsakStateStore
     public Task<IReadOnlyDictionary<string, string>> GetByPrefixAsync(string prefix)
     {
         var result = _state
-            .Where(kv => kv.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            .Where(kv => kv.Key.StartsWith(prefix, StringComparison.Ordinal))
             .ToDictionary(kv => kv.Key, kv => kv.Value);
         return Task.FromResult<IReadOnlyDictionary<string, string>>(result);
     }

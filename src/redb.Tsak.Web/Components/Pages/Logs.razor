@@ -1,4 +1,6 @@
 @page "/node/{NodeId}/logs"
+@* Operator tier: matches the worker API (LogsController — log bodies may carry payload fragments; review 2026-09-02 В13). *@
+@attribute [Authorize(Policy = "Operator")]
 @inject INodeClientProvider NodeProvider
 @inject ToastService Toast
 @inject NavigationManager Nav
@@ -189,9 +191,12 @@ else
 
     protected override async Task OnInitializedAsync()
     {
-        await FetchIncremental();
+        // _cts BEFORE the initial load — a component disposed mid-load must not start an
+        // unstoppable orphan poll loop afterwards (review 2026-09-02, С19).
         _cts = new CancellationTokenSource();
-        _ = PollLoop(_cts.Token);
+        await FetchIncremental();
+        if (!_cts.IsCancellationRequested)
+            _ = PollLoop(_cts.Token);
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -203,17 +208,17 @@ else
         }
     }
 
-    private async Task PollLoop(CancellationToken ct)
+    private Task PollLoop(CancellationToken ct)
     {
         _timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
-        while (await _timer.WaitForNextTickAsync(ct))
+        return PollLoops.RunAsync(_timer, ct, async () =>
         {
             if (_activeTab == "live")
             {
                 await FetchIncremental();
                 await InvokeAsync(StateHasChanged);
             }
-        }
+        });
     }
 
     private async Task FetchIncremental()

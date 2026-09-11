@@ -159,6 +159,7 @@ else if (_detail is not null)
                     <th>URI</th>
                     <th>In / Out</th>
                     <th>Errors</th>
+                    <th>Rejected</th>
                     <th>Throughput</th>
                     <th>Health</th>
                 </HeaderContent>
@@ -166,6 +167,7 @@ else if (_detail is not null)
                     <td class="mono text-xs text-secondary" style="max-width: 300px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="@context.Uri">@context.Uri</td>
                     <td class="mono text-sm">@FormatNumber(context.MessagesIn) / @FormatNumber(context.MessagesOut)</td>
                     <td class="mono text-sm" style="@(context.Errors > 0 ? "color: var(--status-error)" : "")">@context.Errors</td>
+                    <td class="mono text-sm" style="@(context.Rejected > 0 ? "color: var(--status-warning)" : "")">@context.Rejected</td>
                     <td class="mono text-sm">@($"{context.ThroughputPerSecond:F1}/s")</td>
                     <td><TsakBadge Text="@context.HealthStatus" Variant="@GetHealthBadge(context.HealthStatus)" /> @if (!string.IsNullOrEmpty(context.HealthReason) && context.HealthStatus != "Healthy") { <span class="text-xs text-secondary">@context.HealthReason</span> }</td>
                 </RowContent>
@@ -231,19 +233,22 @@ else
 
     protected override async Task OnInitializedAsync()
     {
-        await LoadData();
+        // _cts BEFORE the initial load — a component disposed mid-load must not start an
+        // unstoppable orphan poll loop afterwards (review 2026-09-02, С19).
         _cts = new CancellationTokenSource();
-        _ = PollLoop(_cts.Token);
+        await LoadData();
+        if (!_cts.IsCancellationRequested)
+            _ = PollLoop(_cts.Token);
     }
 
-    private async Task PollLoop(CancellationToken ct)
+    private Task PollLoop(CancellationToken ct)
     {
         _timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
-        while (await _timer.WaitForNextTickAsync(ct))
+        return PollLoops.RunAsync(_timer, ct, async () =>
         {
             await LoadData();
             await InvokeAsync(StateHasChanged);
-        }
+        });
     }
 
     private async Task LoadData()
@@ -292,7 +297,8 @@ else
 
         try
         {
-            var client = NodeProvider.GetClient(NodeId)
+            // Control timeout: force-stop drains longer than the 5s polling default (С12).
+            var client = NodeProvider.GetControlClient(NodeId)
                 ?? throw new InvalidOperationException($"No API client for node {NodeId}");
             await client.ForceStopRouteAsync(ContextName, RouteId, Ct);
             await LoadData();

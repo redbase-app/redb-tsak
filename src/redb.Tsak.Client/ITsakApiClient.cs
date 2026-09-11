@@ -243,6 +243,9 @@ public interface ITsakApiClient : IDisposable
     /// <summary>Get system information.</summary>
     Task<SystemInfoResponse> GetInfoAsync(CancellationToken ct = default);
 
+    /// <summary>GET /api/system/assemblies — assemblies actually loaded on the node (Admin only).</summary>
+    Task<AssembliesResponse> GetAssembliesAsync(CancellationToken ct = default);
+
     /// <summary>Get the effective (merged, redacted) configuration of this node (admin).</summary>
     Task<EffectiveConfigResult> GetConfigAsync(CancellationToken ct = default);
 

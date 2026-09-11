@@ -144,8 +144,6 @@ internal static class RedbInstanceFactory
         if (TryGetString(config, "PropsSaveStrategy", out var strategy))
             c.PropsSaveStrategy = Enum.Parse<PropsSaveStrategy>(strategy, ignoreCase: true);
 
-        if (TryGetBool(config, "EnableLazyLoadingForProps", out var lazy))
-            c.EnableLazyLoadingForProps = lazy;
 
         if (TryGetBool(config, "EnablePropsCache", out var propsCache))
             c.EnablePropsCache = propsCache;

@@ -1,4 +1,6 @@
 @page "/node/{NodeId}/dlq"
+@* Operator tier: matches the worker API (ExchangesController — listing exposes payload details, replay re-executes business code; review 2026-09-02 В13). *@
+@attribute [Authorize(Policy = "Operator")]
 @inject INodeClientProvider NodeProvider
 @inject ToastService Toast
 @using redb.Tsak.Client

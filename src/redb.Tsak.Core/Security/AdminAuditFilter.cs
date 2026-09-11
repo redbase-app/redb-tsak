@@ -5,6 +5,7 @@ using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.Logging;
 using redb.Route.Controllers;
 using redb.Route.Http;
+using redb.Tsak.Contracts;
 
 namespace redb.Tsak.Core.Security;
 
@@ -125,7 +126,10 @@ public sealed class AdminAuditFilter : IControllerActionFilter
         for (var i = 0; i < paramInfos.Length && i < arguments.Length; i++)
         {
             var name = paramInfos[i].Name ?? $"arg{i}";
-            dict[name] = arguments[i];
+            // A raw byte[] argument (module upload: up to the 100 MB cap) must not be base64-inlined
+            // into the audit payload — it was the one unbounded field and ballooned the audit store
+            // by ~1.3x the package size per upload (review 2026-09-02, С25).
+            dict[name] = arguments[i] is byte[] bytes ? $"byte[{bytes.Length}]" : arguments[i];
         }
 
         try
@@ -141,7 +145,10 @@ public sealed class AdminAuditFilter : IControllerActionFilter
 
     /// <summary>
     /// JSON contract modifier that replaces the value of any property/field marked with
-    /// <see cref="AuditSensitiveAttribute"/> with the literal string <c>"***"</c>.
+    /// <see cref="AuditSensitiveAttribute"/> with the literal string <c>"***"</c>. As
+    /// defense-in-depth a property whose NAME says it is a secret (password/secret/token/keyhash)
+    /// is masked even without the attribute — a future DTO that forgets the mark must not leak
+    /// credentials into the trail (review 2026-09-02, К2).
     /// </summary>
     private static void ApplySensitiveModifier(JsonTypeInfo typeInfo)
     {
@@ -150,12 +157,18 @@ public sealed class AdminAuditFilter : IControllerActionFilter
         foreach (var prop in typeInfo.Properties)
         {
             var attrs = prop.AttributeProvider?.GetCustomAttributes(typeof(AuditSensitiveAttribute), inherit: true);
-            if (attrs is not null && attrs.Length > 0)
+            if ((attrs is not null && attrs.Length > 0) || IsSensitiveName(prop.Name))
             {
                 prop.CustomConverter = SensitiveConverter.Instance;
             }
         }
     }
+
+    private static bool IsSensitiveName(string name) =>
+        name.Contains("password", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("secret", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("token", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("keyhash", StringComparison.OrdinalIgnoreCase);
 
     private sealed class SensitiveConverter : JsonConverter<object>
     {

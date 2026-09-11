@@ -648,6 +648,18 @@ tr:hover td {
     letter-spacing: -0.02em;
 }
 
+.sidebar-version {
+    margin-left: auto;
+    font-size: var(--font-size-xs);
+    color: var(--sidebar-brand-text);
+    opacity: 0.55;
+    text-decoration: none;
+}
+
+.sidebar-version:hover {
+    opacity: 1;
+}
+
 .sidebar-nav {
     flex: 1;
     padding: var(--space-3) 0;

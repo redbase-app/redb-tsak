@@ -75,6 +75,19 @@ public sealed class ConfigAuthService : IAuthService
         return Task.FromResult<AuthUser?>(new AuthUser(login, "Administrator", "admin"));
     }
 
+    /// <inheritdoc />
+    public Task<AuthUser?> FindAsync(string login)
+    {
+        // Standalone has exactly one account — the config admin. It "exists" as long as the
+        // config still names it.
+        var adminLogin = _configuration["Tsak:Web:AdminLogin"];
+        var configured = !string.IsNullOrEmpty(adminLogin)
+                         && (!string.IsNullOrEmpty(_configuration["Tsak:Web:AdminPasswordHash"])
+                             || !string.IsNullOrEmpty(_configuration["Tsak:Web:AdminPassword"]));
+        var found = configured && string.Equals(login, adminLogin, StringComparison.OrdinalIgnoreCase);
+        return Task.FromResult<AuthUser?>(found ? new AuthUser(adminLogin!, "Administrator", "admin") : null);
+    }
+
     /// <summary>Length-independent constant-time string comparison over UTF-8 bytes.</summary>
     private static bool FixedTimeEquals(string a, string b)
     {

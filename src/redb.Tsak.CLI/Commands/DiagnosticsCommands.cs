@@ -135,6 +135,7 @@ public static class DiagnosticsCommands
                 r.RenderDetail(
                     ("Messages", m.MessagesProcessed.ToString()),
                     ("Errors", m.Errors.ToString()),
+                    ("Rejected", m.Rejected.ToString()),
                     ("AvgProcessing(ms)", m.AvgProcessingMs.ToString("F1")),
                     ("Throughput(/s)", m.ThroughputPerSecond.ToString("F2")),
                     ("LastActivity", m.LastActivity?.ToString("HH:mm:ss") ?? "—"));
@@ -185,7 +186,8 @@ public static class DiagnosticsCommands
                         ("Status", rt => rt.Status),
                         ("Msgs", rt => rt.MessagesProcessed.ToString()),
                         ("Throughput", rt => rt.ThroughputPerSecond.ToString("F1")),
-                        ("Inflight", rt => rt.InflightCount.ToString()));
+                        ("Inflight", rt => rt.InflightCount.ToString()),
+                        ("Rejected", rt => rt.Rejected.ToString()));
                 }
 
                 if (snap.ErrorProneRoutes.Count > 0)
@@ -195,6 +197,16 @@ public static class DiagnosticsCommands
                         ("Errors", rt => rt.Errors.ToString()),
                         ("LastError", rt => rt.LastError ?? "—"),
                         ("LastErrorTime", rt => rt.LastErrorTime?.ToString("HH:mm:ss") ?? "—"));
+                }
+
+                // Shedding is not an error condition — a separate table, mirroring the web panel.
+                if (snap.SheddingRoutes.Count > 0)
+                {
+                    r.RenderTable(snap.SheddingRoutes,
+                        ("RouteId", rt => rt.RouteId),
+                        ("Rejected", rt => rt.Rejected.ToString()),
+                        ("Throughput", rt => rt.ThroughputPerSecond.ToString("F1")),
+                        ("Inflight", rt => rt.InflightCount.ToString()));
                 }
             });
         });

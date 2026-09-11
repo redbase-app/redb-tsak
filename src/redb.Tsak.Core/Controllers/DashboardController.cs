@@ -68,6 +68,13 @@ public class DashboardController : RedbController
                 .OrderByDescending(r => r.Errors)
                 .Take(5)
                 .ToList(),
+            // Deliberately a separate list, not part of ErrorProneRoutes: a route shedding at
+            // its concurrency ceiling with zero errors is healthy but under-provisioned.
+            SheddingRoutes = allRouteMetrics
+                .Where(r => r.Rejected > 0)
+                .OrderByDescending(r => r.Rejected)
+                .Take(5)
+                .ToList(),
             ActiveAlerts = watchdog?.GetState()?.ActiveAlerts ?? [],
             SystemMetrics = sysMetrics
         };

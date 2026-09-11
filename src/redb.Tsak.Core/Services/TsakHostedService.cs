@@ -77,6 +77,14 @@ public class TsakHostedService : BackgroundService
                     await redb.SyncSchemeAsync<TsakModuleProps>();
                     await redb.SyncSchemeAsync<ApiKeyProps>();
 
+                    // V4 key migration, proactively at startup. Each rule has ONE home — the
+                    // store that owns the scheme (review 2026-09-02, Q1) — and the stores also
+                    // run it lazily for hosts without this service; post-migration each call is
+                    // a single index probe.
+                    await RedbTsakStateStore.BackfillLegacyAsync(redb, _logger);
+                    await RedbTsakModuleStore.BackfillLegacyAsync(redb, _logger);
+                    await RedbApiKeyStore.BackfillLegacyKeysAsync(redb, _logger);
+
                     var provider = _configuration["Tsak:Redb:Provider"] ?? "auto";
                     _logger.LogInformation("Tsak schemes synced (provider: {Provider})", provider);
                 }
@@ -209,6 +217,30 @@ public class TsakHostedService : BackgroundService
 
     private void LogStartupDiagnostics()
     {
+        // The forbidden Quartz combination (review 2026-09-02, В11): a persistent AdoJobStore on
+        // the SHARED redb database with clustering off — several nodes would run non-clustered
+        // schedulers of one name on one qrtz_* set (double-fired triggers, corrupted job state).
+        // Not applicable to SQLite: the database is a local file no second node can share, and
+        // ConfigureQuartz forces clustered=false there (Quartz refuses SQLite + clustered).
+        var clusterEnabled = _configuration.GetValue("Tsak:Cluster:Enabled", false);
+        var jobStore = _configuration["Quartz:quartz.jobStore.type"] ?? "";
+        var quartzClustered = _configuration.GetValue("Quartz:quartz.jobStore.clustered", false);
+        var redbProvider = _configuration["Tsak:Redb:Provider"]?.ToLowerInvariant() ?? "postgres";
+        var isSqlite = redbProvider == "sqlite";
+        if (clusterEnabled && jobStore.Contains("AdoJobStore", StringComparison.OrdinalIgnoreCase)
+            && !quartzClustered && !isSqlite)
+            _logger.LogCritical(
+                "Tsak:Cluster:Enabled=true with Quartz AdoJobStore but quartz.jobStore.clustered=false — every "
+                + "cluster node will run an independent scheduler on the same qrtz_* tables, double-firing triggers "
+                + "and corrupting the job store. Set Quartz:quartz.jobStore.clustered=true.");
+
+        // RollingUpdate never had an implementation — no code reads the flag (review 2026-09-02,
+        // С16). Warn instead of letting the operator trust a staggered update that will not happen.
+        if (_configuration.GetValue("Tsak:HotReload:RollingUpdate", false))
+            _logger.LogWarning(
+                "Tsak:HotReload:RollingUpdate=true is NOT implemented: nodes reload modules independently on their "
+                + "own scan schedule. Stagger an update by deploying the package to nodes sequentially yourself.");
+
         // Database connection
         var provider = _configuration["Tsak:Redb:Provider"]?.ToLowerInvariant() ?? "postgres";
         var connKey = provider switch
@@ -235,6 +267,15 @@ public class TsakHostedService : BackgroundService
                 jobStoreType);
         }
         var clustered = _configuration.GetValue<bool>("Quartz:quartz.jobStore.clustered");
+        if (clustered && isSqlite && isAdoJobStore)
+        {
+            // Report the EFFECTIVE value, not the raw config — ConfigureQuartz overrode it.
+            _logger.LogWarning(
+                "Quartz: quartz.jobStore.clustered=true is overridden to false on the SQLite provider — Quartz "
+                + "refuses clustered mode on SQLite (no row locks for the QRTZ_LOCKS semaphore), and a SQLite "
+                + "file cannot be shared between nodes anyway.");
+            clustered = false;
+        }
         var instanceId = _configuration["Quartz:quartz.scheduler.instanceId"] ?? "NON_CLUSTERED";
 
         _logger.LogInformation(

@@ -161,7 +161,7 @@ Any additional keys become custom context properties accessible by modules at ru
 | `ScanIntervalSeconds` | `int` | `30` | Polling interval for module directory changes. |
 | `KeepVersions` | `int` | `2` | Number of old module versions retained (for rollback). |
 | `StartupTimeoutSeconds` | `int` | `60` | Max time for a new module version to initialize before automatic rollback. |
-| `RollingUpdate` | `bool` | `true` | In cluster mode, stagger updates across nodes. |
+| `RollingUpdate` | `bool` | `false` | RESERVED — not implemented; nodes reload independently. |
 | `RemovalDebounceScans` | `int` | `1` | Scan cycles to wait before confirming a DLL removal. |
 | `Collectible` | `bool` | `false` | Use collectible AssemblyLoadContext (enables GC of old assemblies, but incompatible with some Emit-based APIs). |
 | `SharedPath` | `string` | `"Libs/shared"` | Directory for shared assemblies loaded into all module contexts. |

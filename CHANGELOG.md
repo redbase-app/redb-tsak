@@ -27,6 +27,389 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [4.0.0] — 2026-09-12
+
+### Added — the dashboard can tell shedding from silence
+
+redb.Route's `IEndpointStatistics` grew a `Rejected` counter: requests turned away by an
+admission limit (`maxConcurrentRequests` on Http/Soap/As2/Grpc, `maxConnections` on the SignalR
+hub) BEFORE a pipeline ran — the transport answered 429/503, no exchange was created, so they
+land in neither `MessagesIn` nor `Errors`. The collector read neither that counter nor the
+long-existing `BytesOut`, which meant a node shedding load looked exactly like an idle one.
+`TsakEndpointInfo` now carries `Rejected` and `BytesOut`, `RouteMetricsSummary` carries
+`Rejected`, and they reach the endpoints grid, the endpoint details (Bytes Out beside Bytes In),
+the route view and the `tsak diagnostics` tables (`dashboard`, `route`).
+
+The dashboard gained a separate **Shedding Routes** panel instead of folding rejections into
+Error-Prone Routes: a route sitting at its concurrency ceiling with zero errors is healthy but
+under-provisioned, the operator response is to raise the limit or add nodes rather than go
+bug-hunting, and one panel serving both would make its own label lie. Busiest Routes gained a
+Rejected column too, for the case where the shedding route is already in the top five by
+throughput. Red-before proven: the mapping tests and the dashboard-selection test failed on the
+un-fixed collector/controller. The dead snapshot path was deliberately left alone:
+`ContextInfoCollector.CollectSnapshotsAsync` and `ContextMetricsCollector` have had no callers
+since the heartbeat stopped propagating context snapshots (review 2026-09-02, И12) — the stale
+doc-comment on `TsakContextInfo` claiming otherwise now says so instead of lying.
+
+### Added — About page
+
+`/about` shows which build is running and where it came from: the dashboard version, the
+selected node's version, machine, uptime and context/module counts, and links to the repository
+(github.com/redbase-app/redb-tsak), releases, redb.Route and the redbase.app site. It sits in
+the Settings group of the sidebar, and the brand header carries a version link to it. The page
+is authenticated like every other one — a build version tells an attacker what surface they are
+looking at — and the page-auth guard covers `/about` too.
+
+For admins the page also answers "which redb is REALLY running": a Loaded redb assemblies card
+on top of `GET /api/system/assemblies`, which along the way gained a typed contract
+(`AssembliesResponse` / `LoadedAssemblyInfo`) and a client method (`GetAssembliesAsync`) — the
+endpoint used to return an anonymous object no typed client could consume.
+`GET /api/system/info` gained `InformationalVersion` ("3.7.2") alongside the four-part
+`Version` ("3.7.2.0"), sourced the same way the startup banner already sources it.
+
+### Fixed — the config binder no longer flags JSON-comment keys as typos
+
+The stock appsettings document keys with the `"//Key": "..."` JSON-comment convention (the
+format has no comments), and `RedbConfigBinder` reported every such key as "not a redb setting
+and does nothing" — so every deployment running the SHIPPED config started with false
+`Tsak:Redb://Provider` / `Tsak:Redb://Cache` warnings, training operators to ignore the very
+diagnostic that exists to catch real typos. The real `Provider` and `Cache` keys were always
+applied; only the comment keys tripped the check. `//`-prefixed keys are skipped now, and a
+genuine unknown key still warns — both pinned by red-before tests.
+
+### Fixed — monitoring charts no longer freeze under the cursor
+
+A NodeDetail poll tick crashed whenever the mouse hovered the CPU or Threads chart (found
+live, 2026-09-09): those datasets legitimately pass no fill color, JSInterop serializes the
+C# null verbatim, and the interop mapper's `PascalCase || camelCase` fallback turned "absent"
+into an explicit JS null. Chart.js v4 derives `hoverBackgroundColor` by parsing
+`backgroundColor`, and its color parser routes null into the object branch
+(`typeof null === 'object'`) — a TypeError on every `update()` with active hover elements, so
+a hovered chart froze for as long as the cursor sat on it while the poll loop retried tick
+after tick. The mapper now omits absent colors entirely; Chart.js falls back to its own
+defaults, hover or not.
+
+### Fixed — the login form actually logs in: antiforgery token rendered, error redirects reach the page
+
+Two stacked defects made the dashboard sign-in a dead end the moment the page-level auth gate
+went live (found live, 2026-09-08). First, `<AntiforgeryToken/>` in the login and logout forms
+was not resolved as a component — `_Imports.razor` lacked `Microsoft.AspNetCore.Components.Forms`
+— so it rendered as inert markup, the forms carried no token, and EVERY login POST failed
+antiforgery validation before credentials were even read; the only build-time symptom was an
+RZ10012 warning. Second, the error redirects were relative (`login?error=1`): resolved against
+`/auth/`, they sent the browser to GET `/auth/login` — a POST-only mapping — so instead of an
+error message the user hit a bare HTTP 405; logout had the same bug. Redirects are absolute now,
+a stale/missing token reports its own error code ("The form expired") instead of masquerading as
+wrong credentials, and three red-before tests pin the flow: the rendered token, the redirect
+targets, and that the redirect target itself answers 200.
+
+### Fixed — redb.Route.Xml declared for the shared-layer fail-fast and compat-gate
+
+The Route-XML wave added `redb.Route.Xml` to the manifest's Framework section (it is a
+compile-ref of redb.Tsak.Core and ships in Libs/shared) with a comment saying it is "declared so
+the preload fail-fast and the compat-gate see it" — but those gates read the C# mirror,
+`SharedRuntimeBootstrap.FrameworkAssemblies`, which was not updated. The assembly therefore got
+neither the byte-preload fail-fast nor the minor compat-gate: a shared layer missing or
+mismatching `redb.Route.Xml.dll` would start the worker and fail later (FileNotFound deep in
+AddTsak, or a MissingMethodException on the first XML module) instead of aborting at startup
+with the precise "rebuild the shared layer" message. Exactly the drift class the guard test was
+written for (redb.Route.Http.Hosting, 3.5.1) — and the test did catch this one; the name is now
+declared and both consistency tests are green.
+
+A `.tpkg` can now carry declarative XML routes beside (or instead of) assemblies. The manifest
+gained four optional fields — `Artifacts` (explicit ordered list of `.route.xml` entries),
+`SchemaVersion`, `Resources` (in-package directory file-references resolve from) and
+`RequiredConfigKeys` — a package without them behaves exactly as before (pinned by test).
+`ModulePackage.Open` reads the artifacts from the SAME verified bytes the signature gate
+checked and extracts the resources directory to a per-content temp folder (the package itself
+is never unpacked; XSLT/schema references need real file paths), cleaned up on `Dispose`.
+Discovery registers an `XmlRouteModule` per package with artifacts, AFTER the assembly scan —
+so `bean:#name` objects registered by module code are visible to the XML — and an XML-only
+package is now a full module (before, it died on the no-modules-found path and was disposed).
+`XmlRouteModule.Initialize` fails fast when the MERGED context configuration (which the
+coordinator writes into context properties before initialization) lacks a required key —
+module-isolated by owner decision: the module faults with the key names, its routes never
+register, the context lives on. Bean types resolve package-first (entry-point ALC →
+companions → the default resolver's view of shared/Default), file references resolve from the
+package's extracted resources — both as chained context services, so several packages share
+one context without stepping on each other. The embedded `{Name}.config.json` now reaches the
+coordinator through the new `IEmbeddedConfigModule` contract instead of a concrete-type match
+(`StaticMethodModule` implements it; `XmlRouteModule` too), so every packaged module kind gets
+the same layer-4 treatment.
+
+### Added — XML modules see every markup contribution; context.xml ships in the package
+
+`XmlRouteModule` now discovers the Р21 markup contributions worker-wide (the package's own
+assemblies plus every loaded `redb.*` assembly — the preloaded shared layer above all) and
+feeds them to the loaders, so a packaged XML route can use `<cache>`, `<rest>`, `<redbGet>`
+and any other package element — before this the Tsak path knew only the core elements. The
+optional `context.xml` at the package root (the Ф5.1 layout has always staged it) is read
+from the verified bytes and applied BEFORE the route artifacts: components, beans, `<onInit>`
+and context-level blocks such as `<redb>` (scheme sync at startup, named idempotent
+repositories).
+
+### Fixed — hot reload learned the third convention too (Route-XML Ф5, такт 5 E2E)
+
+The live-worker E2E caught what the unit suite could not: the whole hot-reload pipeline still
+knew only the two assembly conventions. An XML-only `.tpkg` dropped into a RUNNING worker was
+opened, found module-less, disposed and ignored; one adopted at startup lost its tracking the
+same way, so a redrop never reached `ReloadPackageAsync`; and the staged-validation probe
+refused any XML-only package with "no entry-point assemblies loaded". All three now run the
+same artifacts branch discovery runs (probe-side the staged check is well-formedness of each
+artifact — schema/compile errors stay load-time module-isolated faults). Two lifecycle bugs
+fell out of the same session: the extracted-resources directory was keyed by content, so a
+transient open's `Dispose` (the probe, a rescan) deleted the resources out from under the live
+module — each `ModulePackage` instance now extracts to its own directory; and on reload the
+old package was disposed BEFORE the context swap, deleting resources the still-live old routes
+could be reading — it is disposed after `ProcessBatchAsync` now (and kept tracked when opening
+the replacement fails, since the old context stays live). Verified end-to-end: redrop of a
+changed XML package → staged validation → silent replace → batch context recreation → the new
+route ticking within one debounce window, config placeholders in the endpoint URI resolving
+through the merged package config (`{{demo.period:2000}}`).
+
+### Fixed — the worker starts on SQLite again: clustered Quartz is forced off there
+
+The В11 fix shipped `quartz.jobStore.clustered=true` unconditionally, and Quartz hard-refuses
+that on SQLite at startup ("SQLite cannot be used as clustered mode due to locking problems" —
+its clustered mode serializes nodes on `QRTZ_LOCKS` row locks, which SQLite does not have; the
+3.2.x changelog note and `sanitize-appsettings.ps1` both knew this, but a dev run never passes
+through the publish sanitizer). `ConfigureQuartz` now forces `clustered=false` on the SQLite
+provider — the AdoJobStore and its persistence stay — with a startup warning, and the В11
+critical no longer demands clustering there: a SQLite database is a local file no second node
+can share, so non-clustered is safe by construction, and the double-fire scenario the В11
+check guards against cannot arise. The startup summary reports the EFFECTIVE clustered value
+rather than the raw config. The shared-database providers keep the В11 behavior unchanged
+(pinned by test both ways).
+
+### Changed — the BR-7/8/9 mitigations are gone: Tsak sits on the core's new primitives
+
+The core closed all three reports filed from the 2026-09-02 review the same day, and Tsak now
+uses the first-class mechanisms instead of its local workarounds. `GetByPrefixAsync` no longer
+falls back to a full load for prefixes with LIKE metacharacters — StartsWith operands are
+literals on every provider now (BR-7); the ordinal re-check stays, because it serves the
+case-sensitivity contract (BR-6), not escaping. The state/module stores dropped their local
+retry around `SaveByUniqueAsync` — the core itself retries an object-key race including the
+Remove+Set+Set interleave — and the api-key rotation branch (and the backfill's index
+attribution that guards against deleting live keys) now discriminates via
+`RedbUniqueViolationException.Kind` instead of parsing constraint names and driver text (BR-8).
+Every CAS site (lock renew/self-renew/takeover/release, assignment fence, heartbeat, cordon)
+uses the strict `LockForUpdateRequiredAsync`: a deleted or re-created row throws
+`RedbLockNotAcquiredException` instead of silently locking nothing, replacing the hand-rolled
+`fresh.id == locked id` checks (BR-9). Full matrix re-run: unit 652/652, Web 63/63,
+integration 65/65 on PostgreSQL, MSSQL and SQLite — the LIKE-metacharacter prefix test now
+passes through the server-side path, pinning the core fix from the consumer side.
+
+### Security — the dashboard actually requires a login now, and five more holes from the 2026-09-02 review
+
+The deep review (docs/V4/REVIEW-TSAK-DASHBOARD-2026-09-02.md; fix plan FIX_PLAN-2026-09-02.md)
+found that the cookie auth added in August never gated a single Blazor page: `AuthorizeRouteView`
+enforces only the `[Authorize]` metadata of the routed page itself, no page carried the attribute,
+there was no fallback policy — so an anonymous visitor got a live circuit and read the topology,
+live logs with stack traces, the DLQ, the audit trail and the API-key inventory through the
+server-held service key; three code comments documented the false belief that the component blocks
+anonymous access by itself. Every page now inherits `[Authorize]` from `_Imports.razor` (Login
+keeps `[AllowAnonymous]`), and the invariant is pinned by `PageAuthTests` — ten pages, each proven
+red-before (an anonymous 200 with data) and green-after (302 to /login). On top of the gate, page
+tiers now match the worker API's: Audit and Auth are Admin, DLQ and the log tails (page and
+NodeDetail tab) are Operator — a viewer could previously replay dead-lettered business flows and
+read the admin trail through the BFF's admin key.
+
+The rest of the security batch: plaintext passwords no longer reach the admin audit trail —
+`[AuditSensitive]` moved to Contracts (it lived in Core, which the DTOs cannot reference, so it
+was applied to NOTHING) and now marks the user-management password fields, with a name-based
+mask (`password`/`secret`/`token`/`keyhash`) as defense-in-depth, byte[] arguments recorded as
+`byte[N]` instead of ~1.3x-package-size base64, and the log-fallback line truncated. The module
+signature trust anchor holds on every load path now: startup discovery verifies packages (it
+executed them unverified on every process restart), a bare .dll is refused outright under
+`Signature:Required=true` (it was arbitrary code execution past the gate), and the verified bytes
+are the loaded bytes — `ModulePackage.Open(byte[])` closed the verify-then-reopen swap window.
+Session lifecycle: cookie principals are revalidated every 5 minutes and Blazor circuits carry a
+`RevalidatingServerAuthenticationStateProvider`, so a deleted or demoted user no longer rides an
+8-hour sliding cookie; behind the documented nginx deployment `Tsak:Web:TrustProxyHeaders=true`
+turns on forwarded headers so the cookie gets its Secure flag and the login throttle sees real
+client addresses. That throttle now keys on (username, client IP) with a wider per-IP spray
+bucket — keying on the username alone let anyone lock the real administrator out from anywhere
+with five requests a minute — and sweeps its map (it grew unboundedly on attacker-chosen names).
+Rebalance and node removal carry `[AuditAdminAction]` like their cordon siblings, and the
+dashboard's cordon/remove go through a worker's audited API whenever one is reachable, falling
+back to the direct DB write only with an explicit warning.
+
+### Fixed — the review's correctness batch: cluster protocol, stores, hot-reload, dashboard plumbing
+
+Cluster protocol. Every CAS in the lock and the assignment manager verifies that the row it
+re-reads under `FOR UPDATE` is the row it locked: a lock on a deleted id is a silent no-op on all
+three providers, so a delete+recreate in the window let a stale writer pass the epoch fence on an
+unlocked row (and, via `AutoSwitchToInsert`, resurrect a just-released lock); `ReleaseAsync` is
+fenced like every other transition. The heartbeat writes only its own fields under a row lock —
+its whole-object read-modify-write (widened by a contexts snapshot nobody reads, now dropped)
+silently reverted a concurrent cordon within one heartbeat. Cordon actually means "no new work":
+rebalance no longer assigns modules to cordoned nodes. A clustered route stopped and restarted
+through the API works again (`OnResume` could never restart the watch loop after `OnStop`). A
+`:` in ClusterName/GroupName/NodeId fails fast at bootstrap with an actionable message instead of
+a per-tick crash-loop, one module named with `:` no longer freezes the whole group's rebalance,
+and legacy `:`-named node records stay removable through the API via a props fallback. A node
+record stuck Online in a leaderless group (nobody left to mark it Dead) can be removed once its
+heartbeat is older than the dead-node timeout.
+
+Stores. The api-key store survives rotation (same id, new hash updates the record in place —
+previously an unhandled unique violation into the auth path and a permanently dead key), latches
+`_seeded` only after the backfill/seeding succeeded (the early latch let concurrent first
+requests 401 valid legacy keys, and one transient error disabled them until restart), and
+`RevokeAsync` waits for the ensure step. The V4 backfill distinguishes WHICH unique index fired
+(`StructureId`/`PropertyName`/constraint/driver text): a violation of the `[RedbUnique]` Id index
+— the trace of a pre-V4 key rotation — no longer deletes the live credential (red-before: the
+row was destroyed), and an unstorable key (e.g. >440 chars) reports critical instead of crashing
+the worker at every start. State/module stores run their own one-time ensure (scheme sync +
+backfill), so a read racing `TsakHostedService` startup — or a host without it — no longer sees
+legacy state as absent (which ended in the backfill deleting the pre-upgrade value); state keys
+are normalized via `RedbUniqueKey.Normalize` (440-cap; long keys used to throw where
+value_string accepted them), and a prefix containing LIKE metacharacters falls back to a full
+scan — on MSSQL `[` opened a character class and the matching keys silently vanished from
+`GetByPrefixAsync` (red-before on MSSQL). Group backfill keys a group only under a KEYED root
+and bootstrap verifies the parent chain, so a tree damaged by a pre-4.0 race can no longer get
+its live group keyed under the "loser" root while the log advises deleting exactly that subtree.
+
+Hot reload. Rollback of an in-place-overwritten bare DLL no longer "restores" the broken bytes
+it just failed on: a live previous ALC is reused, and with none left the rollback refuses loudly.
+A shared-layer change on disk is reported once as critical requiring a process restart — the old
+path drained and rebuilt every context on the SAME old assemblies while logging a completed
+reload. Staged validation loads companion DLLs into the throwaway ALC, so a rejected package no
+longer publishes its dependencies into the process-wide tracker. Bare-DLL tracking is keyed by
+the real module name (file basename differed → removal unloaded the live ALC while unregistering
+the wrong key). The watchdog restarts a context at most once per scan, never `_system`, and a
+restart that timed out between stop and start attempts a recovery start instead of leaving the
+context down.
+
+Dashboard plumbing. All eight polling pages share one loop body that survives a transient error
+(one timeout used to kill auto-refresh silently for the circuit's lifetime — frozen "Online"
+under a live Auto-refresh label) and create their CTS before the initial load (a navigation
+during a slow load used to leak an unstoppable orphan poll loop). The leader is resolved per
+group by the exact leader-lock identity — the old `EndsWith(":leader")` scan showed an arbitrary
+group's leader everywhere and a route named `leader` could spoof it. Node clients are cached
+with `GetOrAdd` (no leaked sockets on a race), recreated when a node re-registers with a new
+endpoint (the dashboard used to call the old address until a Web restart), and refuse an
+ambiguous NodeId instead of first-match; control operations (force-stop, context restart/stop)
+use a patient client (`Tsak:Web:ControlTimeoutSeconds`, default 60s) instead of failing falsely
+at the 5s polling timeout; `IsAlive` respects the configured dead-node timeout instead of a
+hardcoded 60s; deep links self-heal the topology; the node-selector no longer shows the previous
+node's numbers under the new node's label; the Audit page got the same null-guard as DLQ.
+
+### Changed — honest defaults and contracts (2026-09-02 review)
+
+The shipped cluster config no longer registers `http://localhost:9090` as every node's
+ApiEndpoint (empty = auto-detect, with a loud warning when a loopback address is registered in
+cluster mode; the k8s manifest passes the pod IP). The shipped Quartz config is
+`clustered=true` — a persistent AdoJobStore on the shared redb database with clustering off
+double-fires triggers across nodes and corrupts the job store; the forbidden combination is
+now flagged critical at startup. `HotReload:RollingUpdate` defaults to false and is documented
+as RESERVED: nothing ever implemented it (`RollingUpdateCoordinator` has no callers), while
+three READMEs promised sequential node updates — enabling the flag now logs a warning and the
+READMEs tell the truth. `ITsakStateStore` pins ordinal, case-sensitive keys as the CONTRACT and
+`InMemoryTsakStateStore` complies (it folded case, so standalone and cluster answered prefix
+queries differently). Core bug reports filed in docs/BOUNDARIES_AND_FOLLOWUPS.md: BR-7
+(StartsWith does not escape LIKE metacharacters), BR-8 (`SaveByUniqueAsync` retry gap), BR-9
+(`LockForUpdateAsync` on a missing id is a silent no-op).
+
+Verification: unit 652/652, Web 63/63 (10 new page-auth checks), integration 65/65 on each of
+PostgreSQL, MSSQL and SQLite; the key invariants proven red-before against the pre-fix code in a
+worktree (all four storage tests and all ten page-auth checks failed there).
+
+### Changed — cluster and store uniqueness is enforced by the database (V4 keys). BREAKING: no mixed-version cluster across this upgrade
+
+Everywhere Tsak needed "exactly one record per key" it used check-then-insert with self-healing:
+the distributed lock's own comment admitted the first-create race ("no unique constraint on the
+lock key") and swept duplicates on renew; the cluster bootstrap had no healing at all, so two
+nodes starting on a fresh database could create two cluster roots — two disjoint trees, forever;
+node registration hid behind a lock that itself raced; assignments were a plain save loop, so a
+stale leader could duplicate one module onto two nodes; the state/module/api-key stores raced on
+seeding and concurrent writes. All of it now rests on the V4 core key `_objects._value_unique`
+(one partial unique index per scheme, PostgreSQL/MSSQL/SQLite alike): locks key on
+`"{group}:{lockName}"`, roots on the cluster name, groups on `"{cluster}:{group}"`, nodes on
+`"{group}:{nodeId}"`, assignments on `"{group}:{module}"`, the stores on their natural keys.
+A lost creation race is a synchronous `RedbUniqueViolationException` — the loser adopts the
+winner instead of leaving a duplicate (first-wins for the lock and the tree; the stores upsert
+via `SaveByUniqueAsync`, which is their honest last-writer-wins). Assignment writes carry an
+epoch fence on top: a stale leader (lower epoch) is refused under a row lock, so it can no
+longer clobber the current leader's placement. The renew-time duplicate sweep, the
+verify-after-write in lock creation and the in-memory parent filter in bootstrap are gone; the
+hot paths (heartbeat, lock renew, api-key check) are single probes of the unique index. The
+api-key store grew a second key — `[RedbUnique]` on the new `Props.Id` — so revocation resolves
+by one indexed probe instead of loading every key; the state store's `GetByPrefixAsync` is
+server-side now and **case-sensitive** (owner decision; an ordinal re-check keeps the contract
+identical on SQLite/MSSQL, whose `LIKE` folds case). The dead `TsakModulePlacementProps` model
+(`_tsak_modules` — never synced, never read, never written) is removed.
+
+Existing databases migrate themselves: an idempotent backfill runs from the same ensure hooks
+that sync the schemes, stamps the key onto legacy rows (winner = lowest id, the same winner the
+old self-healing picked), deletes operational duplicates (locks, nodes, assignments, store
+entries) and never deletes a tree anchor — a duplicate root or group is reported critical for
+manual cleanup instead. **Upgrade note (the reason this is a major):** a keyless record written
+by an old node is invisible to the new key lookups, so nodes of ONE cluster group must not mix
+versions across this boundary — stop the whole group, roll out, start; the first start runs the
+backfill. On a large shared database prefer the core's DBA path: start nodes with
+`Tsak:Redb:AutoApplyDatabaseUpgrades = false` (the config binder already reaches it) and apply
+`redb schema --upgrade` from one place. Covered by 13 new integration tests — key contract,
+epoch fence, upsert semantics, backfill (winner/losers, anchors, idempotence), and barrier races
+(6× parallel bootstrap, 8× state writers, parallel module discovery and node registration) —
+green on the three providers (61/61 each), with the four key invariants proven red-before
+against the pre-refactoring code in a worktree; the pre-existing suites pass unchanged
+(unit 652/652).
+
+### Security — the API-key throttle now keys on the real client behind a chain of proxies
+
+`Tsak:Api:AuthThrottle:TrustProxyHeaders` took the **right-most** `X-Forwarded-For` hop as the client.
+That hop is what the nearest proxy appended, so a client cannot forge it, and it is the client when
+exactly one proxy stands in front of the worker. Behind a chain, Anti-DDoS to nginx to worker, it is the
+Anti-DDoS gateway's address: every caller behind that gateway landed in one throttle bucket. Ten failed
+key checks a minute from anyone locked everyone out for two minutes, and, because a valid key clears the
+counter, any legitimate login through the same gateway reset the attacker's count. Too coarse and too
+weak at once. The single-proxy assumption was stated in the 3.7.0 notes; a reader of the release article
+pointed out what it costs behind a chain.
+
+The resolution now happens where it belongs, on the shared Kestrel host, from
+**`Tsak:Http:TrustedProxies`** (addresses or CIDR networks). The host walks `X-Forwarded-For` from the
+right past every listed proxy to the first address that is not one, ignores the header from a peer that
+is not listed, stops on an entry it cannot parse, and rewrites the connection before any consumer runs.
+So `redbHttp.RemoteAddress` is the client for the management API and for every module route on Http,
+Soap, As2 and gRPC alike, and `redbHttp.Url` carries the scheme the client used. `SystemContextBuilder`
+no longer parses the header at all. A value in the list that does not parse fails the start rather than
+being dropped, for the reason 3.7.2 gave: a silent drop from a security list makes a typo and a working
+configuration look the same.
+
+**Deprecated:** `Tsak:Api:AuthThrottle:TrustProxyHeaders`. It still works as before when
+`Tsak:Http:TrustedProxies` is empty, with a warning naming the replacement, and is ignored with a log
+line once the list is set. Behind one proxy the two are equivalent; behind a chain only the list is
+right. See `PARAMETERS.md`.
+
+### Fixed — the Audit and Dead-letter pages never loaded on PostgreSQL
+
+Both pages, and the `/api/audit` and `/api/exchanges` calls behind them, answered
+`42P08: could not determine data type of parameter $1` on every request that carried no filter, which
+is every first open. The statements spell each optional filter as `(@x IS NULL OR col = @x)`, and a
+parameter whose value is `DBNull` and whose type was never set reaches PostgreSQL as `unknown`. The
+parser fixes the type of the first `@x` it meets, the one inside `IS NULL`, before the comparison to
+its right can say what the type is; the two occurrences then disagree and
+`check_parameter_resolution_walker` refuses the statement. Position 255 in the audit error and 190 in
+the dead-letter one are exactly those first occurrences. SQLite and SQL Server never showed it,
+because neither infers parameter types from the statement, and the tests for both services ran on
+SQLite only, so the Postgres branch had never executed.
+
+Two more defects sat in the same audit query and only reached Postgres. Date filters were bound as
+ISO-8601 text and compared against a `timestamptz` column, for which no operator exists, so a
+`since` / `until` filter failed the moment it was set; and the daily retention sweep bound its
+cutoff the same way, so `tsak_audit_log` has not been pruned on Postgres since the sweep shipped. The
+dead-letter store had already learned the timestamp lesson and bound a real `DateTimeOffset`, but
+its null strings were untyped all the same.
+
+Every parameter of both services now goes through one `DbParameterBinding`: strings and null strings
+as `text`, integers as `int4`, timestamps as the column's own type, a UTC `DateTimeOffset` on
+PostgreSQL and SQL Server and the ISO `"o"` string SQLite stores and orders by. A duplicate binding
+of `limit` / `offset` in the dead-letter query went with it. Pinned by typing tests on an
+`NpgsqlCommand` without a server and by five round trips against a live PostgreSQL in
+`redb.Tsak.Tests.Integration`, all five red on the previous code: first open of each page, a date
+filter, a status filter, and the retention sweep. Reported from a node that moved 3.1.0 to 3.7.2; the
+pages did not exist on 3.1.0, and on Postgres they had not worked since they did.
+
 ## [3.7.2] — 2026-08-27
 
 > Shipped alongside the ecosystem, which moves on one number. The core release fixes a regression in

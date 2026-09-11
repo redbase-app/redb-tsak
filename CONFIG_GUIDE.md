@@ -2,7 +2,7 @@
 
 This guide is about **how** configuration is assembled: the five layers, how they merge, and which
 one wins. For **what** each setting is called and what it defaults to, see
-PARAMETERS.md.
+[PARAMETERS.md](PARAMETERS.md).
 
 ## 5-Layer Configuration Model
 

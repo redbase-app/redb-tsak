@@ -79,6 +79,7 @@ else if (_contexts is { Length: > 0 })
                                 <th>Role</th>
                                 <th>In / Out</th>
                                 <th>Errors</th>
+                                <th>Rejected</th>
                                 <th>Throughput</th>
                                 <th>Health</th>
                                 <th>Last Activity</th>
@@ -90,6 +91,7 @@ else if (_contexts is { Length: > 0 })
                                 <td class="text-sm">@GetRoleLabel(context)</td>
                                 <td class="mono text-sm">@FormatNumber(context.MessagesIn) / @FormatNumber(context.MessagesOut)</td>
                                 <td class="mono text-sm" style="@(context.Errors > 0 ? "color: var(--status-error)" : "")">@context.Errors</td>
+                                <td class="mono text-sm" style="@(context.Rejected > 0 ? "color: var(--status-warning)" : "")">@context.Rejected</td>
                                 <td class="mono text-sm">@($"{context.ThroughputPerSecond:F1}/s")</td>
                                 <td><TsakBadge Text="@context.HealthStatus" Variant="@GetHealthBadge(context.HealthStatus)" /></td>
                                 <td class="text-xs">@FormatTimeAgo(context.LastActivity)</td>
@@ -150,6 +152,8 @@ else
                                 <tr><td class="text-secondary" style="width: 140px;">Messages In</td><td class="mono">@_selectedEndpoint.MessagesIn.ToString("N0")</td></tr>
                                 <tr><td class="text-secondary">Messages Out</td><td class="mono">@_selectedEndpoint.MessagesOut.ToString("N0")</td></tr>
                                 <tr><td class="text-secondary">Bytes In</td><td class="mono">@FormatBytes(_selectedEndpoint.BytesIn)</td></tr>
+                                <tr><td class="text-secondary">Bytes Out</td><td class="mono">@FormatBytes(_selectedEndpoint.BytesOut)</td></tr>
+                                <tr><td class="text-secondary">Rejected</td><td class="mono" style="@(_selectedEndpoint.Rejected > 0 ? "color: var(--status-warning)" : "")">@_selectedEndpoint.Rejected.ToString("N0")</td></tr>
                                 <tr><td class="text-secondary">Throughput</td><td class="mono">@($"{_selectedEndpoint.ThroughputPerSecond:F2}/s")</td></tr>
                                 <tr><td class="text-secondary">Avg Processing</td><td class="mono">@FormatDuration(_selectedEndpoint.AverageProcessingTime)</td></tr>
                                 <tr><td class="text-secondary">Uptime</td><td class="mono">@FormatUptime(_selectedEndpoint.Uptime)</td></tr>
@@ -253,19 +257,22 @@ else
 
     protected override async Task OnInitializedAsync()
     {
-        await LoadData();
+        // _cts BEFORE the initial load — a component disposed mid-load must not start an
+        // unstoppable orphan poll loop afterwards (review 2026-09-02, С19).
         _cts = new CancellationTokenSource();
-        _ = PollLoop(_cts.Token);
+        await LoadData();
+        if (!_cts.IsCancellationRequested)
+            _ = PollLoop(_cts.Token);
     }
 
-    private async Task PollLoop(CancellationToken ct)
+    private Task PollLoop(CancellationToken ct)
     {
         _timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
-        while (await _timer.WaitForNextTickAsync(ct))
+        return PollLoops.RunAsync(_timer, ct, async () =>
         {
             await LoadData();
             await InvokeAsync(StateHasChanged);
-        }
+        });
     }
 
     private async Task LoadData()

@@ -21,6 +21,10 @@
         # gets neither the byte-preload fail-fast nor the minor compat-gate, so a mismatched copy
         # would be swallowed silently instead of aborting the start. Declare it.
         'redb.Route.Http.Hosting'
+        # XML route artifacts (Route-XML Ф5): compile-ref of redb.Tsak.Core (XmlRouteModule)
+        # and of redb.Route.Http (the <rest> contribution) — reaches the layer transitively
+        # either way; declared so the preload fail-fast and the compat-gate see it.
+        'redb.Route.Xml'
         'redb.Route.Quartz'
         'redb.Postgres'
         'redb.Postgres.Pro'
@@ -63,9 +67,25 @@
         'redb.Route.Exec'
         'redb.Route.Sqs'
         'redb.Route.Telegram'
+        # XPath 2.0 expressions (owner request 2026-09-03): module code using the XPath2 DSL
+        # needs the assembly in the shared layer of a Tsak worker.
+        'redb.Route.XPath2'
         # AS2/EDI (3.5.1). Without this line the connector never reaches Libs/shared, so a module
         # asking for an `as2://` endpoint finds no component in a Tsak worker at all.
         'redb.Route.As2'
+        # Data formats for <marshal format="..."> / Unmarshal (owner request 2026-09-08). Unlike the
+        # XML contributions below these are NOT auto-discovered: module code calls AddCsvDataFormat()
+        # and friends, so the assembly must be in the shared layer for that call to resolve at all.
+        'redb.Route.DataFormats.Csv'
+        'redb.Route.DataFormats.Yaml'
+        'redb.Route.DataFormats.Avro'
+        'redb.Route.DataFormats.Protobuf'
+        # XML DSL element contributions (Route-XML). XmlRouteModule.DiscoverContributions scans
+        # loaded 'redb.*' assemblies for IXmlElementContribution, so without these lines an XML
+        # route in a worker silently has no <cache>, <transformJson> or <payload> element at all.
+        'redb.Route.Cache'
+        'redb.Route.JsonTransform'
+        'redb.Route.Templates'
         # SOAP connector. Same rule as As2 — without this line a module using a `soap://` endpoint
         # finds no component in a Tsak worker.
         'redb.Route.Soap'

@@ -1,7 +1,17 @@
 @using Microsoft.AspNetCore.Components.Web
 @using Microsoft.AspNetCore.Components.Routing
+@* Components.Forms is where <AntiforgeryToken/> lives. Without this using the tag is NOT a
+   component — it renders as inert markup, the login/logout forms carry no token, and every
+   login POST fails antiforgery validation before credentials are even read (RZ10012 was the
+   only symptom at build time; found live 2026-09-08). *@
+@using Microsoft.AspNetCore.Components.Forms
 @using Microsoft.AspNetCore.Components.Authorization
 @using Microsoft.AspNetCore.Authorization
+@* Every page requires an authenticated user. AuthorizeRouteView enforces ONLY the [Authorize]
+   metadata declared on the routed page itself — without this line it is a no-op and the whole
+   dashboard renders anonymously (review 2026-09-02, К1). Login.razor opts out via
+   [AllowAnonymous]; pages needing a higher tier add [Authorize(Policy = ...)] on top. *@
+@attribute [Authorize]
 @using Microsoft.JSInterop
 @using redb.Tsak.Contracts
 @using redb.Tsak.Web.Pro

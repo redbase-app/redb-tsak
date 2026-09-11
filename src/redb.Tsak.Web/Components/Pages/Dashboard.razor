@@ -156,6 +156,7 @@ else if (_topology is not null)
                                 <th>Messages</th>
                                 <th>Throughput</th>
                                 <th>Inflight</th>
+                                <th>Rejected</th>
                             </HeaderContent>
                             <RowContent>
                                 <td class="mono text-sm">@context.RouteId</td>
@@ -163,6 +164,7 @@ else if (_topology is not null)
                                 <td class="mono text-sm">@context.MessagesProcessed</td>
                                 <td class="mono text-sm">@($"{context.ThroughputPerSecond:F1}/s")</td>
                                 <td class="mono text-sm">@context.InflightCount</td>
+                                <td class="mono text-sm" style="@(context.Rejected > 0 ? "color: var(--status-warning)" : "")">@context.Rejected</td>
                             </RowContent>
                         </TsakGrid>
                     </div>
@@ -191,6 +193,32 @@ else if (_topology is not null)
                                     @(context.LastError ?? "—")
                                 </td>
                                 <td class="text-sm">@(context.LastErrorTime?.ToString("HH:mm:ss") ?? "—")</td>
+                            </RowContent>
+                        </TsakGrid>
+                    </div>
+                }
+
+                @* Shedding Routes — turned away by admission limits; healthy but under-provisioned, so not folded into Error-Prone *@
+                @if (_dashboard.SheddingRoutes.Count > 0)
+                {
+                    <div class="card" style="margin-bottom: var(--space-4);">
+                        <div class="card-header">
+                            <span class="card-title" style="color: var(--status-warning);">
+                                <TsakIcon Name="alert-circle" Size="16" /> Shedding Routes <span class="text-secondary text-sm" style="font-weight: 400;">— @_selectedNodeId</span>
+                            </span>
+                        </div>
+                        <TsakGrid Items="_dashboard.SheddingRoutes" T="RouteMetricsSummary">
+                            <HeaderContent>
+                                <th>Route</th>
+                                <th>Rejected</th>
+                                <th>Throughput</th>
+                                <th>Inflight</th>
+                            </HeaderContent>
+                            <RowContent>
+                                <td class="mono text-sm">@context.RouteId</td>
+                                <td class="mono text-sm" style="color: var(--status-warning);">@context.Rejected</td>
+                                <td class="mono text-sm">@($"{context.ThroughputPerSecond:F1}/s")</td>
+                                <td class="mono text-sm">@context.InflightCount</td>
                             </RowContent>
                         </TsakGrid>
                     </div>
@@ -235,15 +263,26 @@ else if (_topology is not null)
             if (_selectedNodeId == value) return;
             _selectedNodeId = value;
             _selectedClient = string.IsNullOrEmpty(value) ? null : NodeProvider.GetClient(value);
-            _ = LoadNodeDashboard();
+            // Drop the previous node's snapshot immediately and re-render when the new one lands —
+            // otherwise the cards showed the OLD node's numbers under the NEW node's label for up
+            // to a poll interval (review 2026-09-02, С26).
+            _dashboard = null;
+            _ = InvokeAsync(async () =>
+            {
+                await LoadNodeDashboard();
+                StateHasChanged();
+            });
         }
     }
 
     protected override async Task OnInitializedAsync()
     {
-        await LoadData();
+        // _cts BEFORE the initial load — a component disposed mid-load must not start an
+        // unstoppable orphan poll loop afterwards (review 2026-09-02, С19).
         _cts = new CancellationTokenSource();
-        _ = PollLoop(_cts.Token);
+        await LoadData();
+        if (!_cts.IsCancellationRequested)
+            _ = PollLoop(_cts.Token);
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -252,15 +291,15 @@ else if (_topology is not null)
             await UpdateDonutChart();
     }
 
-    private async Task PollLoop(CancellationToken ct)
+    private Task PollLoop(CancellationToken ct)
     {
         _timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
-        while (await _timer.WaitForNextTickAsync(ct))
+        return PollLoops.RunAsync(_timer, ct, async () =>
         {
             await LoadData();
             await UpdateDonutChart();
             await InvokeAsync(StateHasChanged);
-        }
+        });
     }
 
     private async Task LoadData()

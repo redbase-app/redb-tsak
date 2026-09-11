@@ -6,7 +6,17 @@ public class ClusterTopology
     public string ClusterName { get; set; } = "unknown";
     public List<GroupInfo> Groups { get; set; } = [];
     public List<NodeInfo> Nodes { get; set; } = [];
+
+    /// <summary>
+    /// Leader of the FIRST group with one — kept for wire compatibility. Leadership is
+    /// per-group; use <see cref="Leaders"/> (review 2026-09-02, С14: a single field rendered an
+    /// arbitrary group's leader for the whole cluster).
+    /// </summary>
     public LeaderInfo? Leader { get; set; }
+
+    /// <summary>Per-group leaders, keyed by group name.</summary>
+    public Dictionary<string, LeaderInfo> Leaders { get; set; } = [];
+
     public List<AssignmentInfo> Assignments { get; set; } = [];
 }
 
@@ -33,9 +43,17 @@ public class NodeInfo
     /// <summary>Cordoned = takes on no new work (draining/drained). Orthogonal to status.</summary>
     public bool Cordoned { get; set; }
 
-    /// <summary>Node is online and heartbeat is fresh (within 60 seconds).</summary>
+    /// <summary>
+    /// Freshness window for <see cref="IsAlive"/>. The topology provider sets it from the
+    /// cluster's actual dead-node timeout — a hardcoded 60s rendered healthy nodes "Stale"
+    /// whenever an operator legitimately widened the heartbeat cadence
+    /// (review 2026-09-02, С17).
+    /// </summary>
+    public int AliveWindowSeconds { get; set; } = 60;
+
+    /// <summary>Node is online and its heartbeat is fresh (within <see cref="AliveWindowSeconds"/>).</summary>
     public bool IsAlive => Status == NodeStatus.Online
-        && LastHeartbeat > DateTimeOffset.UtcNow.AddSeconds(-60);
+        && LastHeartbeat > DateTimeOffset.UtcNow.AddSeconds(-AliveWindowSeconds);
 }
 
 /// <summary>Current cluster leader information.</summary>

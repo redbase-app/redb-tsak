@@ -4,17 +4,26 @@
 
     // Blazor JSInterop serializes C# records in PascalCase,
     // but Chart.js expects camelCase dataset properties.
+    // Colors are OMITTED when absent rather than passed through: JSInterop turns a C# null
+    // into an explicit JS null, and `undefined || null` kept it. Chart.js v4 derives
+    // hoverBackgroundColor by PARSING backgroundColor, and its color parser routes null into
+    // the object branch (typeof null === 'object') — a TypeError on every update() while the
+    // cursor hovers the chart, so a hovered line chart froze mid-poll. An absent key falls
+    // back to Chart.js defaults instead.
     function mapDatasets(datasets) {
         return datasets.map(function (ds) {
-            return {
+            var mapped = {
                 label: ds.Label || ds.label || '',
                 data: ds.Data || ds.data || [],
-                borderColor: ds.BorderColor || ds.borderColor,
-                backgroundColor: ds.BackgroundColor || ds.backgroundColor,
                 borderWidth: 2,
                 pointRadius: 0,
                 tension: 0.3
             };
+            var border = ds.BorderColor != null ? ds.BorderColor : ds.borderColor;
+            if (border != null) mapped.borderColor = border;
+            var bg = ds.BackgroundColor != null ? ds.BackgroundColor : ds.backgroundColor;
+            if (bg != null) mapped.backgroundColor = bg;
+            return mapped;
         });
     }
 

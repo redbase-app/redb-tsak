@@ -1,6 +1,8 @@
-using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using redb.Core;
+using redb.Core.Exceptions;
 using redb.Core.Models.Entities;
 using redb.Tsak.Core.Contracts;
 
@@ -22,19 +24,30 @@ public class TsakModuleProps
 
 /// <summary>
 /// Redb-backed module store. Persists module metadata across restarts and cluster nodes.
-/// Each entry is a <see cref="RedbObject{TsakModuleProps}"/> with <c>value_string</c> = moduleName.
+/// The module name lives in <c>ValueUnique</c>: one record per module is enforced by the
+/// database, and <c>SaveByUniqueAsync</c> makes <see cref="SaveAsync"/> a true upsert —
+/// two nodes discovering the same module concurrently converge on one record.
+/// <c>value_string</c> still mirrors the name for dashboard visibility.
+/// Every operation awaits a one-time ensure step (scheme sync + legacy backfill), so hosts
+/// without TsakHostedService and reads racing its startup see pre-V4 rows
+/// (review 2026-09-02, В4).
 /// </summary>
 public class RedbTsakModuleStore : ITsakModuleStore
 {
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ILogger _logger;
+    private readonly SemaphoreSlim _ensureLock = new(1, 1);
+    private volatile bool _ensured;
 
-    public RedbTsakModuleStore(IServiceScopeFactory scopeFactory)
+    public RedbTsakModuleStore(IServiceScopeFactory scopeFactory, ILogger<RedbTsakModuleStore>? logger = null)
     {
         _scopeFactory = scopeFactory;
+        _logger = logger ?? NullLogger<RedbTsakModuleStore>.Instance;
     }
 
     public async Task<IReadOnlyList<TsakModuleRecord>> GetAllAsync()
     {
+        await EnsureReadyAsync();
         using var scope = _scopeFactory.CreateScope();
         var redb = scope.ServiceProvider.GetRequiredService<IRedbService>();
 
@@ -44,11 +57,12 @@ public class RedbTsakModuleStore : ITsakModuleStore
 
     public async Task<TsakModuleRecord?> GetAsync(string moduleName)
     {
+        await EnsureReadyAsync();
         using var scope = _scopeFactory.CreateScope();
         var redb = scope.ServiceProvider.GetRequiredService<IRedbService>();
 
         var obj = await redb.Query<TsakModuleProps>()
-            .WhereRedb(o => o.ValueString == moduleName)
+            .WhereRedb(o => o.ValueUnique == moduleName)
             .FirstOrDefaultAsync();
 
         return obj is not null ? ToRecord(obj) : null;
@@ -56,39 +70,31 @@ public class RedbTsakModuleStore : ITsakModuleStore
 
     public async Task SaveAsync(TsakModuleRecord record)
     {
+        await EnsureReadyAsync();
         using var scope = _scopeFactory.CreateScope();
         var redb = scope.ServiceProvider.GetRequiredService<IRedbService>();
 
-        var existing = await redb.Query<TsakModuleProps>()
-            .WhereRedb(o => o.ValueString == record.ModuleName)
-            .FirstOrDefaultAsync();
-
-        if (existing is not null)
+        // The Remove+Save+Save interleave (review С2) is covered by the core since BR-8 closed:
+        // SaveByUniqueAsync retries an ObjectKey race onto the current winner itself.
+        await redb.SaveByUniqueAsync(new RedbObject<TsakModuleProps>
         {
-            ApplyRecord(existing, record);
-            await redb.SaveAsync(existing);
-        }
-        else
-        {
-            var obj = new RedbObject<TsakModuleProps>
-            {
-                name = record.ModuleName,
-                value_string = record.ModuleName,
-                value_long = (long)record.Status,
-                note = record.Description,
-                Props = ToProps(record)
-            };
-            await redb.SaveAsync(obj);
-        }
+            name = record.ModuleName,
+            ValueUnique = record.ModuleName,
+            value_string = record.ModuleName,
+            value_long = (long)record.Status,
+            note = record.Description,
+            Props = ToProps(record)
+        });
     }
 
     public async Task RemoveAsync(string moduleName)
     {
+        await EnsureReadyAsync();
         using var scope = _scopeFactory.CreateScope();
         var redb = scope.ServiceProvider.GetRequiredService<IRedbService>();
 
         var existing = await redb.Query<TsakModuleProps>()
-            .WhereRedb(o => o.ValueString == moduleName)
+            .WhereRedb(o => o.ValueUnique == moduleName)
             .FirstOrDefaultAsync();
 
         if (existing is not null)
@@ -100,6 +106,37 @@ public class RedbTsakModuleStore : ITsakModuleStore
         foreach (var record in records)
             await SaveAsync(record);
     }
+
+    /// <summary>One-time scheme sync + legacy backfill; safe under concurrency, retried on failure.</summary>
+    private async Task EnsureReadyAsync()
+    {
+        if (_ensured) return;
+        await _ensureLock.WaitAsync();
+        try
+        {
+            if (_ensured) return;
+            using var scope = _scopeFactory.CreateScope();
+            var redb = scope.ServiceProvider.GetRequiredService<IRedbService>();
+            await redb.SyncSchemeAsync<TsakModuleProps>();
+            await BackfillLegacyAsync(redb, _logger);
+            _ensured = true; // only after success — a failure retries on the next call
+        }
+        finally
+        {
+            _ensureLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// The ONE home of the module-store legacy migration rule. Called from the store's ensure
+    /// step and from TsakHostedService startup.
+    /// </summary>
+    internal static Task BackfillLegacyAsync(IRedbService redb, ILogger logger) =>
+        TsakUniqueBackfill.RunAsync<TsakModuleProps>(
+            redb,
+            o => o.ValueString ?? o.Props?.ModuleName,
+            TsakUniqueBackfill.DuplicatePolicy.DeleteLosers,
+            logger);
 
     // ── Mapping helpers ──────────────────────────────────────────────
 
@@ -128,11 +165,4 @@ public class RedbTsakModuleStore : ITsakModuleStore
         Status = record.Status,
         AssemblyPath = record.AssemblyPath
     };
-
-    private static void ApplyRecord(RedbObject<TsakModuleProps> obj, TsakModuleRecord record)
-    {
-        obj.value_long = (long)record.Status;
-        obj.note = record.Description;
-        obj.Props = ToProps(record);
-    }
 }

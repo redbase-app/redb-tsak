@@ -17,8 +17,13 @@ public class HotReloadOptions
     /// <summary>Timeout (seconds) for a new module to start before auto-rollback. Default: 60.</summary>
     public int StartupTimeoutSeconds { get; set; } = 60;
 
-    /// <summary>Enable rolling update across cluster nodes in sequence. Default: true.</summary>
-    public bool RollingUpdate { get; set; } = true;
+    /// <summary>
+    /// RESERVED — sequential cluster rolling updates are NOT implemented yet: no code reads this
+    /// flag and RollingUpdateCoordinator has no callers, so nodes reload modules independently on
+    /// their own scan schedule (review 2026-09-02, С16). Default: false; enabling it only logs a
+    /// warning. Stagger updates yourself by deploying the package to nodes sequentially.
+    /// </summary>
+    public bool RollingUpdate { get; set; } = false;
 
     /// <summary>
     /// Number of scan cycles to wait before confirming a module removal (DLL deleted from disk).

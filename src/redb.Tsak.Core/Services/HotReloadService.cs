@@ -60,6 +60,10 @@ public sealed class HotReloadService : IDisposable
     // .tpkg path → package's isolated ALC (entry points live here; companions in Default via Tracker)
     private readonly ConcurrentDictionary<string, ModulePackage> _packageInstances = new(StringComparer.OrdinalIgnoreCase);
 
+    // bare-DLL full path → REAL module name (InitRoute namespace) — a file whose basename differs
+    // from its module name must still be tracked/removed under the real name (review С24).
+    private readonly ConcurrentDictionary<string, string> _bareDllNames = new(StringComparer.OrdinalIgnoreCase);
+
     public HotReloadService(
         ITsakModuleRegistry registry,
         ITsakCoordinator coordinator,
@@ -67,7 +71,8 @@ public sealed class HotReloadService : IDisposable
         SharedAssemblyLoader sharedLoader,
         IOptions<HotReloadOptions> options,
         IConfiguration configuration,
-        ILogger<HotReloadService> logger)
+        ILogger<HotReloadService> logger,
+        Modules.ModuleLoadGate? loadGate = null)
     {
         _registry = registry;
         _coordinator = coordinator;
@@ -78,23 +83,12 @@ public sealed class HotReloadService : IDisposable
         _assemblyProbePaths = configuration.GetSection("Tsak:Modules:AssemblyPaths").Get<string[]>() ?? [];
         _collectible = _options.Collectible;
 
-        // Load-boundary signature enforcement. Applies to EVERY .tpkg — uploaded or dropped into the
-        // directory — so the public key, not filesystem access, is the trust anchor.
-        var sigOptions = new Modules.ModuleSignatureOptions();
-        configuration.GetSection("Tsak:Modules:Signature").Bind(sigOptions);
-        _signatureRequired = sigOptions.Required;
-        var pem = sigOptions.ResolvePem();
-        _signatureVerifier = pem is not null ? new Modules.ModuleSignatureVerifier(pem) : null;
-        if (_signatureRequired && _signatureVerifier is null)
-        {
-            _logger.LogError(
-                "Tsak:Modules:Signature:Required=true but no public key is configured — ALL .tpkg packages " +
-                "will be refused at load. Set Tsak:Modules:Signature:PublicKeyPath.");
-        }
-        else if (_signatureRequired)
-        {
-            _logger.LogInformation("Module signature enforcement ON — unsigned/tampered .tpkg packages will be refused");
-        }
+        // Load-boundary signature enforcement — one shared gate for every path that loads module
+        // code (startup discovery included), so the public key, not filesystem access, is the
+        // trust anchor (review 2026-09-02, К3). The optional parameter keeps plain unit-test
+        // construction working; DI always provides the gate.
+        _loadGate = loadGate ?? new Modules.ModuleLoadGate(configuration,
+            Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance.CreateLogger<Modules.ModuleLoadGate>());
 
         if (!_collectible)
         {
@@ -105,77 +99,60 @@ public sealed class HotReloadService : IDisposable
         }
     }
 
-    private readonly bool _signatureRequired;
-    private readonly Modules.ModuleSignatureVerifier? _signatureVerifier;
+    private readonly Modules.ModuleLoadGate _loadGate;
 
     /// <summary>
-    /// The load-boundary gate: returns true if the package may be loaded. When signature enforcement
-    /// is on, a <c>.tpkg</c> must have a matching <c>.tpkg.sig</c> verified by the configured key —
-    /// otherwise it is refused and logged, regardless of how the file arrived.
-    /// </summary>
-    private bool PassesSignatureGate(string tpkgPath)
-    {
-        if (!_signatureRequired) return true;
-
-        if (_signatureVerifier is null)
-        {
-            _logger.LogError("Refusing {Pkg}: signature required but no public key configured", Path.GetFileName(tpkgPath));
-            return false;
-        }
-
-        var sigPath = tpkgPath + ".sig";
-        if (!File.Exists(sigPath))
-        {
-            _logger.LogError("Refusing {Pkg}: no signature file ({Sig}) alongside the package",
-                Path.GetFileName(tpkgPath), Path.GetFileName(sigPath));
-            return false;
-        }
-
-        try
-        {
-            var pkg = File.ReadAllBytes(tpkgPath);
-            var sig = File.ReadAllBytes(sigPath);
-            if (_signatureVerifier.VerifyWithEncodedSignature(pkg, sig))
-                return true;
-
-            _logger.LogError("Refusing {Pkg}: signature verification FAILED — unsigned by the trusted key or modified",
-                Path.GetFileName(tpkgPath));
-            return false;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Refusing {Pkg}: signature check errored", Path.GetFileName(tpkgPath));
-            return false;
-        }
-    }
-
-    /// <summary>
-    /// Staged validation: opens the package in a throwaway collectible ALC and checks it loads and
-    /// discovers at least one module — without mutating the shared assembly tracker
-    /// (<c>forceReload:false</c>) and without registering anything. The throwaway ALC is unloaded
+    /// Staged validation: opens the package (from the caller's VERIFIED bytes) in a throwaway
+    /// collectible ALC and checks it loads and discovers at least one module — companion DLLs stay
+    /// inside that throwaway ALC (<c>isolatedCompanions</c>), so a rejected package leaks nothing
+    /// into the process-wide tracker (review 2026-09-02, С23). The throwaway ALC is unloaded
     /// afterwards. Returns false (with a reason) when the package is unopenable or module-less.
     /// </summary>
-    internal bool ValidatePackageLoads(string tpkgPath, out string error)
+    internal bool ValidatePackageLoads(byte[] packageBytes, string tpkgPath, out string error)
     {
         error = "";
         Modules.ModulePackage? probe = null;
         try
         {
-            probe = Modules.ModulePackage.Open(tpkgPath, probePaths: _assemblyProbePaths,
-                logger: _logger, forceReload: false, collectible: true);
+            probe = Modules.ModulePackage.Open(packageBytes, tpkgPath, File.GetLastWriteTimeUtc(tpkgPath),
+                probePaths: _assemblyProbePaths,
+                logger: _logger, forceReload: false, collectible: true, isolatedCompanions: true);
             if (probe is null)
             {
                 error = "package could not be opened (invalid ZIP, missing/invalid manifest, or unnamed)";
                 return false;
             }
 
-            if (probe.LoadedAssemblies.Count == 0)
+            // Third convention (Route-XML Ф5.2): XML artifacts count as a module, so an XML-only
+            // package (no entry points) passes. Well-formedness is the cheap staged check that
+            // needs no RouteContext — a truncated or hand-broken artifact is refused here, before
+            // the live version is torn down; schema/compile errors stay load-time module-isolated
+            // faults per the owner's fail-fast decision.
+            var xmlModules = 0;
+            if (probe.Manifest.Artifacts.Count > 0)
+            {
+                foreach (var (name, content) in probe.XmlArtifacts)
+                {
+                    try
+                    {
+                        System.Xml.Linq.XDocument.Parse(content);
+                    }
+                    catch (System.Xml.XmlException ex)
+                    {
+                        error = $"XML artifact {name} is not well-formed: {ex.Message}";
+                        return false;
+                    }
+                }
+                xmlModules = 1;
+            }
+
+            if (probe.LoadedAssemblies.Count == 0 && xmlModules == 0)
             {
                 error = "no entry-point assemblies loaded";
                 return false;
             }
 
-            var found = 0;
+            var found = xmlModules;
             foreach (var assembly in probe.LoadedAssemblies)
             {
                 try
@@ -236,10 +213,18 @@ public sealed class HotReloadService : IDisposable
     {
         var reloaded = 0;
 
-        // Check shared layer changes first — if any shared DLL changed, restart all contexts
+        // Shared-layer change: shared assemblies live in the non-collectible Default ALC and
+        // CANNOT be swapped in-process — the old "reload + restart all contexts" re-served the
+        // already-tracked instances, draining and rebuilding every context on the SAME old bytes
+        // while the log claimed a completed reload (review 2026-09-02, С22). Report once per
+        // change and require a process restart; no pointless context churn.
         if (_options.RestartContextsOnSharedChange && _sharedLoader.DetectChanges())
         {
-            reloaded += await RestartAllContextsForSharedChangeAsync(ct).ConfigureAwait(false);
+            _logger.LogCritical(
+                "Shared assembly change detected on disk. Shared DLLs load into the non-unloadable Default ALC "
+                + "and cannot be swapped in-process — restart the worker process to pick up the new bytes. "
+                + "Contexts are NOT being restarted: that would drain them onto the same old code.");
+            _sharedLoader.AcknowledgeChanges();
         }
 
         foreach (var path in paths)
@@ -251,10 +236,21 @@ public sealed class HotReloadService : IDisposable
 
             foreach (var dll in Directory.GetFiles(path, "*.dll"))
             {
+                // Trust gate (review 2026-09-02, К3): with signature enforcement on, a bare DLL
+                // cannot carry a signature — hot-reload must not load what discovery refuses.
+                if (!_loadGate.AllowBareDll(dll))
+                    continue;
+
                 try
                 {
                     var newVersion = GetAssemblyVersion(dll);
-                    var moduleName = Path.GetFileNameWithoutExtension(dll);
+                    // The REAL module name (InitRoute namespace) can differ from the file basename;
+                    // keying trackers by basename made removal unregister the wrong key while
+                    // unloading the live ALC — a ghost module (review 2026-09-02, С24). Once a DLL
+                    // has been discovered, address it by its real name.
+                    var moduleName = _bareDllNames.TryGetValue(Path.GetFullPath(dll), out var knownName)
+                        ? knownName
+                        : Path.GetFileNameWithoutExtension(dll);
 
                     // Skip DLLs previously identified as non-module dependencies (unless file changed)
                     if (_ignoredDlls.TryGetValue(dll, out var ignoredAt)
@@ -301,10 +297,23 @@ public sealed class HotReloadService : IDisposable
 
                             if (newModule is not null)
                             {
-                                _logger.LogInformation("New module discovered: {Module} v{Version}", newModule.ModuleName, newVersion);
-                                await _registry.RegisterModuleAsync(newModule);
-                                _loadedModules[moduleName] = new LoadedModuleInfo(newAlc, dll, newVersion);
-                                reloaded++;
+                                _bareDllNames[fullDll] = newModule.ModuleName;
+                                var alreadyRegistered = _registry.GetModule(newModule.ModuleName);
+                                if (alreadyRegistered is not null)
+                                {
+                                    // Registered at startup under its REAL name (≠ basename) —
+                                    // adopt tracking under that name instead of registering a
+                                    // duplicate second copy (review 2026-09-02, С24).
+                                    newAlc.TryUnload();
+                                    _loadedModules.TryAdd(newModule.ModuleName, new LoadedModuleInfo(null, dll, newVersion));
+                                }
+                                else
+                                {
+                                    _logger.LogInformation("New module discovered: {Module} v{Version}", newModule.ModuleName, newVersion);
+                                    await _registry.RegisterModuleAsync(newModule);
+                                    _loadedModules[newModule.ModuleName] = new LoadedModuleInfo(newAlc, dll, newVersion);
+                                    reloaded++;
+                                }
                             }
                             else
                             {
@@ -346,21 +355,23 @@ public sealed class HotReloadService : IDisposable
 
                     // Load-boundary trust gate: verify the signature before ANY code from this package is
                     // loaded. On failure we do NOT record the timestamp, so the package is retried once its
-                    // detached .sig is copied in (or the file is fixed).
-                    if (!PassesSignatureGate(tpkg))
+                    // detached .sig is copied in (or the file is fixed). The verified bytes are also the
+                    // loaded bytes — no verify-then-reopen window (review 2026-09-02, К3).
+                    var verifiedBytes = _loadGate.ReadVerifiedTpkg(tpkg);
+                    if (verifiedBytes is null)
                         continue;
 
                     if (_packageModules.TryGetValue(tpkg, out var oldModuleNames) && oldModuleNames.Count > 0)
                     {
                         // Package update — reload preserving state (autoStart etc.). ReloadPackageAsync
                         // records the tracked timestamp itself only after a successful reload.
-                        reloaded += await ReloadPackageAsync(tpkg, oldModuleNames, ct).ConfigureAwait(false);
+                        reloaded += await ReloadPackageAsync(tpkg, verifiedBytes, oldModuleNames, ct).ConfigureAwait(false);
                     }
                     else
                     {
                         // New package — first-time load with per-package ALC
-                        var package = ModulePackage.Open(tpkg, probePaths: _assemblyProbePaths,
-                            logger: _logger, collectible: _collectible);
+                        var package = ModulePackage.Open(verifiedBytes, tpkg, lastWrite,
+                            probePaths: _assemblyProbePaths, logger: _logger, collectible: _collectible);
                         if (package is null)
                             continue; // corrupt/partial — do NOT record; retry next scan
 
@@ -390,6 +401,34 @@ public sealed class HotReloadService : IDisposable
                                 await _registry.RegisterModuleAsync(module);
                                 _loadedModules[module.ModuleName] = new LoadedModuleInfo(package.Alc, tpkg, module.Version);
                                 newModuleNames.Add(module.ModuleName);
+                                reloaded++;
+                            }
+                        }
+
+                        // Third convention (Route-XML Ф5.2): XML artifacts from the manifest — the
+                        // same block the startup discovery runs. Without it an XML-only package
+                        // dropped into a RUNNING worker was opened, found module-less, disposed and
+                        // ignored (такт 5 E2E find); one adopted at startup lost its hot-reload
+                        // tracking the same way, so a redrop never reached ReloadPackageAsync.
+                        if (package.Manifest.Artifacts.Count > 0)
+                        {
+                            var sourceDir = Path.GetDirectoryName(Path.GetFullPath(tpkg));
+                            var xmlModule = new Modules.XmlRouteModule(package, sourceDir,
+                                package.ReadModuleConfigJson(package.Manifest.Name), _logger);
+
+                            if (_registry.GetModule(xmlModule.ModuleName) is not null)
+                            {
+                                // Already in registry (loaded at startup discovery) — just track it
+                                _loadedModules[xmlModule.ModuleName] = new LoadedModuleInfo(package.Alc, tpkg, xmlModule.Version);
+                                newModuleNames.Add(xmlModule.ModuleName);
+                            }
+                            else
+                            {
+                                _logger.LogInformation("New XML route module {Module} from package {Pkg}",
+                                    xmlModule.ModuleName, package.Manifest.Name);
+                                await _registry.RegisterModuleAsync(xmlModule);
+                                _loadedModules[xmlModule.ModuleName] = new LoadedModuleInfo(package.Alc, tpkg, xmlModule.Version);
+                                newModuleNames.Add(xmlModule.ModuleName);
                                 reloaded++;
                             }
                         }
@@ -519,57 +558,10 @@ public sealed class HotReloadService : IDisposable
         return reloaded;
     }
 
-    /// <summary>
-    /// Restarts all contexts when a shared assembly changes.
-    /// Reloads shared assemblies, then stops and recreates all contexts.
-    /// Old shared assemblies remain in Default ALC memory (can't unload Default ALC).
-    /// </summary>
-    private async Task<int> RestartAllContextsForSharedChangeAsync(CancellationToken ct)
-    {
-        _logger.LogInformation("Shared assembly change detected — reloading shared layer and restarting all contexts");
-
-        var newCount = _sharedLoader.ReloadSharedAssemblies();
-        _logger.LogInformation("Reloaded {Count} shared assemblies", newCount);
-
-        var contexts = _contextManager.GetAllContexts();
-        var restarted = 0;
-
-        // Stop all contexts (reverse order for safety)
-        for (var i = contexts.Count - 1; i >= 0; i--)
-        {
-            var (name, ctx) = contexts[i];
-            if (name == "_system") continue; // _system context manages itself
-            if (!ctx.IsStarted) continue;
-
-            try
-            {
-                await _contextManager.StopContextAsync(name, setAutoStartFalse: false, ct: ct);
-                _logger.LogDebug("Stopped context {Context} for shared reload", name);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to stop context {Context} during shared reload", name);
-            }
-        }
-
-        // Recreate all module contexts — coordinator will rebuild with new shared assemblies
-        var allModules = _registry.GetAllModules();
-        if (allModules.Count > 0)
-        {
-            try
-            {
-                await _coordinator.ProcessBatchAsync(allModules).ConfigureAwait(false);
-                restarted = allModules.Count;
-                _logger.LogInformation("Recreated {Count} module contexts after shared reload", allModules.Count);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to recreate contexts after shared reload");
-            }
-        }
-
-        return restarted;
-    }
+    // RestartAllContextsForSharedChangeAsync was removed 2026-09-02 (review С22): shared DLLs
+    // load into the non-unloadable Default ALC, so its "reload" re-served the already-tracked
+    // old instances and the context churn rebuilt everything on the same bytes. A shared change
+    // is now reported once as critical and requires a process restart (see the scan loop).
 
     /// <summary>
     /// Detects modules whose DLL/.tpkg files no longer exist on disk.
@@ -755,15 +747,29 @@ public sealed class HotReloadService : IDisposable
     public async Task<int> ReloadPackageAsync(string tpkgPath, List<string> oldModuleNames,
         CancellationToken ct = default)
     {
+        // Path-based entry (external callers): route through the trust gate so the verified
+        // bytes are also the loaded bytes (review 2026-09-02, К3).
+        var verified = _loadGate.ReadVerifiedTpkg(tpkgPath);
+        if (verified is null)
+        {
+            _logger.LogWarning("Refusing to reload package {Pkg}: trust gate refused it", Path.GetFileName(tpkgPath));
+            return 0;
+        }
+        return await ReloadPackageAsync(tpkgPath, verified, oldModuleNames, ct).ConfigureAwait(false);
+    }
+
+    internal async Task<int> ReloadPackageAsync(string tpkgPath, byte[] packageBytes, List<string> oldModuleNames,
+        CancellationToken ct = default)
+    {
         _logger.LogInformation("Reloading package {Pkg}: {Count} old modules",
             Path.GetFileName(tpkgPath), oldModuleNames.Count);
 
         // 0. Staged validation BEFORE touching the running version. Load the new package into a
-        //    throwaway collectible ALC (forceReload:false → does not mutate the shared tracker;
-        //    entry points are isolated) and verify it opens and discovers at least one module.
+        //    throwaway collectible ALC (companions isolated inside it — a rejected package leaks
+        //    nothing into the shared tracker) and verify it opens and discovers at least one module.
         //    Only if that succeeds do we tear the old version down. A broken .tpkg therefore leaves
         //    the live context running instead of destroying it and failing to replace it.
-        if (!ValidatePackageLoads(tpkgPath, out var validationError))
+        if (!ValidatePackageLoads(packageBytes, tpkgPath, out var validationError))
         {
             _logger.LogError(
                 "Refusing to reload package {Pkg}: staged validation failed ({Error}). Keeping the current version.",
@@ -792,22 +798,24 @@ public sealed class HotReloadService : IDisposable
             _previousVersions.TryRemove(moduleName, out _);
         }
 
-        // Dispose old package ALC (unloads entry points if collectible)
-        if (_packageInstances.TryRemove(tpkgPath, out var oldPackage))
-        {
-            oldPackage.Dispose();
-            if (!_collectible)
-                Interlocked.Increment(ref _leakedAlcCount);
-        }
+        // The old package is disposed AFTER the context swap (step 4), not here: Dispose deletes
+        // the package's extracted resources directory, and until ProcessBatchAsync replaces the
+        // context the OLD routes are still live and may read file= resources from it. TryUnload
+        // is cooperative, so delaying it changes nothing for assemblies (forceReload below already
+        // handles shared-dependency replacement).
+        _packageInstances.TryRemove(tpkgPath, out var oldPackage);
 
         // 2. Open new package — forceReload: true ensures shared dependencies get replaced
         //    in the tracker so both modules see the updated Assembly instance.
         //    Each package gets its own ALC for entry point isolation.
-        var package = ModulePackage.Open(tpkgPath, probePaths: _assemblyProbePaths,
-            logger: _logger, forceReload: true, collectible: _collectible);
+        var package = ModulePackage.Open(packageBytes, tpkgPath, File.GetLastWriteTimeUtc(tpkgPath),
+            probePaths: _assemblyProbePaths, logger: _logger, forceReload: true, collectible: _collectible);
         if (package is null)
         {
             _logger.LogWarning("Failed to open updated package {Pkg}", Path.GetFileName(tpkgPath));
+            // The old context is still the live one — keep its package tracked and alive.
+            if (oldPackage is not null)
+                _packageInstances[tpkgPath] = oldPackage;
             return 0;
         }
 
@@ -837,11 +845,36 @@ public sealed class HotReloadService : IDisposable
             }
         }
 
+        // Third convention (Route-XML Ф5.2): XML artifacts — same silent-replace flow, so a redrop
+        // of an XML-only package swaps its routes through the batch recreation below.
+        if (package.Manifest.Artifacts.Count > 0)
+        {
+            var sourceDir = Path.GetDirectoryName(Path.GetFullPath(tpkgPath));
+            var xmlModule = new Modules.XmlRouteModule(package, sourceDir,
+                package.ReadModuleConfigJson(package.Manifest.Name), _logger);
+
+            _logger.LogInformation("Loading XML route module {Module} from package {Pkg}",
+                xmlModule.ModuleName, package.Manifest.Name);
+            await _registry.ReplaceModuleSilentAsync(xmlModule);
+            _loadedModules[xmlModule.ModuleName] = new LoadedModuleInfo(package.Alc, tpkgPath, xmlModule.Version);
+            newModuleNames.Add(xmlModule.ModuleName);
+            allNewModules.Add(xmlModule);
+            reloaded++;
+        }
+
         // 4. Process all modules as a batch — creates each context exactly once
         //    with the full set of modules (no intermediate partial recreations)
         if (allNewModules.Count > 0)
         {
             await _coordinator.ProcessBatchAsync(allNewModules).ConfigureAwait(false);
+        }
+
+        // Old package goes away only now — the old context (and its file= resource reads) is gone.
+        if (oldPackage is not null)
+        {
+            oldPackage.Dispose();
+            if (!_collectible)
+                Interlocked.Increment(ref _leakedAlcCount);
         }
 
         // 5. Update package tracking. Record the tracked write-time only now, after a successful reload
@@ -946,7 +979,7 @@ public sealed class HotReloadService : IDisposable
             {
                 _logger.LogError(ex, "New version of {Module} failed to start, rolling back to previous version",
                     moduleName);
-                var rolledBack = await RollbackAsync(moduleName, ct).ConfigureAwait(false);
+                var rolledBack = await RollbackAsync(moduleName, ct, overwrittenPath: newDllPath).ConfigureAwait(false);
                 newAlc?.TryUnload(); // tracker was never switched to the new bytes — nothing to revert there
                 if (!rolledBack)
                     _logger.LogError("Rollback of {Module} after failed swap did not restore a previous version — module may be down",
@@ -984,7 +1017,7 @@ public sealed class HotReloadService : IDisposable
                 // We already unregistered the old module (steps 4–6 mutated the registry). Restore the
                 // old version rather than leaving the registry on a half-swapped/broken module.
                 _logger.LogError(ex, "Hot swap of {Module} failed after unregistering the old version, rolling back", moduleName);
-                var rolledBack = await RollbackAsync(moduleName, ct).ConfigureAwait(false);
+                var rolledBack = await RollbackAsync(moduleName, ct, overwrittenPath: newDllPath).ConfigureAwait(false);
                 newAlc?.TryUnload();
                 if (!rolledBack)
                     _logger.LogError("Rollback of {Module} did not restore a previous version — module may be down", moduleName);
@@ -1002,9 +1035,14 @@ public sealed class HotReloadService : IDisposable
 
     /// <summary>
     /// Rolls back a module to the previous version.
+    /// <paramref name="overwrittenPath"/> — the path the FAILED new version was loaded from
+    /// (passed by HotSwapAsync): when it equals the previous version's path, the update was
+    /// in-place and the file on disk now holds the broken bytes — reloading it would be a fake
+    /// rollback (review 2026-09-02, С21).
     /// Returns true if rollback succeeded.
     /// </summary>
-    public async Task<bool> RollbackAsync(string moduleName, CancellationToken ct = default)
+    public async Task<bool> RollbackAsync(string moduleName, CancellationToken ct = default,
+        string? overwrittenPath = null)
     {
         if (!_previousVersions.TryGetValue(moduleName, out var history))
         {
@@ -1026,14 +1064,41 @@ public sealed class HotReloadService : IDisposable
 
         try
         {
-            // Stop current version
-            await _coordinator.ProcessModuleRemovedAsync(moduleName).ConfigureAwait(false);
+            System.Reflection.Assembly rollbackAssembly;
+            if (previous.Alc is not null && previous.Alc.Assemblies.Any())
+            {
+                // The previous version's code is STILL LOADED — roll back onto the live instance.
+                // Re-reading previous.DllPath is wrong for an in-place update: old and new share
+                // the path, the file now holds the bytes being rolled back FROM, and the old code
+                // "rolled back" into the broken version in a retry loop (review 2026-09-02, С21).
+                await _coordinator.ProcessModuleRemovedAsync(moduleName).ConfigureAwait(false);
+                rollbackAssembly = previous.Alc.Assemblies.First();
+            }
+            else if (overwrittenPath is not null
+                     && string.Equals(Path.GetFullPath(previous.DllPath), Path.GetFullPath(overwrittenPath),
+                         StringComparison.OrdinalIgnoreCase))
+            {
+                // No live instance and the failed new version was written to the SAME path — the
+                // disk no longer holds the previous version. A fake rollback would load the broken
+                // bytes in a retry loop; refuse loudly instead and keep the history entry.
+                _logger.LogCritical(
+                    "Rollback of {Module} impossible: {Path} was overwritten in place and no live instance of "
+                    + "version {Version} remains — deploy a known-good file.",
+                    moduleName, previous.DllPath, previous.Version);
+                lock (history) history.Insert(0, previous);
+                return false;
+            }
+            else
+            {
+                // Stop current version
+                await _coordinator.ProcessModuleRemovedAsync(moduleName).ConfigureAwait(false);
 
-            // Re-discover and register old version (load via ALC from bytes — no lock)
-            var rollbackAlc = new ModuleAssemblyLoadContext(Path.GetFileNameWithoutExtension(previous.DllPath), _assemblyProbePaths, _collectible);
-            // Entry assembly stays ALC-private — NOT republished to the shared tracker (see the F-7 note
-            // in HotSwapAsync step 8). Republishing would leak a duplicate copy into the Default ALC.
-            var rollbackAssembly = rollbackAlc.LoadFromBytes(previous.DllPath);
+                // Re-discover and register old version (load via ALC from bytes — no lock)
+                var rollbackAlc = new ModuleAssemblyLoadContext(Path.GetFileNameWithoutExtension(previous.DllPath), _assemblyProbePaths, _collectible);
+                // Entry assembly stays ALC-private — NOT republished to the shared tracker (see the F-7 note
+                // in HotSwapAsync step 8). Republishing would leak a duplicate copy into the Default ALC.
+                rollbackAssembly = rollbackAlc.LoadFromBytes(previous.DllPath);
+            }
             var rollbackSourceDir = Path.GetDirectoryName(Path.GetFullPath(previous.DllPath));
             var modules = TsakModuleRegistry.DiscoverModulesInAssembly(rollbackAssembly, rollbackSourceDir);
             var oldModule = modules.FirstOrDefault(m =>
@@ -1090,6 +1155,16 @@ public sealed class HotReloadService : IDisposable
                     _loadedModules[module.ModuleName] = new LoadedModuleInfo(
                         package.Alc, tpkgPath, module.Version);
                 }
+            }
+
+            // Third convention (Route-XML Ф5.2): an XML route module is keyed by the manifest
+            // name — without this an adopted XML-only package had no _packageModules entry, so
+            // its redrop took the new-package path instead of ReloadPackageAsync.
+            if (package.Manifest.Artifacts.Count > 0)
+            {
+                moduleNames.Add(package.Manifest.Name);
+                _loadedModules[package.Manifest.Name] = new LoadedModuleInfo(
+                    package.Alc, tpkgPath, package.Manifest.Version);
             }
 
             if (moduleNames.Count > 0)

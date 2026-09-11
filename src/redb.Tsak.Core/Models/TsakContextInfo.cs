@@ -1,8 +1,10 @@
 namespace redb.Tsak.Core.Models;
 
 /// <summary>
-/// Context snapshot DTO used by ContextInfoCollector.
-/// Also serialized into <c>TsakNodeProps.Contexts</c> for cluster heartbeat propagation.
+/// Context snapshot DTO built by <c>ContextInfoCollector.CollectSnapshotsAsync</c>.
+/// NOTE: the heartbeat no longer propagates these snapshots (review 2026-09-02, И12) — nothing
+/// in the codebase currently calls the builder or reads <c>TsakNodeProps.Contexts</c>; the
+/// dashboard renders contexts via live per-node API calls instead.
 /// </summary>
 public class TsakContextInfo
 {

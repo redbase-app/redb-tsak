@@ -8,7 +8,7 @@ namespace redb.Tsak.Core.Modules;
 /// Adapter wrapping a static InitRoute.main(IRouteContext) method as an ITsakModule.
 /// Module name is derived from the namespace of the InitRoute class.
 /// </summary>
-public class StaticMethodModule : ITsakModule
+public class StaticMethodModule : ITsakModule, IEmbeddedConfigModule
 {
     private readonly MethodInfo _mainMethod;
 

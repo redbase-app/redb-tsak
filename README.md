@@ -530,7 +530,7 @@ rsync -a ./publish/ /opt/tsak/Libs/Orders/
 cp ./output/Orders.tpkg /opt/tsak/Libs/
 ```
 
-`HotReloadService` detects the timestamp change, performs a **graceful swap** (start new ALC → wait for it to settle → drain old context's in-flight exchanges → stop old context → optionally unload old ALC). With `Cluster:Enabled = true` and `HotReload:RollingUpdate = true`, nodes update sequentially — there is **never a moment when zero nodes are running the new version**, and **never a moment when in-flight messages are dropped**.
+`HotReloadService` detects the timestamp change, performs a **graceful swap** (start new ALC → wait for it to settle → drain old context's in-flight exchanges → stop old context → optionally unload old ALC). In a cluster each node performs this swap independently on its own scan schedule — to stagger an update, deploy the package to nodes sequentially yourself. (`HotReload:RollingUpdate` is reserved and not implemented yet.)
 
 ### Graceful shutdown when an artifact is removed
 
@@ -552,7 +552,7 @@ The debounce (`HotReload:RemovalDebounceScans`, default `2` scans) protects agai
 | `HotReload:ScanIntervalSeconds` | `10` | How often to scan the configured paths. |
 | `HotReload:KeepVersions` | `2` | Old versions kept in memory for one-command rollback (bare-DLL flow). |
 | `HotReload:StartupTimeoutSeconds` | `60` | Wait time for the new version to settle before retiring the old one. |
-| `HotReload:RollingUpdate` | `true` | In a cluster, update nodes sequentially. |
+| `HotReload:RollingUpdate` | `false` | RESERVED — not implemented; nodes reload independently. |
 | `HotReload:Collectible` | `false` | Enable `AssemblyLoadContext.Unload()` for full GC reclamation. **Do not enable** if your modules use `Reflection.Emit` (XmlSerializer, source-gen serializers, compiled regex) — set to `false` (default) and accept that old ALCs stay in memory until process restart. The number of accumulated non-collectible ALCs is exposed as `LeakedAlcCount` for monitoring. |
 | `HotReload:RemovalDebounceScans` | `2` | Number of consecutive scan cycles a missing file must persist before its module is unloaded — protects against false positives during atomic file replacement. |
 
@@ -1292,7 +1292,7 @@ For HA and horizontal scaling. Same `appsettings` on every node, only `NodeId` a
       "ApiEndpoint": "http://node-1.local:9090",
       "Strategy": "round-robin"
     },
-    "HotReload": { "RollingUpdate": true },
+    "HotReload": { "RollingUpdate": false },
     "Auth":     { "Enabled": true, "Secret": "$$" }
   }
 }

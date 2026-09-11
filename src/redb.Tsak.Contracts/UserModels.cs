@@ -13,14 +13,14 @@ public sealed record TsakUserInfo
 public sealed record TsakCreateUserRequest
 {
     public required string Login { get; init; }
-    public required string Password { get; init; }
+    [AuditSensitive] public required string Password { get; init; }
     public required string Name { get; init; }
     public string Role { get; init; } = "viewer";
 }
 
 public sealed record TsakUpdateUserRequest
 {
-    public string? Password { get; init; }
+    [AuditSensitive] public string? Password { get; init; }
     public string? Name { get; init; }
     public string? Role { get; init; }
     public bool? Enabled { get; init; }

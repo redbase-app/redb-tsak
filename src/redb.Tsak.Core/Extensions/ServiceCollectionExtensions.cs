@@ -41,6 +41,10 @@ public static class ServiceCollectionExtensions
         ConfigureRedb(services, configuration);
         ConfigureStorage(services, configuration);
 
+        // The ONE load-boundary trust gate for module code — startup discovery, hot-reload scans
+        // and staged validation all verify through it (review 2026-09-02, К3).
+        services.AddSingleton<Modules.ModuleLoadGate>();
+
         services.AddSingleton<ITsakModuleRegistry, TsakModuleRegistry>();
         services.AddSingleton<ITsakContextManager, TsakContextManager>();
         services.AddSingleton<ITsakCoordinator, TsakCoordinator>();
@@ -51,6 +55,28 @@ public static class ServiceCollectionExtensions
         // REST API (_system context) — HTTP component + builder
         services.AddRedbRouteHttp();
         services.AddSingleton<SystemContextBuilder>();
+
+        // Reverse proxies the worker sits behind (Tsak:Http:TrustedProxies, addresses or CIDRs).
+        // Configured on the shared Kestrel host, so every HTTP-based listener in the process, the
+        // management API included, sees the client's address and scheme rather than the proxy's.
+        // A value that does not parse fails the start: a silent drop from a security list is how
+        // a typo and a working configuration become indistinguishable.
+        var trustedProxies = configuration.GetSection("Tsak:Http:TrustedProxies").Get<string[]>() ?? [];
+        services.AddRedbRouteHttpHosting(hosting =>
+        {
+            foreach (var entry in trustedProxies)
+            {
+                try
+                {
+                    hosting.TrustedProxies.Add(entry);
+                }
+                catch (FormatException ex)
+                {
+                    throw new InvalidOperationException(
+                        $"Tsak:Http:TrustedProxies contains '{entry}', which is neither an IP address nor a CIDR network.", ex);
+                }
+            }
+        });
 
         // Admin audit (default sink: structured WRN log; Pro can replace with redb-backed sink)
         services.AddTsakAdminAudit();
@@ -429,10 +455,11 @@ public static class ServiceCollectionExtensions
             var jobStoreType = configuration["Quartz:quartz.jobStore.type"] ?? "";
             if (jobStoreType.Contains("AdoJobStore", StringComparison.OrdinalIgnoreCase))
             {
+                var provider = configuration["Tsak:Redb:Provider"]?.ToLowerInvariant();
+
                 var explicitCs = configuration["Quartz:quartz.dataSource.default.connectionString"];
                 if (string.IsNullOrEmpty(explicitCs))
                 {
-                    var provider = configuration["Tsak:Redb:Provider"]?.ToLowerInvariant();
                     // Per-provider Quartz AdoJobStore mapping — same set of providers as redb storage.
                     var (csName, qProvider, qDelegate) = provider switch
                     {
@@ -454,6 +481,20 @@ public static class ServiceCollectionExtensions
                             opts.TryAdd("quartz.jobStore.driverDelegateType", qDelegate);
                         });
                     }
+                }
+
+                // Quartz hard-refuses SQLite + clustered at startup ("SQLite cannot be used as
+                // clustered mode due to locking problems": the QRTZ_LOCKS semaphore needs the row
+                // locks SQLite does not have). The shipped clustered=true default (review
+                // 2026-09-02, В11) targets the shared-database providers; a SQLite database is a
+                // local file no second node can share, so non-clustered is safe by construction.
+                // Publish already forces this (sanitize-appsettings.ps1) — mirrored here so a dev
+                // run behaves the same. Deliberate override, not TryAdd; registered after the
+                // blocks above so it wins.
+                if (provider == "sqlite")
+                {
+                    services.PostConfigure<QuartzOptions>(opts =>
+                        opts["quartz.jobStore.clustered"] = "false");
                 }
             }
         }

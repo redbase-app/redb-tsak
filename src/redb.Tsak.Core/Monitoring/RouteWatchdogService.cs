@@ -117,6 +117,10 @@ public sealed class RouteWatchdogService : BackgroundService
         var suspectedThreshold = TimeSpan.FromMinutes(_options.SuspectedThresholdMinutes);
         var hungThreshold = TimeSpan.FromMinutes(_options.HungThresholdMinutes);
         var newAlerts = new List<WatchdogAlert>();
+        // One restart per context per scan (review 2026-09-02, С20): ten hung exchanges used to
+        // trigger ten back-to-back stop/start cycles of the same context within a single scan,
+        // repeatedly killing freshly arrived in-flight work.
+        var restartedThisScan = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var (contextName, context) in _contextManager.GetAllContexts())
         {
@@ -145,7 +149,9 @@ public sealed class RouteWatchdogService : BackgroundService
                         ElapsedSeconds = elapsed.TotalSeconds
                     });
 
-                    if (_options.AutoRestartHungRoutes && !ct.IsCancellationRequested)
+                    if (_options.AutoRestartHungRoutes && !ct.IsCancellationRequested
+                        && contextName != "_system" // never auto-restart the management API context (С20)
+                        && restartedThisScan.Add(contextName))
                     {
                         await TryAutoRestartRouteAsync(contextName, inflight.RouteId, ct);
                     }
@@ -230,6 +236,24 @@ public sealed class RouteWatchdogService : BackgroundService
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             throw;
+        }
+        catch (OperationCanceledException)
+        {
+            // The per-restart timeout elapsed — possibly BETWEEN the stop and the start, leaving
+            // the context down (review 2026-09-02, С20). Try to bring it back once, unbounded by
+            // the elapsed budget; a context left stopped is worse than a slow start.
+            _logger.LogError(
+                "Auto-restart of context {Context} timed out after {Timeout}s — attempting a recovery start",
+                contextName, _options.AutoRestartTimeoutSeconds);
+            try
+            {
+                await _contextManager.StartContextAsync(contextName, ignoreAutoStart: true);
+                _logger.LogInformation("Recovery start completed for context {Context}", contextName);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Recovery start failed for context {Context} — it may be stopped", contextName);
+            }
         }
         catch (Exception ex)
         {

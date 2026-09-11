@@ -21,11 +21,18 @@ public class TsakModuleRegistry : ITsakModuleRegistry
     /// <summary>Packages loaded during startup discovery. Consumed by HotReloadService.AdoptStartupPackages().</summary>
     public IReadOnlyDictionary<string, ModulePackage> LoadedPackages => _loadedPackages;
 
-    public TsakModuleRegistry(ITsakModuleStore store, ILogger<TsakModuleRegistry> logger)
+    public TsakModuleRegistry(
+        ITsakModuleStore store, ILogger<TsakModuleRegistry> logger,
+        Modules.ModuleLoadGate? loadGate = null)
     {
         _store = store;
         _logger = logger;
+        // Optional so plain unit tests can construct the registry; DI always provides the gate.
+        // Without it discovery is permissive — exactly the pre-fix behavior.
+        _loadGate = loadGate;
     }
+
+    private readonly Modules.ModuleLoadGate? _loadGate;
 
     public event EventHandler<ITsakModule>? ModuleAdded;
     public event EventHandler<string>? ModuleRemoved;
@@ -114,6 +121,12 @@ public class TsakModuleRegistry : ITsakModuleRegistry
 
             foreach (var dll in Directory.GetFiles(path, "*.dll"))
             {
+                // Load-boundary trust gate (review 2026-09-02, К3): with signature enforcement on,
+                // a bare DLL cannot carry a signature and is refused — startup discovery must not
+                // execute what the hot-reload scan would refuse.
+                if (_loadGate is not null && !_loadGate.AllowBareDll(dll))
+                    continue;
+
                 try
                 {
                     var modules = DiscoverModulesInAssembly(dll);
@@ -169,8 +182,24 @@ public class TsakModuleRegistry : ITsakModuleRegistry
             {
                 try
                 {
-                    var package = ModulePackage.Open(tpkg, probePaths: probePaths,
-                        logger: _logger, collectible: collectible);
+                    // Load-boundary trust gate (review 2026-09-02, К3): startup discovery used to
+                    // open packages WITHOUT the signature check the hot-reload scan enforces, so an
+                    // unsigned package refused by every scan executed on the next process restart.
+                    // The verified bytes are also the loaded bytes — no verify-then-reopen window.
+                    ModulePackage? package;
+                    if (_loadGate is not null)
+                    {
+                        var verified = _loadGate.ReadVerifiedTpkg(tpkg);
+                        if (verified is null)
+                            continue;
+                        package = ModulePackage.Open(verified, tpkg, File.GetLastWriteTimeUtc(tpkg),
+                            probePaths: probePaths, logger: _logger, collectible: collectible);
+                    }
+                    else
+                    {
+                        package = ModulePackage.Open(tpkg, probePaths: probePaths,
+                            logger: _logger, collectible: collectible);
+                    }
                     if (package is null)
                         continue;
 
@@ -225,6 +254,55 @@ public class TsakModuleRegistry : ITsakModuleRegistry
                                 _logger.LogInformation("Discovered module {Module} v{Ver} from package {Pkg}",
                                     module.ModuleName, module.Version, package.Manifest.Name);
                             }
+                        }
+                    }
+
+                    // Third convention (Route-XML Ф5.2): XML artifacts from the manifest.
+                    // AFTER the assembly scan, so bean:#name objects registered by module code
+                    // are visible to the artifacts. An XML-only package (no entry points) is a
+                    // full module too — before this, it died on packageModuleFound below.
+                    if (package.Manifest.Artifacts.Count > 0)
+                    {
+                        var sourceDir = Path.GetDirectoryName(tpkgFullPath);
+                        var xmlModule = new Modules.XmlRouteModule(package, sourceDir,
+                            package.ReadModuleConfigJson(package.Manifest.Name), _logger);
+                        packageModuleFound = true;
+                        _moduleFilePaths[xmlModule.ModuleName] = tpkg;
+
+                        if (_modules.TryGetValue(xmlModule.ModuleName, out var existingXml))
+                        {
+                            _modules[xmlModule.ModuleName] = xmlModule;
+                            updated.Add(xmlModule);
+                            await _store.SaveAsync(new TsakModuleRecord
+                            {
+                                ModuleName = xmlModule.ModuleName,
+                                Version = xmlModule.Version,
+                                Description = xmlModule.Description,
+                                Dependencies = xmlModule.Dependencies.ToList(),
+                                Status = TsakModuleStatus.Loaded,
+                                AssemblyPath = tpkg,
+                                LastUpdatedAt = DateTimeOffset.UtcNow
+                            });
+                            _logger.LogInformation("Updated XML route module {Module} from package {Pkg}",
+                                xmlModule.ModuleName, package.Manifest.Name);
+                            (existingXml as IDisposable)?.Dispose();
+                        }
+                        else
+                        {
+                            _modules[xmlModule.ModuleName] = xmlModule;
+                            added.Add(xmlModule);
+                            await _store.SaveAsync(new TsakModuleRecord
+                            {
+                                ModuleName = xmlModule.ModuleName,
+                                Version = xmlModule.Version,
+                                Description = xmlModule.Description,
+                                Dependencies = xmlModule.Dependencies.ToList(),
+                                Status = TsakModuleStatus.Loaded,
+                                AssemblyPath = tpkg
+                            });
+                            _logger.LogInformation("Discovered XML route module {Module} v{Ver} from package {Pkg} ({Artifacts} artifact(s))",
+                                xmlModule.ModuleName, xmlModule.Version, package.Manifest.Name,
+                                package.Manifest.Artifacts.Count);
                         }
                     }
 

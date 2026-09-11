@@ -381,7 +381,7 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
         }
 
         // Step 2: Check embedded config from .tpkg package (in-memory)
-        if (module is Modules.StaticMethodModule { EmbeddedConfigJson: { Length: > 0 } configJson })
+        if (module is Contracts.IEmbeddedConfigModule { EmbeddedConfigJson: { Length: > 0 } configJson })
         {
             try
             {
@@ -566,7 +566,7 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
                 }
 
                 // Fallback: load embedded config from .tpkg package (Layer 4)
-                if (module is Modules.StaticMethodModule { EmbeddedConfigJson: { Length: > 0 } configJson })
+                if (module is Contracts.IEmbeddedConfigModule { EmbeddedConfigJson: { Length: > 0 } configJson })
                 {
                     try
                     {

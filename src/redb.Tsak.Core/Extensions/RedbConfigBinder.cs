@@ -94,6 +94,12 @@ internal static class RedbConfigBinder
         {
             var key = child.Key;
 
+            // The stock appsettings document keys with the '"//Key": "..."' JSON-comment
+            // convention (the format has no comments). Such keys are documentation, not
+            // settings — reporting them as typos would teach operators to ignore the very
+            // warning that exists to catch real typos.
+            if (key.StartsWith("//", StringComparison.Ordinal)) continue;
+
             if (Infrastructure.Contains(key)) continue;
 
             if (MinuteAliases.TryGetValue(key, out var target))

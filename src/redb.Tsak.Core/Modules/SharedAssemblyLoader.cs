@@ -170,6 +170,30 @@ public sealed class SharedAssemblyLoader
     /// Checks if any shared DLLs have changed (added, updated, or removed) since last load.
     /// </summary>
     /// <returns>True if changes detected; caller should trigger full context restart.</returns>
+    /// <summary>
+    /// Re-syncs the tracked timestamps to the CURRENT disk state without loading anything —
+    /// used after reporting a shared-layer change that only a process restart can apply, so the
+    /// report fires once per change instead of on every scan (review 2026-09-02, С22).
+    /// </summary>
+    public void AcknowledgeChanges()
+    {
+        var fullPath = Path.GetFullPath(_sharedPath);
+        if (!Directory.Exists(fullPath))
+        {
+            _fileTimestamps.Clear();
+            return;
+        }
+
+        var currentFiles = new HashSet<string>(
+            Directory.GetFiles(fullPath, "*.dll"),
+            StringComparer.OrdinalIgnoreCase);
+
+        foreach (var stale in _fileTimestamps.Keys.Where(k => !currentFiles.Contains(k)).ToList())
+            _fileTimestamps.TryRemove(stale, out _);
+        foreach (var dll in currentFiles)
+            _fileTimestamps[dll] = File.GetLastWriteTimeUtc(dll);
+    }
+
     public bool DetectChanges()
     {
         var fullPath = Path.GetFullPath(_sharedPath);

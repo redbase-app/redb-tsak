@@ -78,7 +78,7 @@ Key configuration (`Tsak:HotReload`):
 | `Collectible` | `false` | Enable ALC unload for GC reclamation (incompatible with `Reflection.Emit`) |
 | `KeepVersions` | `2` | Old versions kept for rollback |
 | `StartupTimeoutSeconds` | `60` | New version must settle within this window |
-| `RollingUpdate` | `true` | In cluster: update nodes one by one |
+| `RollingUpdate` | `false` | RESERVED — not implemented; nodes reload independently |
 | `RemovalDebounceScans` | `2` | Scan cycles a missing file must persist before triggering unload |
 
 ### `TsakContextManager`
