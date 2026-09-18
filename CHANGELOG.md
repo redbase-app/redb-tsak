@@ -18,6 +18,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 | `redb.Tsak.CLI` | `tsak` command-line tool — 30 commands |
 | `redb.Tsak.Web` | Blazor Server dashboard — 10 pages |
 | `redb.Tsak.Web.Pro` | Pro web extensions |
+| `redb.Tsak.Templates` | `dotnet new` template pack — the `tsak-worker` host |
 
 ---
 
