@@ -117,7 +117,7 @@ Tsak:Redb:License:0    ->  Tsak__Redb__License__0
 | `Redb:Provider` | `sqlite` | redb provider: `sqlite` / `postgres` / `mssql`. |
 | `Redb:UsePro` | `true` | Turn on Pro components. Free and unrestricted through major 4 (LicensePolicy.FreeThroughMajor). |
 | `Redb:License` | *(empty)* | Array of license token(s). **Leave empty** — nothing through 4.x needs a key (§9). |
-| `Redb:PropsSaveStrategy` | `DeleteInsert` | Property write mode: `DeleteInsert` (Free) or `ChangeTracking` (Pro). |
+| `Redb:PropsSaveStrategy` | `ChangeTracking` | Property write mode: `ChangeTracking` (Pro, what the image ships) or `DeleteInsert` (Free). Switching to Free means switching this too — the Free provider throws on a `ChangeTracking` batch, and the cluster bootstrap saves in a batch at startup, so the worker stops on boot. |
 | `ConnectionStrings:Sqlite` | `Data Source=redb.db` | SQLite file (Provider=sqlite). Persist via a volume. |
 | `ConnectionStrings:Postgres` | — | Npgsql connection string (Provider=postgres). |
 | `ConnectionStrings:MSSql` | — | SQL Server connection string (Provider=mssql). |

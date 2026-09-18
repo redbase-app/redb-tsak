@@ -360,8 +360,8 @@ instance under `Redb:{name}`. Pinned by a red-before API test that also checks t
 `RedbNodeRegistry.HeartbeatAsync` skips the write when the node row vanished between its lookup and the row
 lock (a peer removed the dead record, or the node was deregistered) and lets the next tick re-register — but
 it did so silently: the method returned as after a persisted heartbeat, and nothing in the log told a
-skipped one from a written one. That blindness turned the investigation of BR-11 (a lost write in the core's
-hash canon) into a long chase. Both branches — the lock not acquired, and the defensive "locked but not
+skipped one from a written one. That blindness turned the investigation of a lost write in the core's
+hash canon into a long chase. Both branches — the lock not acquired, and the defensive "locked but not
 re-read" — now log a warning with the node, group, cluster and record id. Behaviour is unchanged. Pinned by a
 red-before integration test that injects the lock refusal through a proxied `IRedbService` (the race itself
 cannot be timed reliably) and asserts the warning on a capturing logger.

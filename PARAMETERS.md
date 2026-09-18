@@ -34,9 +34,9 @@ This section configures the redb service the worker hosts.
 |---|---|---|
 | `Tsak:Redb:Provider` | `auto` | `postgres`, `mssql`, `sqlite`, or `auto` to infer from the connection string. |
 | `Tsak:Redb:ConnectionString` | — | Required unless the provider resolves one itself. |
-| `Tsak:Redb:UsePro` | `true` | Pro is free on the whole 3.x line and needs no key, so the default is Pro. Set `false` for the Free tier. |
+| `Tsak:Redb:UsePro` | `true` | Pro is free and needs no key through major 4 (`LicensePolicy.FreeThroughMajor`), so the default is Pro. Set `false` for the Free tier. |
 | `Tsak:Redb:License` | — | Optional; a fallback license for named instances. |
-| `Tsak:Redb:PropsSaveStrategy` | `DeleteInsert` | How property rows are written. |
+| `Tsak:Redb:PropsSaveStrategy` | `ChangeTracking` | How property rows are written. **Requires Pro.** The Free provider implements only `DeleteInsert`: its batch path throws `NotSupportedException`, and since the cluster bootstrap saves in a batch on startup, the host stops. Setting `UsePro=false` means setting this to `DeleteInsert` too. |
 
 ### Every `RedbServiceConfiguration` property is settable here
 
