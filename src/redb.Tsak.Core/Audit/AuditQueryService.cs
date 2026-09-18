@@ -3,6 +3,7 @@ using System.Globalization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using redb.Tsak.Contracts;
+using redb.Tsak.Core.Services.Storage;
 
 namespace redb.Tsak.Core.Audit;
 
@@ -16,16 +17,22 @@ namespace redb.Tsak.Core.Audit;
 /// type: timestamps as the column's own type per provider, and null filters as typed nulls, which
 /// is what keeps the <c>(@x IS NULL OR col = @x)</c> shape parseable on PostgreSQL.
 /// </para>
+/// <para>
+/// Several Tsak clusters may share the database: reads and the retention sweep see this node's
+/// cluster (<c>Tsak:Cluster:ClusterName</c>) plus the entries written before cluster isolation.
+/// </para>
 /// </summary>
 public sealed class AuditQueryService
 {
     private readonly IConfiguration _configuration;
     private readonly ILogger<AuditQueryService> _logger;
+    private readonly string _clusterName;
 
     public AuditQueryService(IConfiguration configuration, ILogger<AuditQueryService> logger)
     {
         _configuration = configuration;
         _logger = logger;
+        _clusterName = TsakStorageScope.ClusterName(configuration);
     }
 
     /// <summary>Provider Tsak is configured with; <see cref="AuditProvider.None"/> means no database.</summary>
@@ -65,6 +72,7 @@ public sealed class AuditQueryService
             await using var cmd = conn.CreateCommand();
             cmd.CommandText = AuditStorage.SelectSql(provider);
             BindQueryParameters(cmd, provider, actor, action, target, since, until, limit, offset);
+            ClusterColumn.BindScope(cmd, _clusterName);
 
             var entries = new List<AuditEntry>();
             await using var reader = await cmd.ExecuteReaderAsync(ct);
@@ -101,15 +109,16 @@ public sealed class AuditQueryService
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = AuditStorage.DeleteOlderThanSql();
         DbParameterBinding.AddTimestamp(cmd, provider, "cutoff", cutoff);
+        ClusterColumn.BindScope(cmd, _clusterName);
 
         return await cmd.ExecuteNonQueryAsync(ct);
     }
 
     /// <summary>
-    /// Binds the parameters of <see cref="AuditStorage.SelectSql"/>, in the order and with the types the
-    /// statement needs. Separate from <see cref="QueryAsync"/> so the binding can be checked without a
-    /// database: the shape of the bound command is the whole difference between a page that loads and
-    /// PostgreSQL's <c>42P08</c>.
+    /// Binds the filter and paging parameters of <see cref="AuditStorage.SelectSql"/>, in the order and
+    /// with the types the statement needs; the cluster scope is bound next to it by the caller. Separate
+    /// from <see cref="QueryAsync"/> so the binding can be checked without a database: the shape of the
+    /// bound command is the whole difference between a page that loads and PostgreSQL's <c>42P08</c>.
     /// </summary>
     internal static void BindQueryParameters(
         DbCommand cmd, AuditProvider provider,

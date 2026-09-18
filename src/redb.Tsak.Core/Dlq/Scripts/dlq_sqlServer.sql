@@ -20,6 +20,7 @@ CREATE TABLE [dbo].[tsak_dlq] (
     [properties_json]   nvarchar(max) NULL,
     [replayable]        bit NOT NULL,
     [replayed_at]       datetimeoffset NULL,
+    [cluster_name]      nvarchar(200) NULL,
     CONSTRAINT [uq_tsak_dlq_entry_id] UNIQUE ([entry_id])
 );
 

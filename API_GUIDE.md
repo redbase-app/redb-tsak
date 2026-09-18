@@ -73,7 +73,7 @@ on the same port (path specificity makes them out-rank the catch-all):
 
 | Route id | Path | Why it is standalone |
 |---|---|---|
-| `system-echo` | `/api/echo` (`Tsak:Api:Echo:Path`) | Own pipeline with **no** auth processor, and `AutoStart(false)` so it can be started/stopped on demand from the Routes API or dashboard. Reflects the request back as JSON — "am I reaching the host, and what did it actually receive?" |
+| `system-echo` | `/api/echo` (`Tsak:Api:Echo:Path`) | Own pipeline with **no** auth processor, and `AutoStart(false)` so it can be started/stopped on demand from the Routes API or dashboard. Reflects the request back as JSON — "am I reaching the host, and what did it actually receive?" While stopped, the catch-all answers the path with `503` naming the route to start (not `401`). |
 | `system-metrics` | `/metrics` | Proxies the loopback OpenTelemetry scrape listener so Prometheus can scrape the main port. Returns `text/plain; version=0.0.4`, not JSON. Mounted only when `Tsak:Metrics:Prometheus:Enabled=true`. |
 
 The **health probes are not** in this list — they are ordinary controllers

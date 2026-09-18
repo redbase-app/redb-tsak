@@ -337,7 +337,7 @@ curl http://localhost:9090/api/system/health
 
 ### 2. Deploy your first module
 
-A Tsak module is a plain .NET class library exposing one of two well-defined entry-point shapes: a `public static class InitRoute` with `public static IRouteContext main(IRouteContext ctx)` (Apache Camel-style convention, shown below), or a concrete public type implementing `ITsakModule`. Inside the entry point you wire up your `RouteBuilder` subclasses against the supplied `IRouteContext`.
+A Tsak module is a plain .NET class library exposing one of two well-defined entry-point shapes: a `public static class InitRoute` with `public static IRouteContext main(IRouteContext ctx)` or its async form `public static async Task<IRouteContext> main(IRouteContext ctx)` (Apache Camel-style convention, shown below), or a concrete public type implementing `ITsakModule`. An async `main` is awaited, and the context starts only after it completes. An `InitRoute` whose `main` fits neither form is reported as an error when the assembly is scanned, not skipped. Inside the entry point you wire up your `RouteBuilder` subclasses against the supplied `IRouteContext`.
 
 ```csharp
 // MyRoutes/InitRoute.cs
@@ -414,7 +414,7 @@ Tsak supports **two equivalent deployment formats** under `Libs/`. Both are scan
 Tsak does **not** load arbitrary .NET DLLs. Each candidate assembly is scanned for one of two well-defined module shapes:
 
 1. A concrete public type implementing `ITsakModule`.
-2. A public static class named `InitRoute` exposing a `static IRouteContext main(IRouteContext ctx)` method (Apache Camel-style entry point convention).
+2. A public static class named `InitRoute` exposing a `static IRouteContext main(IRouteContext ctx)` method, or its async form `static Task<IRouteContext> main(IRouteContext ctx)` (Apache Camel-style entry point convention). Any other signature of `main`, or both forms at once, fails the scan of that assembly with a message naming the type and the two supported forms.
 
 If neither shape is found, the assembly is **classified as a dependency, not a module**:
 
@@ -515,7 +515,7 @@ Concretely, this means:
 3. **For a `.tpkg`**: the manifest is read, **companion DLLs load first** (so dependency resolution works), then **entry-point DLLs load into a fresh per-package ALC**.
 4. **For a bare `.dll`**: the file loads into a fresh per-module ALC. If `ITsakModule`/`InitRoute.main` is found → it becomes a module; otherwise it is registered as a shared dependency and remembered as "not a module".
 5. `ConfigMerger` deep-merges all 5 config layers into a single `IDictionary<string, object?>` and exposes it as the context's property bag.
-6. `TsakContextManager` creates an `IRouteContext`, registers Quartz `IScheduler`, and either invokes `InitRoute.main(ctx)` or instantiates the `ITsakModule`.
+6. `TsakContextManager` creates an `IRouteContext`, registers Quartz `IScheduler`, and awaits the module's `InitializeAsync` — which runs `InitRoute.main(ctx)` in either form, or the `ITsakModule`'s own initialization — before the context starts.
 7. The context starts (if `AutoStart = true`): transports connect, consumers begin reading, routes go live.
 
 ### Hot-swap
@@ -780,13 +780,37 @@ Edit `context.json` or `{Module}.config.json` while Tsak is running. The hot-rel
 
 `Api.Orders` and `Api.Catalog` share the `api` context (and its property bag). Any other module gets its own anonymous context.
 
+### A module's database
+
+A module reaches redb in two ways, and they are two different databases.
+
+**The worker's own redb.** `context.GetServiceProvider().GetRequiredService<IRedbService>()` and an unnamed `context.GetRedbService()` return the database Tsak itself runs on. It is chosen by `Tsak:Redb:Provider` (`sqlite` by default) together with that provider's connection string: `ConnectionStrings:Postgres`, `ConnectionStrings:MSSql` or `ConnectionStrings:Sqlite`. Setting `ConnectionStrings:MSSql` alone does not move it to SQL Server: set `Tsak:Redb:Provider` to `mssql` as well, or SQL written for SQL Server runs against SQLite. The database must exist beforehand: redb creates its tables, not the database.
+
+```bash
+Tsak__Redb__Provider=mssql
+ConnectionStrings__MSSql="Server=sql;Database=Orders;User Id=sa;Password=...;TrustServerCertificate=true"
+```
+
+**A named instance** is a database of the module's own, declared in the context configuration under `Redb:{name}`, in any of the five layers (usually the module's config file or `Tsak:Contexts:{name}`):
+
+```json
+{
+  "RedbInstanceName": "orders",
+  "Redb": {
+    "orders": { "Provider": "mssql", "ConnectionString": "Server=sql;Database=Orders;...", "UsePro": true, "EnsureCreated": true }
+  }
+}
+```
+
+`Provider` and `ConnectionString` are required. Only the instance named by `RedbInstanceName` creates its schema on start (`EnsureCreated`); the others are registered without it. In a route, resolve the instance per exchange, `context.GetRedbService("orders", exchange)`, so that concurrent exchanges never share a connection. In `main` and other one-shot setup code, `context.GetRedbService("orders")` returns the shared instance.
+
 Full reference: [CONFIG_GUIDE.md](CONFIG_GUIDE.md).
 
 ---
 
 ## REST API
 
-69 endpoints organized into 16 controllers. Every endpoint speaks JSON. Auth is opt-in (`Tsak:Auth:Enabled`) — when enabled, all endpoints require an API key except the auth-exempt health probes under `/api/health/*` (configurable via `Tsak:Api:AuthExempt`).
+69 endpoints organized into 16 controllers. Every endpoint speaks JSON. Auth is opt-in (`Tsak:Auth:Enabled`) — when enabled, all endpoints require an API key except the auth-exempt health probes under `/api/health/*` (configurable via `Tsak:Api:AuthExempt`) and the [echo probe](#echo-probe).
 
 The API is itself a route context (`_system`): one catch-all HTTP listener whose pipeline is
 *header bridge → auth → controller dispatch*, with controllers discovered by assembly scan.
@@ -818,7 +842,7 @@ auth model, and the extension points.
 
 ```bash
 # Authenticate
-KEY="$(tsak auth keys create --name ci --roles admin --output json | jq -r .rawKey)"
+KEY="$(tsak auth create --name ci --roles admin --output json | jq -r .rawKey)"
 
 # Health
 curl -s http://localhost:9090/api/system/health | jq
@@ -851,6 +875,17 @@ curl -s -H "Authorization: Bearer $KEY" \
 curl -s -H "Authorization: Bearer $KEY" \
   http://localhost:9090/api/diagnostics/dump > tsak-dump.json
 ```
+
+### Echo probe
+
+`/api/echo` (path: `Tsak:Api:Echo:Path`) reflects the request back as JSON: a liveness probe that also shows what the host received. It needs **no API key**, but it **ships stopped**. Start the route `system-echo` of the `_system` context from the dashboard (Routes) or with the API:
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $KEY" \
+  http://localhost:9090/api/contexts/_system/routes/system-echo/start
+```
+
+While the route is stopped, `/api/echo` answers `503` with the name of the route to start.
 
 ### Typed C# client
 
@@ -899,7 +934,7 @@ tsak context list --output plain   # raw lines (grep-friendly)
 | Group | Commands |
 |---|---|
 | **profile** | `login`, `logout`, `use`, `list` |
-| **auth** | `auth keys list`, `auth keys create`, `auth keys revoke` |
+| **auth** | `auth list`, `auth create`, `auth revoke` |
 | **context** | `context list`, `context get`, `context start`, `context stop`, `context restart`, `context reset-routes`, `context delete` |
 | **route** | `route list`, `route get`, `route start`, `route stop`, `route force-stop`, `route inflight` |
 | **module** | `module list`, `module get`, `module remove`, `module keygen`, `module sign`, `module deploy`, `module validate`, `module rollback` |
@@ -961,14 +996,16 @@ Enable with `Tsak:Cluster:Enabled = true` and a Postgres/MSSQL connection string
 Stored as a polymorphic 3-level tree using `redb.Tree` (so it shows up nicely in any redb-aware tool):
 
 ```
-cluster:default                     ← scheme: _tsak_clusters
- └── group:default:default          ← scheme: _tsak_groups
-      ├── node:default:worker-1     ← scheme: _tsak_nodes
-      ├── node:default:worker-2     ← scheme: _tsak_nodes
-      └── node:default:worker-3     ← scheme: _tsak_nodes
+cluster:default                             ← scheme: _tsak_clusters
+ └── group:default:default                  ← scheme: _tsak_groups
+      ├── node:default:default:worker-1     ← scheme: _tsak_nodes
+      ├── node:default:default:worker-2     ← scheme: _tsak_nodes
+      └── node:default:default:worker-3     ← scheme: _tsak_nodes
 ```
 
 Cluster operations (assignment, leader change, rebalance) mutate this tree atomically. Every operation is fenced by the leader's epoch token — a stale leader cannot corrupt state after losing election.
+
+Coordination records (nodes, locks, module assignments) are keyed and looked up by cluster **and** group, so several clusters on one database elect their own leaders and keep their own nodes and assignments, even with equal group names or node ids.
 
 ### Cluster configuration
 

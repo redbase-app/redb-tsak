@@ -91,7 +91,9 @@
     public async Task RefreshAsync()
     {
         await LoadState();
-        StateHasChanged();
+        // Callable from any thread (a page poll tick, a button handler): a direct StateHasChanged
+        // off the Blazor dispatcher throws, and that silently killed the Dashboard refresh tick.
+        await InvokeAsync(StateHasChanged);
     }
 
     private async Task LoadState()

@@ -290,10 +290,24 @@ public sealed class HotReloadService : IDisposable
                             var fullDll = Path.GetFullPath(dll);
 
                             var newAlc = new ModuleAssemblyLoadContext(moduleName, _assemblyProbePaths, _collectible);
-                            var assembly = newAlc.LoadFromBytes(fullDll);
-                            var sourceDir = Path.GetDirectoryName(fullDll);
-                            var modules = TsakModuleRegistry.DiscoverModulesInAssembly(assembly, sourceDir);
-                            var newModule = modules.FirstOrDefault();
+                            ITsakModule? newModule;
+                            try
+                            {
+                                var assembly = newAlc.LoadFromBytes(fullDll);
+                                var sourceDir = Path.GetDirectoryName(fullDll);
+                                newModule = TsakModuleRegistry.DiscoverModulesInAssembly(assembly, sourceDir).FirstOrDefault();
+                            }
+                            catch (Exception ex)
+                            {
+                                // A file Tsak cannot use: an InitRoute.main of an unsupported shape, a type that
+                                // fails to load, a half-copied image. Said once, then ignored until the file
+                                // changes. The throw used to skip both the ignore mark and the unload, so every
+                                // scan loaded the file into one more permanent ALC and logged the same error.
+                                _logger.LogError(ex, "Module file {Path} cannot be used and is ignored until it changes", dll);
+                                IgnoreUntilChanged(dll);
+                                newAlc.TryUnload();
+                                continue;
+                            }
 
                             if (newModule is not null)
                             {
@@ -377,12 +391,28 @@ public sealed class HotReloadService : IDisposable
 
                         var newModuleNames = new List<string>();
 
-                        foreach (var assembly in package.LoadedAssemblies)
+                        // Discover every entry point before registering any: a package whose entry point Tsak
+                        // cannot use (an InitRoute.main of an unsupported shape) is refused whole, said once, and
+                        // ignored until the file changes. The throw used to leave the package's ALC and its
+                        // extracted files behind and re-open it on every scan.
+                        var discovered = new List<ITsakModule>();
+                        try
                         {
-                            var sourceDir = Path.GetDirectoryName(Path.GetFullPath(tpkg));
-                            var modules = TsakModuleRegistry.DiscoverModulesInAssembly(assembly, sourceDir);
+                            var packageSourceDir = Path.GetDirectoryName(Path.GetFullPath(tpkg));
+                            foreach (var assembly in package.LoadedAssemblies)
+                                discovered.AddRange(TsakModuleRegistry.DiscoverModulesInAssembly(assembly, packageSourceDir));
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Package {Path} cannot be used and is ignored until it changes", tpkg);
+                            package.Dispose();
+                            _ignoredDlls[tpkg] = lastWrite;
+                            _additionStability.TryRemove(tpkg, out _);
+                            continue;
+                        }
 
-                            foreach (var module in modules)
+                        {
+                            foreach (var module in discovered)
                             {
                                 if (module is Modules.StaticMethodModule smm)
                                     smm.EmbeddedConfigJson = package.ReadModuleConfigJson(module.ModuleName);
@@ -733,16 +763,14 @@ public sealed class HotReloadService : IDisposable
     }
 
     /// <summary>
-    /// Atomically reloads a .tpkg package: silently unregisters old modules,
-    /// loads new package, registers new modules via normal event pipeline.
-    /// Unlike UnloadModuleAsync (permanent removal), this preserves persisted context state
-    /// (e.g. autoStart) — a manually stopped context stays stopped after package reload.
+    /// Reloads a .tpkg package in place: the old modules leave the registry silently (no events), the
+    /// new package is opened, its modules are registered silently, and the coordinator recreates their
+    /// contexts as one batch — so persisted context state (e.g. autoStart=false of a named context)
+    /// survives the reload. Unlike UnloadModuleAsync (permanent removal), the module stays.
     ///
-    /// Flow: UnregisterSilent (no events, state untouched)
-    ///     → RegisterModule (fires ModuleAdded)
-    ///     → Coordinator.ProcessModuleAddedAsync
-    ///     → RecreateContextWithModulesAsync → RemoveContextAsync(preserveState: true)
-    ///     → ShouldAutoStart checks store → respects persisted autoStart=false
+    /// If a module of the new version does not come up, the previous package is restored (old module
+    /// instances and their contexts back, modules only the new version added stopped) and the file is
+    /// skipped until it changes. A module the new version no longer ships has its context stopped.
     /// </summary>
     public async Task<int> ReloadPackageAsync(string tpkgPath, List<string> oldModuleNames,
         CancellationToken ct = default)
@@ -778,24 +806,16 @@ public sealed class HotReloadService : IDisposable
         }
 
         // 1. Silently unregister old modules (no events → coordinator keeps context alive,
-        //    autoStart state preserved in store)
+        //    autoStart state preserved in store). Capture what is needed to put them back first: until
+        //    the new version has actually come up, the old one is the rollback target — so the
+        //    destructive cleanup (unloading a replaced DLL module's ALC, dropping version history)
+        //    waits for step 5.
+        var oldModules = new List<(string Name, ITsakModule? Module, LoadedModuleInfo? Info)>(oldModuleNames.Count);
         foreach (var moduleName in oldModuleNames)
         {
+            _loadedModules.TryGetValue(moduleName, out var oldInfo);
+            oldModules.Add((moduleName, _registry.GetModule(moduleName), oldInfo));
             _registry.UnregisterModuleSilent(moduleName);
-
-            if (_loadedModules.TryRemove(moduleName, out var info))
-            {
-                // Don't TryUnload individual module ALCs for package modules —
-                // the package ALC is unloaded atomically below.
-                if (info.Alc is not null && info.DllPath != tpkgPath)
-                {
-                    info.Alc.TryUnload();
-                    if (!_collectible)
-                        Interlocked.Increment(ref _leakedAlcCount);
-                }
-            }
-
-            _previousVersions.TryRemove(moduleName, out _);
         }
 
         // The old package is disposed AFTER the context swap (step 4), not here: Dispose deletes
@@ -813,9 +833,15 @@ public sealed class HotReloadService : IDisposable
         if (package is null)
         {
             _logger.LogWarning("Failed to open updated package {Pkg}", Path.GetFileName(tpkgPath));
-            // The old context is still the live one — keep its package tracked and alive.
+            // The old context is still the live one — keep its package tracked and alive, and put its
+            // modules back into the registry (step 1 took them out silently).
             if (oldPackage is not null)
                 _packageInstances[tpkgPath] = oldPackage;
+            foreach (var (_, oldModule, _) in oldModules)
+            {
+                if (oldModule is not null)
+                    await _registry.ReplaceModuleSilentAsync(oldModule);
+            }
             return 0;
         }
 
@@ -863,10 +889,60 @@ public sealed class HotReloadService : IDisposable
         }
 
         // 4. Process all modules as a batch — creates each context exactly once
-        //    with the full set of modules (no intermediate partial recreations)
+        //    with the full set of modules (no intermediate partial recreations). A module that does not
+        //    come up — reported by the coordinator, which swallows Initialize/start exceptions so a bad
+        //    module cannot crash the node, or an exception out of the batch itself — restores the
+        //    previous package instead of leaving the module down.
         if (allNewModules.Count > 0)
         {
-            await _coordinator.ProcessBatchAsync(allNewModules).ConfigureAwait(false);
+            ModuleActivationFailure? failed = null;
+            Exception? batchException = null;
+            try
+            {
+                var report = await _coordinator.ProcessBatchAsync(allNewModules).ConfigureAwait(false);
+                foreach (var module in allNewModules)
+                {
+                    failed = report.FailureFor(module.ModuleName);
+                    if (failed is not null)
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                batchException = ex; // logged right below, together with the reported case
+            }
+
+            if (failed is not null || batchException is not null)
+            {
+                _logger.LogError(failed?.Exception ?? batchException,
+                    "Package {Pkg}: the new version did not come up (module {Module}); restoring the previous version",
+                    Path.GetFileName(tpkgPath), failed?.ModuleName ?? "batch");
+                await RestorePreviousPackageAsync(tpkgPath, package, oldPackage, oldModules, newModuleNames)
+                    .ConfigureAwait(false);
+                return 0;
+            }
+        }
+
+        // 5. The new version is up — the deferred cleanup of the old one is safe now.
+        var newNames = new HashSet<string>(newModuleNames, StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, _, oldInfo) in oldModules)
+        {
+            // Don't TryUnload individual module ALCs for package modules — the package ALC is
+            // unloaded atomically below. Only a module that moved here from a bare DLL has its own.
+            if (oldInfo?.Alc is not null && oldInfo.DllPath != tpkgPath)
+            {
+                oldInfo.Alc.TryUnload();
+                if (!_collectible)
+                    Interlocked.Increment(ref _leakedAlcCount);
+            }
+            if (!newNames.Contains(name))
+            {
+                // A module the new version no longer ships: stop its context BEFORE the old package (and
+                // its extracted resources) is disposed below — it would otherwise keep running on it.
+                await RemoveModuleContextAsync(tpkgPath, name).ConfigureAwait(false);
+                _loadedModules.TryRemove(name, out _);
+            }
+            _previousVersions.TryRemove(name, out _);
         }
 
         // Old package goes away only now — the old context (and its file= resource reads) is gone.
@@ -877,9 +953,9 @@ public sealed class HotReloadService : IDisposable
                 Interlocked.Increment(ref _leakedAlcCount);
         }
 
-        // 5. Update package tracking. Record the tracked write-time only now, after a successful reload
-        //    (4.11) — the scan loop no longer records it eagerly, so a failed reload (validation/open
-        //    returned 0 above) is retried on the next scan instead of being permanently skipped.
+        // Update package tracking. Record the tracked write-time only now, after a successful reload
+        // (4.11) — the scan loop no longer records it eagerly, so a failed reload (validation/open
+        // returned 0 above) is retried on the next scan instead of being permanently skipped.
         _packageModules[tpkgPath] = newModuleNames;
         _packageInstances[tpkgPath] = package;
         _ignoredDlls[tpkgPath] = package.LastWriteUtc;
@@ -889,6 +965,104 @@ public sealed class HotReloadService : IDisposable
             Path.GetFileName(tpkgPath), newModuleNames.Count);
 
         return reloaded;
+    }
+
+    /// <summary>
+    /// Stops the context of a module that leaves with a package reload or rollback. A failure is logged,
+    /// not thrown: the reload or rollback must still finish its bookkeeping.
+    /// </summary>
+    private async Task RemoveModuleContextAsync(string tpkgPath, string moduleName)
+    {
+        try
+        {
+            await _coordinator.ProcessModuleRemovedAsync(moduleName).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Package {Pkg}: stopping the context of module {Module} failed; it may still be running",
+                Path.GetFileName(tpkgPath), moduleName);
+        }
+    }
+
+    /// <summary>
+    /// Puts the previous version of a package back after its new version failed to come up in
+    /// <see cref="ReloadPackageAsync(string, byte[], List{string}, CancellationToken)"/>: the old instances
+    /// return to the registry and their contexts are recreated (a module re-initializes on a fresh
+    /// context, as a named-context recreation always does), a module only the new version added has its
+    /// context stopped, and the new package is disposed only after that. The broken file's write time is
+    /// recorded, so the scan does not re-read the same bytes every interval — the next reload happens
+    /// when the file changes.
+    /// </summary>
+    private async Task RestorePreviousPackageAsync(string tpkgPath, ModulePackage newPackage,
+        ModulePackage? oldPackage, List<(string Name, ITsakModule? Module, LoadedModuleInfo? Info)> oldModules,
+        List<string> newModuleNames)
+    {
+        // Old instances back into the registry first: stopping a new-only module below recreates a named
+        // context from the registry, which must already hold the old versions by then.
+        var restorable = new List<ITsakModule>(oldModules.Count);
+        foreach (var (name, module, info) in oldModules)
+        {
+            if (info is not null)
+                _loadedModules[name] = info;
+            else
+                _loadedModules.TryRemove(name, out _);
+
+            if (module is null)
+                continue;
+            await _registry.ReplaceModuleSilentAsync(module);
+            restorable.Add(module);
+        }
+
+        // A module only the NEW version added was already activated by the batch: stop its context before
+        // the new package (its code and resources) is disposed below.
+        var oldNames = new HashSet<string>(oldModules.Select(o => o.Name), StringComparer.OrdinalIgnoreCase);
+        foreach (var name in newModuleNames)
+        {
+            if (oldNames.Contains(name))
+                continue; // replaced by the old instance above
+            await RemoveModuleContextAsync(tpkgPath, name).ConfigureAwait(false);
+            _registry.UnregisterModuleSilent(name);
+            _loadedModules.TryRemove(name, out _);
+        }
+
+        if (oldPackage is not null)
+            _packageInstances[tpkgPath] = oldPackage;
+        // _packageModules[tpkgPath] still lists the old names — this path never overwrote it.
+        _ignoredDlls[tpkgPath] = newPackage.LastWriteUtc;
+        _additionStability.TryRemove(tpkgPath, out _);
+
+        var restored = ModuleActivationReport.Success;
+        Exception? restoreException = null;
+        if (restorable.Count > 0)
+        {
+            try
+            {
+                restored = await _coordinator.ProcessBatchAsync(restorable).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                restoreException = ex; // reported as critical right below
+            }
+        }
+
+        // The new package goes away only after the old contexts replaced the new ones.
+        newPackage.Dispose();
+        if (!_collectible)
+            Interlocked.Increment(ref _leakedAlcCount);
+
+        if (restoreException is not null || !restored.Succeeded || restorable.Count == 0)
+        {
+            _logger.LogCritical(restoreException ?? restored.Failures.FirstOrDefault()?.Exception,
+                "Package {Pkg}: the new version failed and the previous version could not be fully restored — its modules may be down. "
+                + "Deploy a working package; this file is skipped until it changes.",
+                Path.GetFileName(tpkgPath));
+        }
+        else
+        {
+            _logger.LogWarning(
+                "Package {Pkg}: rolled back to the previous version. The new file is skipped until it changes.",
+                Path.GetFileName(tpkgPath));
+        }
     }
 
     /// <summary>
@@ -939,7 +1113,10 @@ public sealed class HotReloadService : IDisposable
             }
 
             // 4. Silently unregister old module (no events → state preserved in store,
-            //    autoStart=false survives). Same pattern as ReloadPackageAsync.
+            //    autoStart=false survives). Same pattern as ReloadPackageAsync. The instance is kept:
+            //    for a version loaded outside hot reload (startup discovery) it is the only copy of the
+            //    old code Tsak has once the file is overwritten in place.
+            var oldModule = _registry.GetModule(moduleName);
             _registry.UnregisterModuleSilent(moduleName);
             registryMutated = true;
 
@@ -949,7 +1126,7 @@ public sealed class HotReloadService : IDisposable
                 var history = _previousVersions.GetOrAdd(moduleName, _ => new List<LoadedModuleInfo>());
                 lock (history)
                 {
-                    history.Insert(0, oldInfo);
+                    history.Insert(0, oldInfo with { LiveModule = oldModule });
                     // Trim to keep only N versions
                     while (history.Count > _options.KeepVersions)
                     {
@@ -968,22 +1145,35 @@ public sealed class HotReloadService : IDisposable
             // 6. Replace module in registry (silent — no events, coordinator is called directly)
             await _registry.ReplaceModuleSilentAsync(newModule);
 
-            // 7. Start new module context. ANY failure here (not just cancel/timeout) rolls back to the
-            //    old version — otherwise the old module is unregistered and the registry is left on a
-            //    broken new one.
+            // 7. Start new module context. ANY failure here rolls back to the old version — otherwise the
+            //    old module is unregistered and the registry is left on a broken new one. "Failure" is an
+            //    exception from the coordinator AND a module the coordinator REPORTS as not come up: it
+            //    swallows Initialize/start exceptions so a bad module cannot crash the node, so the report
+            //    is the only way a swap learns its new version never started.
+            Exception? startFailure;
             try
             {
-                await _coordinator.ProcessModuleAddedAsync(newModule).ConfigureAwait(false);
+                var report = await _coordinator.ProcessModuleAddedAsync(newModule).ConfigureAwait(false);
+                startFailure = report.FailureFor(moduleName)?.Exception;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "New version of {Module} failed to start, rolling back to previous version",
+                startFailure = ex; // logged right below, together with the reported case
+            }
+
+            if (startFailure is not null)
+            {
+                _logger.LogError(startFailure, "New version of {Module} failed to start, rolling back to previous version",
                     moduleName);
                 var rolledBack = await RollbackAsync(moduleName, ct, overwrittenPath: newDllPath).ConfigureAwait(false);
                 newAlc?.TryUnload(); // tracker was never switched to the new bytes — nothing to revert there
                 if (!rolledBack)
                     _logger.LogError("Rollback of {Module} after failed swap did not restore a previous version — module may be down",
                         moduleName);
+                // The failed file stays newer than the tracked version, so every scan swapped it in again:
+                // the live module was torn down and rolled back once per scan interval, with a fresh ALC
+                // each time. It is retried only once the file changes.
+                IgnoreUntilChanged(newDllPath);
                 return false;
             }
 
@@ -1064,57 +1254,80 @@ public sealed class HotReloadService : IDisposable
 
         try
         {
-            System.Reflection.Assembly rollbackAssembly;
-            if (previous.Alc is not null && previous.Alc.Assemblies.Any())
+            ITsakModule? oldModule;
+            if (previous.Alc is null && previous.LiveModule is { } liveModule)
             {
-                // The previous version's code is STILL LOADED — roll back onto the live instance.
-                // Re-reading previous.DllPath is wrong for an in-place update: old and new share
-                // the path, the file now holds the bytes being rolled back FROM, and the old code
-                // "rolled back" into the broken version in a retry loop (review 2026-09-02, С21).
+                // The previous version was loaded outside hot reload (startup discovery): its code is
+                // still in the process, and the swap kept its module instance. Roll back onto that
+                // instance — the standard deployment overwrites the DLL in place, so the file now holds
+                // the bytes being rolled back FROM and there is no old copy on disk to re-read.
                 await _coordinator.ProcessModuleRemovedAsync(moduleName).ConfigureAwait(false);
-                rollbackAssembly = previous.Alc.Assemblies.First();
-            }
-            else if (overwrittenPath is not null
-                     && string.Equals(Path.GetFullPath(previous.DllPath), Path.GetFullPath(overwrittenPath),
-                         StringComparison.OrdinalIgnoreCase))
-            {
-                // No live instance and the failed new version was written to the SAME path — the
-                // disk no longer holds the previous version. A fake rollback would load the broken
-                // bytes in a retry loop; refuse loudly instead and keep the history entry.
-                _logger.LogCritical(
-                    "Rollback of {Module} impossible: {Path} was overwritten in place and no live instance of "
-                    + "version {Version} remains — deploy a known-good file.",
-                    moduleName, previous.DllPath, previous.Version);
-                lock (history) history.Insert(0, previous);
-                return false;
+                oldModule = liveModule;
             }
             else
             {
-                // Stop current version
-                await _coordinator.ProcessModuleRemovedAsync(moduleName).ConfigureAwait(false);
+                System.Reflection.Assembly rollbackAssembly;
+                if (previous.Alc is not null && previous.Alc.Assemblies.Any())
+                {
+                    // The previous version's code is STILL LOADED — roll back onto the live instance.
+                    // Re-reading previous.DllPath is wrong for an in-place update: old and new share
+                    // the path, the file now holds the bytes being rolled back FROM, and the old code
+                    // "rolled back" into the broken version in a retry loop (review 2026-09-02, С21).
+                    await _coordinator.ProcessModuleRemovedAsync(moduleName).ConfigureAwait(false);
+                    rollbackAssembly = previous.Alc.Assemblies.First();
+                }
+                else if (overwrittenPath is not null
+                         && string.Equals(Path.GetFullPath(previous.DllPath), Path.GetFullPath(overwrittenPath),
+                             StringComparison.OrdinalIgnoreCase))
+                {
+                    // No live instance and the failed new version was written to the SAME path — the
+                    // disk no longer holds the previous version. A fake rollback would load the broken
+                    // bytes in a retry loop; refuse loudly instead and keep the history entry.
+                    _logger.LogCritical(
+                        "Rollback of {Module} impossible: {Path} was overwritten in place and no live instance of "
+                        + "version {Version} remains — deploy a known-good file.",
+                        moduleName, previous.DllPath, previous.Version);
+                    lock (history) history.Insert(0, previous);
+                    return false;
+                }
+                else
+                {
+                    // Stop current version
+                    await _coordinator.ProcessModuleRemovedAsync(moduleName).ConfigureAwait(false);
 
-                // Re-discover and register old version (load via ALC from bytes — no lock)
-                var rollbackAlc = new ModuleAssemblyLoadContext(Path.GetFileNameWithoutExtension(previous.DllPath), _assemblyProbePaths, _collectible);
-                // Entry assembly stays ALC-private — NOT republished to the shared tracker (see the F-7 note
-                // in HotSwapAsync step 8). Republishing would leak a duplicate copy into the Default ALC.
-                rollbackAssembly = rollbackAlc.LoadFromBytes(previous.DllPath);
-            }
-            var rollbackSourceDir = Path.GetDirectoryName(Path.GetFullPath(previous.DllPath));
-            var modules = TsakModuleRegistry.DiscoverModulesInAssembly(rollbackAssembly, rollbackSourceDir);
-            var oldModule = modules.FirstOrDefault(m =>
-                m.ModuleName.Equals(moduleName, StringComparison.OrdinalIgnoreCase));
+                    // Re-discover and register old version (load via ALC from bytes — no lock)
+                    var rollbackAlc = new ModuleAssemblyLoadContext(Path.GetFileNameWithoutExtension(previous.DllPath), _assemblyProbePaths, _collectible);
+                    // Entry assembly stays ALC-private — NOT republished to the shared tracker (see the F-7 note
+                    // in HotSwapAsync step 8). Republishing would leak a duplicate copy into the Default ALC.
+                    rollbackAssembly = rollbackAlc.LoadFromBytes(previous.DllPath);
+                }
+                var rollbackSourceDir = Path.GetDirectoryName(Path.GetFullPath(previous.DllPath));
+                var modules = TsakModuleRegistry.DiscoverModulesInAssembly(rollbackAssembly, rollbackSourceDir);
+                oldModule = modules.FirstOrDefault(m =>
+                    m.ModuleName.Equals(moduleName, StringComparison.OrdinalIgnoreCase));
 
-            if (oldModule is null)
-            {
-                _logger.LogError("Failed rollback: module {Module} not found in previous assembly {Path}",
-                    moduleName, previous.DllPath);
-                return false;
+                if (oldModule is null)
+                {
+                    _logger.LogError("Failed rollback: module {Module} not found in previous assembly {Path}",
+                        moduleName, previous.DllPath);
+                    return false;
+                }
             }
 
             await _registry.ReplaceModuleSilentAsync(oldModule);
-            await _coordinator.ProcessModuleAddedAsync(oldModule).ConfigureAwait(false);
+            var report = await _coordinator.ProcessModuleAddedAsync(oldModule).ConfigureAwait(false);
 
             _loadedModules[moduleName] = previous;
+            if (report.FailureFor(moduleName) is { } failure)
+            {
+                // The previous version is registered and tracked again, but it did not come up either —
+                // the coordinator swallowed the exception (a bad module must not crash the node).
+                _logger.LogCritical(failure.Exception,
+                    "Rollback of {Module} to version {Version} failed: the previous version did not start either — the module is down",
+                    moduleName, previous.Version);
+                return false;
+            }
+
             _logger.LogInformation("Rolled back {Module} to version {Version}", moduleName, previous.Version);
             return true;
         }
@@ -1129,6 +1342,15 @@ public sealed class HotReloadService : IDisposable
     public void TrackModule(string moduleName, string dllPath, string version)
     {
         _loadedModules[moduleName] = new LoadedModuleInfo(null, dllPath, version);
+    }
+
+    /// <summary>
+    /// Skips <paramref name="path"/> on later scans until its write time moves: the same rule that keeps a
+    /// non-module dependency from being re-read every scan, applied to a file that failed.
+    /// </summary>
+    private void IgnoreUntilChanged(string path)
+    {
+        _ignoredDlls[path] = File.GetLastWriteTimeUtc(path);
     }
 
     /// <summary>
@@ -1216,8 +1438,14 @@ public sealed class HotReloadService : IDisposable
         return lastWrite.ToString("yyyy.MM.dd.HHmm", System.Globalization.CultureInfo.InvariantCulture);
     }
 
+    /// <param name="LiveModule">
+    /// The instance that ran this version, kept from the moment it was swapped out. For a version loaded
+    /// outside hot reload (<see cref="Alc"/> is null: startup discovery) it is the only copy of that code once
+    /// the file is overwritten in place, and a rollback re-activates it.
+    /// </param>
     internal sealed record LoadedModuleInfo(
         ModuleAssemblyLoadContext? Alc,
         string DllPath,
-        string Version);
+        string Version,
+        ITsakModule? LiveModule = null);
 }

@@ -1,6 +1,6 @@
 namespace redb.Tsak.Contracts;
 
-/// <summary>Snapshot of the entire cluster state from redb EAV.</summary>
+/// <summary>Snapshot of the entire cluster state read from redb.</summary>
 public class ClusterTopology
 {
     public string ClusterName { get; set; } = "unknown";
@@ -33,6 +33,12 @@ public class NodeInfo
     public string NodeId { get; set; } = string.Empty;
     public string Hostname { get; set; } = string.Empty;
     public string GroupName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The cluster the node belongs to. A database can hold several clusters with equal group names and
+    /// node ids; a record written before cluster isolation (4.0.x) carries none.
+    /// </summary>
+    public string? ClusterName { get; set; }
     public NodeStatus Status { get; set; }
     public DateTimeOffset LastHeartbeat { get; set; }
     public DateTimeOffset StartedAt { get; set; }

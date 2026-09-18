@@ -443,6 +443,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<HotReloadService>();
     }
 
+    /// <summary>Scheduler name shipped in appsettings.json; with AdoJobStore it is scoped to the Tsak cluster.</summary>
+    private const string DefaultSchedulerName = "TsakScheduler";
+
     private static void ConfigureQuartz(IServiceCollection services, IConfiguration configuration)
     {
         var quartzSection = configuration.GetSection("Quartz");
@@ -455,30 +458,24 @@ public static class ServiceCollectionExtensions
             var jobStoreType = configuration["Quartz:quartz.jobStore.type"] ?? "";
             if (jobStoreType.Contains("AdoJobStore", StringComparison.OrdinalIgnoreCase))
             {
-                var provider = configuration["Tsak:Redb:Provider"]?.ToLowerInvariant();
+                // Same provider set as redb storage; the per-provider Quartz values live in the dialect.
+                var dialect = Audit.TsakSqlDialect.ForQuartz(configuration);
 
                 var explicitCs = configuration["Quartz:quartz.dataSource.default.connectionString"];
                 if (string.IsNullOrEmpty(explicitCs))
                 {
-                    // Per-provider Quartz AdoJobStore mapping — same set of providers as redb storage.
-                    var (csName, qProvider, qDelegate) = provider switch
-                    {
-                        "mssql" or "sqlserver" => ("MSSql",  "SqlServer",        "Quartz.Impl.AdoJobStore.SqlServerDelegate, Quartz"),
-                        "sqlite"               => ("Sqlite", "SQLite-Microsoft", "Quartz.Impl.AdoJobStore.SQLiteDelegate, Quartz"),
-                        _                      => ("Postgres", "Npgsql",         "Quartz.Impl.AdoJobStore.PostgreSQLDelegate, Quartz"),
-                    };
-                    var connStr = configuration.GetConnectionString(csName);
+                    var connStr = configuration.GetConnectionString(dialect.ConnectionStringName);
 
                     if (!string.IsNullOrEmpty(connStr))
                     {
                         services.PostConfigure<QuartzOptions>(opts =>
                         {
                             opts["quartz.dataSource.default.connectionString"] = connStr;
-                            opts["quartz.dataSource.default.provider"] = qProvider;
+                            opts["quartz.dataSource.default.provider"] = dialect.QuartzProvider;
                             opts.TryAdd("quartz.jobStore.dataSource", "default");
                             opts.TryAdd("quartz.jobStore.tablePrefix", "QRTZ_");
                             opts.TryAdd("quartz.serializer.type", "newtonsoft");
-                            opts.TryAdd("quartz.jobStore.driverDelegateType", qDelegate);
+                            opts.TryAdd("quartz.jobStore.driverDelegateType", dialect.QuartzDriverDelegate);
                         });
                     }
                 }
@@ -491,11 +488,24 @@ public static class ServiceCollectionExtensions
                 // Publish already forces this (sanitize-appsettings.ps1) — mirrored here so a dev
                 // run behaves the same. Deliberate override, not TryAdd; registered after the
                 // blocks above so it wins.
-                if (provider == "sqlite")
+                if (!dialect.SupportsClusteredJobStore)
                 {
                     services.PostConfigure<QuartzOptions>(opts =>
                         opts["quartz.jobStore.clustered"] = "false");
                 }
+
+                // Quartz clusters AdoJobStore nodes by scheduler name, and several Tsak clusters may
+                // share one database: the shipped name (or none) is scoped to the Tsak cluster, so each
+                // Tsak cluster is its own Quartz cluster. Any other name is the operator's deliberate
+                // Quartz cluster boundary and is kept.
+                var schedulerName = $"{DefaultSchedulerName}-{redb.Tsak.Core.Services.Storage.TsakStorageScope.ClusterName(configuration)}";
+                services.PostConfigure<QuartzOptions>(opts =>
+                {
+                    if (!opts.TryGetValue("quartz.scheduler.instanceName", out var name)
+                        || string.IsNullOrWhiteSpace(name)
+                        || name == DefaultSchedulerName)
+                        opts["quartz.scheduler.instanceName"] = schedulerName;
+                });
             }
         }
         else

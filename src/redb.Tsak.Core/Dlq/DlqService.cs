@@ -6,6 +6,7 @@ using redb.Route.Abstractions;
 using redb.Tsak.Contracts;
 using redb.Tsak.Core.Audit;
 using redb.Tsak.Core.Contracts;
+using redb.Tsak.Core.Services.Storage;
 
 namespace redb.Tsak.Core.Dlq;
 
@@ -13,18 +14,33 @@ namespace redb.Tsak.Core.Dlq;
 /// The dead-letter store and its operations: capture a failed exchange (from a route checkpoint),
 /// query/page the store, replay an entry back through its route, discard, and prune. Raw ADO.NET on
 /// purpose — the table is flat and provider-specific, like the audit store.
+/// <para>
+/// Several Tsak clusters may share the database: an entry carries the cluster that captured it
+/// (<c>Tsak:Cluster:ClusterName</c>), and every operation sees only this node's cluster, so another
+/// cluster's entry is "not found" here. An entry captured before cluster isolation has no cluster: it is
+/// listed and pruned by every cluster, and replayed only while the database holds a single cluster
+/// (<see cref="ITsakClusterDirectory"/>; without one — outside cluster mode — it is this node's own).
+/// </para>
 /// </summary>
 public sealed class DlqService
 {
     private readonly IConfiguration _configuration;
     private readonly ITsakContextManager _contextManager;
     private readonly ILogger<DlqService> _logger;
+    private readonly ITsakClusterDirectory? _clusterDirectory;
+    private readonly string _clusterName;
 
-    public DlqService(IConfiguration configuration, ITsakContextManager contextManager, ILogger<DlqService> logger)
+    public DlqService(
+        IConfiguration configuration,
+        ITsakContextManager contextManager,
+        ILogger<DlqService> logger,
+        ITsakClusterDirectory? clusterDirectory = null)
     {
         _configuration = configuration;
         _contextManager = contextManager;
         _logger = logger;
+        _clusterDirectory = clusterDirectory;
+        _clusterName = TsakStorageScope.ClusterName(configuration);
     }
 
     public AuditProvider Provider => DlqStorage.ResolveProvider(_configuration);
@@ -70,6 +86,7 @@ public sealed class DlqService
             // makes the whole INSERT throw (silently, via the catch) — the DLQ then captures nothing
             // on Postgres. bool maps cleanly to PG boolean / SQL Server bit / SQLite 0/1.
             AddParam(cmd, "replayable", s.Replayable);
+            AddParam(cmd, "cluster_name", _clusterName);
             await cmd.ExecuteNonQueryAsync(ct);
 
             _logger.LogInformation("DLQ captured failed exchange: route={Route} marker={Marker} ex={Ex}",
@@ -103,6 +120,7 @@ public sealed class DlqService
             await using var cmd = conn.CreateCommand();
             cmd.CommandText = DlqStorage.SelectSql(provider);
             BindQueryParameters(cmd, provider, context, route, status, since, until, limit, offset);
+            ClusterColumn.BindScope(cmd, _clusterName);
 
             var entries = new List<FailedExchangeEntry>();
             await using var reader = await cmd.ExecuteReaderAsync(ct);
@@ -128,7 +146,30 @@ public sealed class DlqService
         if (!IsAvailable)
             return new ExchangeReplayResult { Success = false, Message = "DLQ is not available (no database)." };
 
-        // Atomic claim FIRST (review item 3.3): flip pending → replaying, but only if still pending.
+        // Attribution first: every statement is scoped to this cluster, so another cluster's entry is not
+        // found. An entry captured before cluster isolation carries no cluster — while several clusters
+        // share the database, it cannot be told whose it is, and replaying it could run another cluster's
+        // exchange through this node's same-named route.
+        try
+        {
+            var existing = await TryLoadRowAsync(entryId, ct).ConfigureAwait(false);
+            if (existing is null)
+                return new ExchangeReplayResult { Success = false, Message = "Entry not found.", EntryId = entryId };
+
+            if (existing.ClusterName is null && await IsSharedByClustersAsync(ct).ConfigureAwait(false))
+                return new ExchangeReplayResult
+                {
+                    Success = false, EntryId = entryId,
+                    Message = "Entry was captured before cluster isolation and several clusters share this database — "
+                              + "it cannot be attributed to this cluster, so it is not replayed."
+                };
+        }
+        catch (Exception ex)
+        {
+            return new ExchangeReplayResult { Success = false, Message = $"Load failed: {ex.Message}", EntryId = entryId };
+        }
+
+        // Atomic claim (review item 3.3): flip pending → replaying, but only if still pending.
         // The DB serializes the conditional UPDATE, so of two concurrent replays exactly one wins the
         // claim and actually replays — the other is told it is already being handled. This is what
         // stops a double-click / two operators from replaying the same failed exchange twice. A crash
@@ -201,6 +242,11 @@ public sealed class DlqService
         }
     }
 
+    /// <summary>True when the database holds more than one Tsak cluster (known only in cluster mode).</summary>
+    private async Task<bool> IsSharedByClustersAsync(CancellationToken ct) =>
+        _clusterDirectory is not null
+        && await _clusterDirectory.CountClustersAsync(ct).ConfigureAwait(false) > 1;
+
     /// <summary>Atomic pending → replaying claim. Returns rows affected (1 = won, 0 = lost/not pending).</summary>
     private async Task<int> ClaimForReplayAsync(string entryId, CancellationToken ct)
     {
@@ -214,6 +260,7 @@ public sealed class DlqService
         AddParam(cmd, "from_status", "pending");
         AddParam(cmd, "to_status", "replaying");
         AddDateParam(cmd, provider, "claimed_at", DateTimeOffset.UtcNow);
+        ClusterColumn.BindScope(cmd, _clusterName);
         return await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -231,6 +278,7 @@ public sealed class DlqService
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = DlqStorage.SelectOneSql(provider);
         AddParam(cmd, "entry_id", entryId);
+        ClusterColumn.BindScope(cmd, _clusterName);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         return await reader.ReadAsync(ct) ? MapFull(reader) : null;
     }
@@ -245,6 +293,7 @@ public sealed class DlqService
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = DlqStorage.DeleteOneSql(provider);
         AddParam(cmd, "entry_id", entryId);
+        ClusterColumn.BindScope(cmd, _clusterName);
         return await cmd.ExecuteNonQueryAsync(ct) > 0;
     }
 
@@ -258,6 +307,7 @@ public sealed class DlqService
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = DlqStorage.DeleteOlderThanSql();
         AddDateParam(cmd, provider, "cutoff", cutoff);
+        ClusterColumn.BindScope(cmd, _clusterName);
         return await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -272,6 +322,7 @@ public sealed class DlqService
         AddParam(cmd, "status", status);
         AddDateParam(cmd, provider, "replayed_at", replayedAt);
         AddParam(cmd, "entry_id", entryId);
+        ClusterColumn.BindScope(cmd, _clusterName);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -280,7 +331,7 @@ public sealed class DlqService
     private sealed record DlqRow(
         string EntryId, string ContextName, string RouteId, string MarkerName,
         string BodyKind, string? BodyType, string? BodyData, string HeadersJson, string PropertiesJson, bool Replayable,
-        string Status);
+        string Status, string? ClusterName);
 
     private static FailedExchangeEntry MapSummary(DbDataReader r) => new()
     {
@@ -302,12 +353,12 @@ public sealed class DlqService
         GetString(r, "entry_id") ?? "", GetString(r, "context_name") ?? "", GetString(r, "route_id") ?? "",
         GetString(r, "marker_name") ?? "", GetString(r, "body_kind") ?? "none", GetString(r, "body_type"),
         GetString(r, "body_data"), GetString(r, "headers_json") ?? "{}", GetString(r, "properties_json") ?? "{}",
-        GetBool(r, "replayable"), GetString(r, "status") ?? "pending");
+        GetBool(r, "replayable"), GetString(r, "status") ?? "pending", GetString(r, "cluster_name"));
 
     /// <summary>
-    /// Binds the parameters of <see cref="DlqStorage.SelectSql"/> with explicit types (see
-    /// <see cref="DbParameterBinding"/> for why a typed null matters on PostgreSQL). Internal so the
-    /// bound shape can be checked without a database.
+    /// Binds the filter and paging parameters of <see cref="DlqStorage.SelectSql"/> with explicit types
+    /// (see <see cref="DbParameterBinding"/> for why a typed null matters on PostgreSQL); the cluster scope
+    /// is bound next to it by the caller. Internal so the bound shape can be checked without a database.
     /// </summary>
     internal static void BindQueryParameters(
         DbCommand cmd, AuditProvider provider,

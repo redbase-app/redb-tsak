@@ -208,9 +208,9 @@ Requires `Storage:Type = "Redb"`, `Redb:UsePro = true`, and a valid license.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `Enabled` | `bool` | `false` | Enable cluster mode. If `false`, all cluster services are skipped. |
-| `ClusterName` | `string` | `"default"` | Logical cluster name. Nodes with different cluster names are isolated. |
+| `ClusterName` | `string` | `"default"` | Logical cluster name. Nodes with different cluster names are isolated (leader, locks, nodes, assignments), even on one database with equal group names or node ids. |
 | `GroupName` | `string` | `"default"` | Node group within the cluster. Used for module assignment targeting. |
-| `NodeId` | `string` | hostname | Unique node identifier. Auto-generated from hostname if empty. |
+| `NodeId` | `string` | hostname | Node identifier, unique within its cluster group. Auto-generated from hostname if empty. |
 | `ApiEndpoint` | `string` | auto | Public API URL for this node. If empty, built from `Tsak:Api:Host` + `Tsak:Api:Port`. |
 | `HeartbeatIntervalSeconds` | `int` | `15` | How often the node sends alive signals to the registry. |
 | `DeadNodeTimeoutSeconds` | `int` | `60` | Seconds without heartbeat before a node is marked dead. |
@@ -242,7 +242,7 @@ The worker integrates [Quartz.NET](https://www.quartz-scheduler.net/) for cron-t
 | `Quartz:quartz.jobStore.type` | `JobStoreTX` | ADO.NET job store for persistence. |
 | `Quartz:quartz.jobStore.clustered` | `true` | Enable Quartz clustering (requires shared database). |
 | `Quartz:quartz.scheduler.instanceId` | `AUTO` | Unique scheduler instance ID (auto-generated). |
-| `Quartz:quartz.scheduler.instanceName` | `TsakScheduler` | Scheduler name. |
+| `Quartz:quartz.scheduler.instanceName` | `TsakScheduler` | Scheduler name. With AdoJobStore, `TsakScheduler` or an empty name becomes `TsakScheduler-{Tsak:Cluster:ClusterName}`, so each Tsak cluster on a shared database is its own Quartz cluster; any other name is kept. |
 
 Quartz tables are auto-created from embedded SQL scripts (`tables_postgres.sql` / `tables_sqlServer.sql`).
 

@@ -444,28 +444,22 @@ public class TsakModuleRegistry : ITsakModuleRegistry
             }
         }
 
-        // 2. Find InitRoute.main(IRouteContext) convention
+        // 2. Find the InitRoute.main convention: one public static main in either supported form, synchronous
+        //    or Task<IRouteContext>. A main that fits neither form, or more than one main, is an explicit error
+        //    (InitRouteConvention.Resolve) instead of a module that silently never appears; an InitRoute type
+        //    without main does not claim to be a module.
         foreach (var type in assembly.GetExportedTypes())
         {
-            if (type.Name != "InitRoute")
+            if (type.Name != Modules.InitRouteConvention.TypeName)
                 continue;
 
-            var mainMethod = type.GetMethod("main", BindingFlags.Public | BindingFlags.Static);
-            if (mainMethod == null)
+            var mains = type.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                .Where(m => m.Name == Modules.InitRouteConvention.MethodName)
+                .ToList();
+            if (mains.Count == 0)
                 continue;
 
-            var parameters = mainMethod.GetParameters();
-            if (parameters.Length != 1)
-                continue;
-
-            // The parameter must be IRouteContext (or RouteContext)
-            var paramType = parameters[0].ParameterType;
-            if (paramType.Name is not ("IRouteContext" or "RouteContext"))
-                continue;
-
-            var returnType = mainMethod.ReturnType;
-            if (returnType.Name is not ("IRouteContext" or "RouteContext"))
-                continue;
+            var mainMethod = Modules.InitRouteConvention.Resolve(type, mains);
 
             var moduleName = type.Namespace ?? type.Assembly.GetName().Name ?? "Unknown";
             var version = assembly.GetName().Version?.ToString() ?? "0.0.0";

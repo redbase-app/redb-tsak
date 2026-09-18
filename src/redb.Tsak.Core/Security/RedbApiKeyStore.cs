@@ -78,32 +78,13 @@ public sealed class RedbApiKeyStore : IApiKeyStore
                 await BackfillLegacyKeysAsync(redb, _logger);
             }
 
-            var section = _configuration.GetSection("Tsak:Auth:Keys");
-            if (section.Exists())
+            foreach (var record in ApiKeyConfigReader.Read(_configuration, _logger))
             {
-                foreach (var child in section.GetChildren())
-                {
-                    var id = child["Id"];
-                    var keyHash = child["KeyHash"];
-                    if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(keyHash)) continue;
+                var existing = await GetByHashInternalAsync(record.KeyHash, ct);
+                if (existing is not null) continue;
 
-                    var existing = await GetByHashInternalAsync(keyHash, ct);
-                    if (existing is not null) continue;
-
-                    var record = new ApiKeyRecord
-                    {
-                        Id = id,
-                        KeyHash = keyHash,
-                        Name = child["Name"] ?? "",
-                        UserId = child["UserId"],
-                        Roles = child["Roles"] ?? "",
-                        Revoked = bool.TryParse(child["Revoked"], out var r) && r,
-                        ExpiresAt = DateTimeOffset.TryParse(child["ExpiresAt"], out var exp) ? exp : null,
-                        CreatedAt = DateTimeOffset.TryParse(child["CreatedAt"], out var cr) ? cr : DateTimeOffset.UtcNow
-                    };
-                    await SaveCoreAsync(record, ct);
-                    _logger.LogInformation("Seeded API key '{Name}' (id={Id}) from config", record.Name, record.Id);
-                }
+                await SaveCoreAsync(record, ct);
+                _logger.LogInformation("Seeded API key '{Name}' (id={Id}) from config", record.Name, record.Id);
             }
 
             _seeded = true;
@@ -139,6 +120,11 @@ public sealed class RedbApiKeyStore : IApiKeyStore
     {
         using var scope = _scopeFactory.CreateScope();
         var redb = scope.ServiceProvider.GetRequiredService<IRedbService>();
+
+        // The lookup is an exact comparison — case-sensitive on PostgreSQL, case-insensitive on SQL Server's
+        // default collation. Both sides are normalised to the stored form so the same key behaves the same on
+        // every provider: ApiKeyService.HashKey produces uppercase, and so does the config reader.
+        keyHash = ApiKeyConfigReader.NormalizeHash(keyHash) ?? keyHash;
 
         var obj = await redb.Query<ApiKeyProps>()
             .WhereRedb(o => o.ValueUnique == keyHash)

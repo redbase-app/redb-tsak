@@ -1,5 +1,6 @@
 @page "/node/{NodeId}/watchdog"
 @inject INodeClientProvider NodeProvider
+@inject ILogger<Watchdog> Log
 @inject ToastService Toast
 @using redb.Tsak.Client
 @using redb.Tsak.Contracts
@@ -220,7 +221,7 @@ else
     private Task PollLoop(CancellationToken ct)
     {
         _timer = new PeriodicTimer(TimeSpan.FromSeconds(15));
-        return PollLoops.RunAsync(_timer, ct, async () =>
+        return PollLoops.RunAsync(_timer, ct, Log, async () =>
         {
             await LoadData();
             await InvokeAsync(StateHasChanged);

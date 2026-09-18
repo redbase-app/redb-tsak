@@ -2,6 +2,7 @@
 @* Operator tier: matches the worker API (LogsController — log bodies may carry payload fragments; review 2026-09-02 В13). *@
 @attribute [Authorize(Policy = "Operator")]
 @inject INodeClientProvider NodeProvider
+@inject ILogger<Logs> Log
 @inject ToastService Toast
 @inject NavigationManager Nav
 @inject IJSRuntime JS
@@ -211,7 +212,7 @@ else
     private Task PollLoop(CancellationToken ct)
     {
         _timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
-        return PollLoops.RunAsync(_timer, ct, async () =>
+        return PollLoops.RunAsync(_timer, ct, Log, async () =>
         {
             if (_activeTab == "live")
             {

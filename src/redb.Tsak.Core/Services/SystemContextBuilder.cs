@@ -32,6 +32,9 @@ public class SystemContextBuilder
 {
     public const string SystemContextName = "_system";
 
+    /// <summary>Route id of the auth-exempt echo probe on the API port; it ships stopped.</summary>
+    public const string EchoRouteId = "system-echo";
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -215,6 +218,7 @@ public class SystemContextBuilder
         }
 
         // 6. Add API route
+        var echoPath = _configuration.GetValue("Tsak:Api:Echo:Path", "/api/echo");
         var listenUri = $"http:{host}:{port}/{{**path}}?host={host}&port={port}&inOut=true";
         var actionFilters = _serviceProvider.GetService<IEnumerable<IControllerActionFilter>>()
                             ?? Enumerable.Empty<IControllerActionFilter>();
@@ -225,7 +229,19 @@ public class SystemContextBuilder
             {
                 BridgeHttpHeaders(exchange);
 
-                if (apiKeyService is not null && !IsAuthExempt(exchange, exemptPatterns))
+                // Only a STOPPED echo reaches this catch-all: a running one out-ranks it by path specificity.
+                // The request used to run into the API key check and answer 401, which read as "the echo
+                // needs a key". It needs no key, it needs starting, so say that. The exchange is stopped and
+                // falls through: the key check below skips it, and PrepareHttpResponse still writes the body.
+                if (RequestPathIs(exchange, echoPath))
+                {
+                    ApiResponse.ServiceUnavailable(exchange,
+                        $"The echo route '{EchoRouteId}' is stopped. It needs no API key, but it ships stopped: start it " +
+                        $"from the dashboard (Routes) or with POST /api/contexts/{SystemContextName}/routes/{EchoRouteId}/start.");
+                    exchange.Stop();
+                }
+
+                if (!exchange.IsStopped && apiKeyService is not null && !IsAuthExempt(exchange, exemptPatterns))
                 {
                     // Per-IP brute-force lockout on the whole auth surface (4.5). The key here is the
                     // AuthorizeProcessor carries NO required roles, so a stopped exchange means the KEY
@@ -271,12 +287,11 @@ public class SystemContextBuilder
         //     so no separate port is needed. Ships with AutoStart(false): it stays stopped
         //     until started by hand from the Routes API / dashboard, and while running its own
         //     Process pipeline (no AuthorizeProcessor) answers it without an API key.
-        var echoPath = _configuration.GetValue("Tsak:Api:Echo:Path", "/api/echo");
         var echoUri = $"http:{host}:{port}{echoPath}?host={host}&port={port}&inOut=true";
         routeContext.AddRoutes(r =>
         {
             r.From(echoUri)
-                .RouteId("system-echo")
+                .RouteId(EchoRouteId)
                 .AutoStart(false)
                 .Process((exchange, _) =>
                 {
@@ -426,7 +441,7 @@ public class SystemContextBuilder
                     ProviderFactory = AuditStorage.ProviderFactory(provider)
                 }));
 
-            routeContext.AddRoutes(new TsakAuditRouteBuilder(provider));
+            routeContext.AddRoutes(new TsakAuditRouteBuilder(provider, Storage.TsakStorageScope.ClusterName(_configuration)));
 
             _logger.LogInformation("Admin audit writer route mounted on {Endpoint} ({Provider})",
                 AuditStorage.AuditEndpoint, provider);
@@ -546,6 +561,14 @@ public class SystemContextBuilder
     /// <c>/api/health/*</c> and <c>/api/health</c>). A trailing <c>*</c> means prefix
     /// match; otherwise exact case-insensitive match.
     /// </summary>
+    /// <summary>True when the request path equals <paramref name="path"/>, case-insensitive, a trailing slash ignored.</summary>
+    internal static bool RequestPathIs(IExchange exchange, string path)
+    {
+        var requested = exchange.In.Headers.TryGetValue(HttpHeaders.Path, out var p) ? p?.ToString() : null;
+        return requested is not null
+            && requested.TrimEnd('/').Equals(path.TrimEnd('/'), StringComparison.OrdinalIgnoreCase);
+    }
+
     internal static bool IsAuthExempt(IExchange exchange, IReadOnlyList<string> patterns)
     {
         var path = exchange.In.Headers.TryGetValue(HttpHeaders.Path, out var p)

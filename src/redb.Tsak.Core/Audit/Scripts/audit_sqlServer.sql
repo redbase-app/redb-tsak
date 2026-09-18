@@ -23,6 +23,7 @@ CREATE TABLE [dbo].[tsak_audit_log] (
     -- No native JSON type before SQL Server 2025; nvarchar(max) is the documented carrier
     -- and JSON_VALUE / OPENJSON read it directly.
     [payload]           nvarchar(max) NULL,
+    [cluster_name]      nvarchar(200) NULL,
     CONSTRAINT [uq_tsak_audit_event_id] UNIQUE ([event_id])
 );
 

@@ -1,5 +1,6 @@
 @page "/"
 @inject INodeClientProvider NodeProvider
+@inject ILogger<Dashboard> Log
 @inject NavigationManager Nav
 @using redb.Tsak.Client
 @using redb.Tsak.Contracts
@@ -237,6 +238,7 @@ else if (_topology is not null)
     private bool _loading = true;
     private int _onlineCount;
     private TsakChart? _donutChart;
+    private bool _donutDrawn;
     private PeriodicTimer? _timer;
     private CancellationTokenSource? _cts;
     // Component-scoped token: API calls abort when the component is disposed (navigated away) (4.9).
@@ -287,24 +289,33 @@ else if (_topology is not null)
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (firstRender && _topology is not null)
+        // Not firstRender: in interactive mode the first render is the loading spinner, and the
+        // chart component only exists from the render after the initial load completes.
+        if (!_donutDrawn && _donutChart is not null && _topology is not null)
+        {
+            _donutDrawn = true;
             await UpdateDonutChart();
+        }
     }
 
     private Task PollLoop(CancellationToken ct)
     {
         _timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
-        return PollLoops.RunAsync(_timer, ct, async () =>
+        // The tick must run on the Blazor dispatcher: PollLoops continues on the thread pool, and
+        // this body refreshes child panels whose StateHasChanged throws off the dispatcher — that
+        // exception killed every tick (no status donut, no auto-refresh) until 2026-09-14.
+        return PollLoops.RunAsync(_timer, ct, Log, () => InvokeAsync(async () =>
         {
             await LoadData();
             await UpdateDonutChart();
-            await InvokeAsync(StateHasChanged);
-        });
+            StateHasChanged();
+        }));
     }
 
     private async Task LoadData()
     {
-        _loading = true;
+        // The spinner belongs to the initial load only (_loading starts true). Re-entering it on
+        // a reload swapped the whole topology block out and destroyed the donut's canvas.
         _topology = await NodeProvider.LoadTopologyAsync(forceRefresh: true);
         _onlineCount = _topology.Nodes.Count(n => n.IsAlive);
 

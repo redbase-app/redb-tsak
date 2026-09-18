@@ -13,18 +13,18 @@ Published to `ghcr.io/redbase-app/` (public, cosign-signed):
 
 | Image | What it is | Ports |
 |-------|------------|-------|
-| `redb-tsak-worker:3.2.2` | Process-automation runtime (route contexts, modules, cluster). | `9090` (management/REST API) |
-| `redb-tsak-web:3.2.2` | Blazor dashboard (monitoring, routes, logs). Talks to a worker. | `8085` |
-| `redb-tsak-stack:3.2.2` | Worker **+** dashboard in one container (supervisord). | `9090`, `8085` |
+| `redb-tsak-worker:4.0.0` | Process-automation runtime (route contexts, modules, cluster). | `9090` (management/REST API) |
+| `redb-tsak-web:4.0.0` | Blazor dashboard (monitoring, routes, logs). Talks to a worker. | `8085` |
+| `redb-tsak-stack:4.0.0` | Worker **+** dashboard in one container (supervisord). | `9090`, `8085` |
 
-Tags: `:3.2.2` (= `:3.2.2-net9`), `:latest`. The worker, web and stack images run on .NET 9;
-the standalone archives additionally bundle the shared route connectors for net8 / net9 / net10
-so user modules (`.tpkg`) can target any of the three.
-Pro features (cluster, advanced storage) activate from a **license JWT** in config; without
-one the container runs the OSS feature set.
+Tags: `:4.0.0` (= `:4.0.0-net10`), `:latest`. The worker, web and stack images run on .NET 10; a worker image
+can also be built for another target framework, and then carries that suffix (`:4.0.0-net9`). The standalone
+archives additionally bundle the shared route connectors for net8 / net9 / net10, so user modules (`.tpkg`)
+can target any of the three.
+Pro features (cluster, advanced storage) are on in the image and need no license token through 4.x (§9).
 
 ```bash
-docker pull ghcr.io/redbase-app/redb-tsak-stack:3.2.2
+docker pull ghcr.io/redbase-app/redb-tsak-stack:4.0.0
 ```
 
 ---
@@ -33,14 +33,40 @@ docker pull ghcr.io/redbase-app/redb-tsak-stack:3.2.2
 
 ```bash
 # Stack (worker + dashboard) — full Pro on embedded SQLite, one-node cluster, no key needed.
-docker run --rm -p 9090:9090 -p 8085:8085 ghcr.io/redbase-app/redb-tsak-stack:3.2.2
+docker run --rm -p 9090:9090 -p 8085:8085 ghcr.io/redbase-app/redb-tsak-stack:4.0.0
 # dashboard:  http://localhost:8085   (login admin / admin)
 # REST API:   http://localhost:9090/api/health/live
 ```
 
 The shipped `appsettings.json` boots with **SQLite + Pro enabled + a one-node cluster** (see §6) —
-zero external dependencies and **no license key**: the whole 3.x line runs Pro free and unrestricted
+zero external dependencies and **no license key**: every major line through 4.x runs Pro free and unrestricted
 (§9). Override anything via env vars (§4).
+
+### What the image ships with — and what to change before you leave it running
+
+The image is built for one command, so it starts with no secrets of its own: the packaging strips the
+development secret, and authentication is **off** — with authentication on and no secret the worker refuses to
+start, which would defeat the point. The consequences, all deliberate:
+
+| As shipped | Means | Before it faces anyone else |
+|---|---|---|
+| `Tsak:Auth:Enabled=false` | The management API on `9090` answers **without a key**: stop contexts, upload modules, issue keys, dump config. The node logs a `SECURITY:` warning at every start saying exactly this. | Set `Tsak__Auth__Enabled=true` **and** your own `Tsak__Auth__Secret`, then add a key (see "The first API key" in §4). |
+| `Tsak:Api:Host=0.0.0.0` | The API listens on every interface of the container — it has to, or a published port would reach nothing. Outside a container the code default is loopback (`127.0.0.1`). | Publish the port only where it belongs: `-p 127.0.0.1:9090:9090`, a private network, or behind a proxy that terminates TLS (§5). |
+| Dashboard login `admin` / `admin` | Anyone reaching `8085` administers the node. | `Tsak__Web__AdminLogin` / `Tsak__Web__AdminPassword`. |
+| SQLite at `/app/redb.db` | State lives inside the container and goes away with it. | Mount it: `-v tsak-data:/app` keeps the store and the logs, or point `ConnectionStrings__Sqlite` at a path you mount (`Data Source=/data/redb.db` with `-v tsak-data:/data`). |
+
+```bash
+# The same quick start, but reachable only from this machine and with a key required.
+docker run --rm -p 127.0.0.1:9090:9090 -p 127.0.0.1:8085:8085 \
+  -e Tsak__Auth__Enabled=true \
+  -e Tsak__Auth__Secret="$(openssl rand -hex 32)" \
+  -e Tsak__Web__AdminPassword="$(openssl rand -hex 16)" \
+  -v tsak-data:/app \
+  ghcr.io/redbase-app/redb-tsak-stack:4.0.0
+```
+
+With authentication on, the dashboard needs a key of its own: see "The first API key" in §4 — the CLI cannot
+issue it, because `tsak auth create` is a client of the API that key unlocks.
 
 ---
 
@@ -60,9 +86,8 @@ docker run -p 9090:9090 \
   -e Tsak__Storage__Type=Redb \
   -e Tsak__Redb__Provider=postgres \
   -e ConnectionStrings__Postgres="Host=pg;Port=5432;Username=tsak;Password=secret;Database=redb" \
-  -e Tsak__Redb__License__0="<your-license-jwt>" \
   -v tsak_data:/app  \
-  ghcr.io/redbase-app/redb-tsak-worker:3.2.2
+  ghcr.io/redbase-app/redb-tsak-worker:4.0.0
 ```
 
 > SQLite file: mount a volume to persist `redb.db` (it's written in the worker's working dir,
@@ -90,8 +115,8 @@ Tsak:Redb:License:0    ->  Tsak__Redb__License__0
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `Redb:Provider` | `sqlite` | redb provider: `sqlite` / `postgres` / `mssql`. |
-| `Redb:UsePro` | `true` | Turn on Pro components. Free and unrestricted on the whole 3.x line. |
-| `Redb:License` | *(empty)* | Array of license token(s). **Leave empty** — 3.x needs no key (§9). |
+| `Redb:UsePro` | `true` | Turn on Pro components. Free and unrestricted through major 4 (LicensePolicy.FreeThroughMajor). |
+| `Redb:License` | *(empty)* | Array of license token(s). **Leave empty** — nothing through 4.x needs a key (§9). |
 | `Redb:PropsSaveStrategy` | `DeleteInsert` | Property write mode: `DeleteInsert` (Free) or `ChangeTracking` (Pro). |
 | `ConnectionStrings:Sqlite` | `Data Source=redb.db` | SQLite file (Provider=sqlite). Persist via a volume. |
 | `ConnectionStrings:Postgres` | — | Npgsql connection string (Provider=postgres). |
@@ -113,15 +138,37 @@ Tsak:Redb:License:0    ->  Tsak__Redb__License__0
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `Enabled` | `true` | Serve the management + route-dispatch API. |
-| `Host` / `Port` | `0.0.0.0` / `9090` | Bind address/port. |
+| `Host` / `Port` | `127.0.0.1` / `9090` in code, **`0.0.0.0` in the image** | Bind address/port. Loopback is the code default, so a worker you run yourself is not exposed until you say so; the image binds every interface because a container must, and relies on you publishing the port deliberately (§2). |
 | `Echo:Path` | `/api/echo` | Auth-exempt echo probe path (route ships `AutoStart=false`). |
 
 ### `Tsak:Auth` — management-API authentication
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `Enabled` | `true` | Require an API key on management endpoints (metrics/echo stay exempt). |
-| `Secret` | *(stripped in image)* | HMAC secret for issued tokens. **Set in prod.** |
-| `Keys[]` | `svc-web-dashboard` | Service keys: `Id`, `KeyHash` (SHA-256 of the key), `Name`, `Roles`, `UserId`. The Web dashboard presents `Tsak:Web:ServiceApiKey`; its hash must match a key here. |
+| `Enabled` | `false` in code, **`false` in the image** | Require an API key on management endpoints (metrics/echo stay exempt). The image ships it off on purpose — see §2. Turn it on together with `Secret`: with authentication on and no secret the worker refuses to start. |
+| `Secret` | *(stripped in image)* | HMAC secret of the API keys — the key that `KeyHash` is computed with. **Set in prod.** |
+| `Keys[]` | `svc-web-dashboard` | Service keys: `Id`, `KeyHash`, `Name`, `Roles`, `UserId`. The Web dashboard presents `Tsak:Web:ServiceApiKey`; its hash must match a key here. See below — this is where the **first** key comes from. |
+
+#### The first API key
+
+`tsak auth create` talks to the worker's API and therefore needs a key already: the first one can only come
+from `Tsak:Auth:Keys`. Pick any random string as the key, store its hash here, and hand the key itself to
+whoever calls the API (`Tsak:Web:ServiceApiKey` for the dashboard).
+
+`KeyHash` is **HMAC-SHA256 of the key, keyed with `Tsak:Auth:Secret`**, as 64 hexadecimal characters:
+
+```bash
+printf %s "$KEY" | openssl dgst -sha256 -hmac "$TSAK_AUTH_SECRET" | awk '{print $NF}'
+```
+
+```powershell
+[Convert]::ToHexString([Security.Cryptography.HMACSHA256]::new(
+  [Text.Encoding]::UTF8.GetBytes($secret)).ComputeHash([Text.Encoding]::UTF8.GetBytes($key)))
+```
+
+Case does not matter — the worker normalises the hash — but a value that is not 64 hexadecimal characters is
+refused with an error naming the key, instead of being seeded into a key that answers 401 forever. `Roles`
+takes either a string (`"admin,ops"`) or an array (`Roles:0`, `Roles:1` — the only shape environment variables
+can express: `Tsak__Auth__Keys__0__Roles__0=admin`).
 
 ### `Tsak:Modules` — module loading (see §7)
 | Key | Default | Meaning |
@@ -184,13 +231,13 @@ The dashboard (Web / Stack) is a **Blazor Server** app on port `8085`.
 | Dashboard login | `Tsak:Web:AdminLogin` / `Tsak:Web:AdminPassword` | `admin` / `admin` | **Yes** |
 | Management-API auth secret | `Tsak:Auth:Secret` | *(stripped — empty)* | set if `Auth:Enabled=true` |
 | Web→worker service key | `Tsak:Web:ServiceApiKey` | *(stripped)* | set when Web and Worker are separate |
-| Pro license | `Tsak:Redb:License:0` | *(empty — none needed)* | no: Pro is free on 3.x (§9) |
+| Pro license | `Tsak:Redb:License:0` | *(empty — none needed)* | no: Pro is free through 4.x (§9) |
 
 ```bash
 docker run -p 8085:8085 \
   -e Tsak__Web__AdminLogin=admin \
   -e Tsak__Web__AdminPassword='CHANGE_ME' \
-  ghcr.io/redbase-app/redb-tsak-stack:3.2.2
+  ghcr.io/redbase-app/redb-tsak-stack:4.0.0
 ```
 
 ### Dashboard config (`Tsak:Web` + `Kestrel`)
@@ -251,7 +298,7 @@ problem. Access the dashboard at the path matching `ASPNETCORE_PATHBASE` (e.g. `
 
 The Tsak cluster is **redb-backed** (leader election + heartbeats live in the redb store; this
 is *not* Quartz clustering, which stays off on SQLite). The shipped config already runs it:
-`Tsak:Cluster:Enabled=true`, and clustering needs no license on 3.x — the `tsak.cluster` feature is
+`Tsak:Cluster:Enabled=true`, and clustering needs no license through 4.x — the `tsak.cluster` feature is
 part of the free window (§9), with no node cap.
 
 So **one worker = a working one-node cluster** (self-elected leader). To scale, run more nodes
@@ -279,7 +326,7 @@ Modules are hot-deployable `.tpkg` packages. The worker scans **`Tsak:Modules:As
 ```yaml
 services:
   worker:
-    image: ghcr.io/redbase-app/redb-tsak-stack:3.2.2
+    image: ghcr.io/redbase-app/redb-tsak-stack:4.0.0
     environment:
       - Tsak__Modules__AssemblyPaths__0=/app/worker/modules
     volumes:
@@ -298,7 +345,7 @@ worker loads it without a restart.
 ```yaml
 services:
   tsak:
-    image: ghcr.io/redbase-app/redb-tsak-stack:3.2.2
+    image: ghcr.io/redbase-app/redb-tsak-stack:4.0.0
     ports:
       - "9090:9090"      # management / REST API
       - "8085:8085"      # dashboard
@@ -317,7 +364,7 @@ volumes:
 ```yaml
 services:
   worker:
-    image: ghcr.io/redbase-app/redb-tsak-worker:3.2.2
+    image: ghcr.io/redbase-app/redb-tsak-worker:4.0.0
     ports: ["9090:9090"]
     environment:
       - Tsak__Redb__Provider=postgres
@@ -339,22 +386,22 @@ docker compose up -d
 
 ---
 
-## 9. Licensing — nothing to activate on 3.x
+## 9. Licensing — nothing to activate through 4.x
 
-**There is no key to buy, request or install.** The entire 3.x line — every minor and patch —
+**There is no key to buy, request or install.** Every major line through 4.x — every minor and patch —
 runs Pro **free and unrestricted**: `redb.*.Pro`, `redb.Tsak.Core.Pro`, the dashboard and
 clustering, in production, with no node cap and no request limit. The images ship with
 `Tsak:Redb:License` **empty**, and that is the correct state — leave it empty.
 
-This is enforced in code, not by policy alone: `LicensePolicy.FreeThroughMajor = 3`, and both
-license guards return before any check when the running major is ≤ 3. Licensing re-enables at
-major **4.0** and later; releases you already run stay free forever.
+This is enforced in code, not by policy alone: `LicensePolicy.FreeThroughMajor = 4`, and both
+license guards return before any check when the running major is ≤ 4. Licensing re-enables at
+major **5.0** and later; releases you already run stay free forever.
 
 Pro packages are proprietary (closed source) but free of charge. **Larger companies that need the
 Pro sources — for audit, escrow, or to build in-house — can request them; we hand them over.**
 Write to <https://redbase.app/pro>.
 
-> If you inherited a config carrying an old trial JWT, delete it. It is not needed on 3.x, and
+> If you inherited a config carrying an old trial JWT, delete it. It is not needed through 4.x, and
 > shipping a JWT in an image is exactly what the release pipeline blocks.
 
 ---
@@ -366,7 +413,7 @@ cosign **public key** (`cosign.pub`) is attached to each [GitHub Release](https:
 
 ```bash
 # grab cosign.pub from the release assets, then:
-cosign verify --key cosign.pub ghcr.io/redbase-app/redb-tsak-worker:3.2.2
+cosign verify --key cosign.pub ghcr.io/redbase-app/redb-tsak-worker:4.0.0
 ```
 
 ---
@@ -378,4 +425,4 @@ cosign verify --key cosign.pub ghcr.io/redbase-app/redb-tsak-worker:3.2.2
 | Dashboard login button does nothing | Blazor WebSocket not proxied | §5 — add `Upgrade`/`Connection` headers; use the `ASPNETCORE_PATHBASE` path |
 | `failed to ensure schema` / Npgsql connection refused | worker pointed at a Postgres that isn't reachable | check `ConnectionStrings`, or use SQLite (§3) |
 | Connectors missing after mounting a volume | bind-mounted `Libs/` and hid `Libs/shared` | §7 — mount `modules/`, never `Libs/` |
-| `REDB.PRO TRIAL MODE` / 1024 req/day | you are **not** on a 3.x build — the free window covers major ≤ 3 only | check the assembly version; on 3.x this banner cannot appear (§9) |
+| `REDB.PRO TRIAL MODE` / 1024 req/day | you are **not** on a build inside the free window — it covers major ≤ 4 | check the assembly version; through 4.x this banner cannot appear (§9) |

@@ -1,5 +1,6 @@
 @page "/node/{NodeId}/endpoints"
 @inject INodeClientProvider NodeProvider
+@inject ILogger<Endpoints> Log
 @inject NavigationManager Nav
 @inject ToastService Toast
 @using redb.Tsak.Client
@@ -268,7 +269,7 @@ else
     private Task PollLoop(CancellationToken ct)
     {
         _timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
-        return PollLoops.RunAsync(_timer, ct, async () =>
+        return PollLoops.RunAsync(_timer, ct, Log, async () =>
         {
             await LoadData();
             await InvokeAsync(StateHasChanged);

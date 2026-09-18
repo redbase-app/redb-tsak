@@ -62,6 +62,7 @@ internal sealed class DlqSchemaInitializer : IHostedService
             await using var cmd = conn.CreateCommand();
             cmd.CommandText = sql;
             await cmd.ExecuteNonQueryAsync(cancellationToken);
+            await ClusterColumn.EnsureAsync(conn, provider, DlqStorage.TableName, DlqStorage.ClusterIndexName, cancellationToken);
             _logger.LogInformation("DLQ table {Table} ensured ({Provider})", DlqStorage.TableName, provider);
         }
         catch (Exception ex)

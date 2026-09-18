@@ -55,19 +55,19 @@
   -->
   <ItemGroup>
     <ProjectReference Include="..\redb.Tsak.Contracts\redb.Tsak.Contracts.csproj" />
-    <PackageReference Include="redb.Core" Version="4.0.0" />
-    <PackageReference Include="redb.Core.Pro" Version="4.0.0" />
-    <PackageReference Include="redb.Route.Core" Version="4.0.0" />
-    <PackageReference Include="redb.Route.Xml" Version="4.0.0" />
-    <PackageReference Include="redb.Route.Http" Version="4.0.0" />
-    <PackageReference Include="redb.Route.Quartz" Version="4.0.0" />
-    <PackageReference Include="redb.Route.Sql" Version="4.0.0" />
-    <PackageReference Include="redb.Postgres" Version="4.0.0" />
-    <PackageReference Include="redb.Postgres.Pro" Version="4.0.0" />
-    <PackageReference Include="redb.MSSql" Version="4.0.0" />
-    <PackageReference Include="redb.MSSql.Pro" Version="4.0.0" />
-    <PackageReference Include="redb.SQLite" Version="4.0.0" />
-    <PackageReference Include="redb.SQLite.Pro" Version="4.0.0" />
+    <PackageReference Include="redb.Core" Version="4.0.1" />
+    <PackageReference Include="redb.Core.Pro" Version="4.0.1" />
+    <PackageReference Include="redb.Route.Core" Version="4.0.1" />
+    <PackageReference Include="redb.Route.Xml" Version="4.0.1" />
+    <PackageReference Include="redb.Route.Http" Version="4.0.1" />
+    <PackageReference Include="redb.Route.Quartz" Version="4.0.1" />
+    <PackageReference Include="redb.Route.Sql" Version="4.0.1" />
+    <PackageReference Include="redb.Postgres" Version="4.0.1" />
+    <PackageReference Include="redb.Postgres.Pro" Version="4.0.1" />
+    <PackageReference Include="redb.MSSql" Version="4.0.1" />
+    <PackageReference Include="redb.MSSql.Pro" Version="4.0.1" />
+    <PackageReference Include="redb.SQLite" Version="4.0.1" />
+    <PackageReference Include="redb.SQLite.Pro" Version="4.0.1" />
   </ItemGroup>
 
 </Project>

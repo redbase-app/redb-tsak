@@ -1,8 +1,8 @@
-using System.Data.Common;
 using System.Reflection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using redb.Tsak.Core.Audit;
 
 namespace redb.Tsak.Core.Quartz;
 
@@ -10,7 +10,8 @@ namespace redb.Tsak.Core.Quartz;
 /// Ensures Quartz.NET tables exist in the database when AdoJobStore is configured.
 /// Registered as <see cref="IHostedService"/> BEFORE QuartzHostedService so that
 /// tables are created before Quartz validates the schema.
-/// Uses raw ADO.NET connection (not redb) because redb may not be initialized yet.
+/// Uses raw ADO.NET connection (not redb) because redb may not be initialized yet. The provider's
+/// connection string, script and ADO factory come from <see cref="TsakSqlDialect.ForQuartz"/>.
 /// </summary>
 internal sealed class QuartzSchemaInitializer : IHostedService
 {
@@ -32,20 +33,15 @@ internal sealed class QuartzSchemaInitializer : IHostedService
             return;
         }
 
-        var provider = _configuration["Tsak:Redb:Provider"]?.ToLowerInvariant();
-        var (connName, resourceName) = provider switch
-        {
-            "mssql" or "sqlserver" => ("MSSql", "QuartzSchema.SqlServer"),
-            "sqlite"               => ("Sqlite", "QuartzSchema.Sqlite"),
-            _                      => ("Postgres", "QuartzSchema.Postgres"),
-        };
-        var connStr = _configuration.GetConnectionString(connName);
+        var dialect = TsakSqlDialect.ForQuartz(_configuration);
+        var connStr = _configuration.GetConnectionString(dialect.ConnectionStringName);
 
         if (string.IsNullOrEmpty(connStr))
         {
             _logger.LogWarning("No connection string found for Quartz schema initialization");
             return;
         }
+        var resourceName = $"QuartzSchema.{dialect.ScriptSuffix}";
         var sql = ReadEmbeddedScript(resourceName);
         if (sql is null)
         {
@@ -53,9 +49,10 @@ internal sealed class QuartzSchemaInitializer : IHostedService
             return;
         }
 
-        _logger.LogInformation("Applying Quartz schema ({Provider})...", provider ?? "postgres");
+        _logger.LogInformation("Applying Quartz schema ({Provider})...",
+            _configuration["Tsak:Redb:Provider"]?.ToLowerInvariant() ?? "postgres");
 
-        await using var conn = CreateConnection(provider, connStr);
+        await using var conn = AuditStorage.CreateConnection(dialect.Provider, connStr);
         await conn.OpenAsync(cancellationToken);
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
@@ -65,16 +62,6 @@ internal sealed class QuartzSchemaInitializer : IHostedService
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-
-    private static DbConnection CreateConnection(string? provider, string connectionString)
-    {
-        return provider switch
-        {
-            "mssql" or "sqlserver" => new Microsoft.Data.SqlClient.SqlConnection(connectionString),
-            "sqlite"               => new Microsoft.Data.Sqlite.SqliteConnection(connectionString),
-            _                      => new Npgsql.NpgsqlConnection(connectionString),
-        };
-    }
 
     private static string? ReadEmbeddedScript(string logicalName)
     {

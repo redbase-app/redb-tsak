@@ -1,4 +1,6 @@
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace redb.Tsak.Core.Security;
 
@@ -22,31 +24,15 @@ public sealed class ConfigApiKeyStore : IApiKeyStore
 {
     private readonly List<ApiKeyRecord> _keys;
 
-    public ConfigApiKeyStore(IConfiguration configuration)
+    /// <param name="configuration">Host configuration carrying <c>Tsak:Auth:Keys</c>.</param>
+    /// <param name="logger">
+    /// Takes the reader's report on entries it had to refuse. Optional so a host that builds the store by hand
+    /// keeps working; in DI the logger is always there.
+    /// </param>
+    public ConfigApiKeyStore(IConfiguration configuration, ILogger<ConfigApiKeyStore>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(configuration);
-        _keys = [];
-        var section = configuration.GetSection("Tsak:Auth:Keys");
-        if (!section.Exists()) return;
-
-        foreach (var child in section.GetChildren())
-        {
-            var id = child["Id"];
-            var keyHash = child["KeyHash"];
-            if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(keyHash)) continue;
-
-            _keys.Add(new ApiKeyRecord
-            {
-                Id = id,
-                KeyHash = keyHash,
-                Name = child["Name"] ?? "",
-                UserId = child["UserId"],
-                Roles = child["Roles"] ?? "",
-                Revoked = bool.TryParse(child["Revoked"], out var r) && r,
-                ExpiresAt = DateTimeOffset.TryParse(child["ExpiresAt"], out var exp) ? exp : null,
-                CreatedAt = DateTimeOffset.TryParse(child["CreatedAt"], out var cr) ? cr : DateTimeOffset.UtcNow
-            });
-        }
+        _keys = [.. ApiKeyConfigReader.Read(configuration, logger ?? NullLogger<ConfigApiKeyStore>.Instance)];
     }
 
     public Task<ApiKeyRecord?> GetByHashAsync(string keyHash, CancellationToken ct = default)

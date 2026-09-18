@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS tsak_dlq (
     properties_json   TEXT,
     replayable        BOOLEAN NOT NULL,
     replayed_at       TIMESTAMPTZ,
+    cluster_name      VARCHAR(200),                  -- NULL on entries captured before cluster isolation
     CONSTRAINT uq_tsak_dlq_entry_id UNIQUE (entry_id)
 );
 

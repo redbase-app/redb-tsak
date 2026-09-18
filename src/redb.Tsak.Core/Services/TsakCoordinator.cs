@@ -167,7 +167,7 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
         GC.SuppressFinalize(this);
     }
 
-    public async Task ProcessBatchAsync(IReadOnlyList<ITsakModule> modules)
+    public async Task<ModuleActivationReport> ProcessBatchAsync(IReadOnlyList<ITsakModule> modules)
     {
         _logger.LogInformation("Processing batch of {Count} modules", modules.Count);
 
@@ -199,8 +199,26 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
         // Collect all context names and their dependencies for topological ordering
         var allContextEntries = new List<(string Name, IReadOnlyList<ITsakModule> Modules, bool IsAnonymous)>();
 
+        // A named context is recreated with its FULL membership: the batch modules replace their
+        // same-named predecessors and the modules already running there stay — the same rule as
+        // GetAllModulesForNamedContext on the single-module path. A package reload hands the coordinator
+        // only that package's modules; recreating the context from the batch alone dropped the modules
+        // another package keeps in the same named context. At startup nothing runs yet, so the
+        // membership is exactly the batch.
         foreach (var (contextName, contextModules) in namedContextModules)
-            allContextEntries.Add((contextName, contextModules, false));
+        {
+            var members = GetModulesInContext(contextName).ToList();
+            foreach (var module in contextModules)
+            {
+                var index = members.FindIndex(m =>
+                    string.Equals(m.ModuleName, module.ModuleName, StringComparison.OrdinalIgnoreCase));
+                if (index >= 0)
+                    members[index] = module;
+                else
+                    members.Add(module);
+            }
+            allContextEntries.Add((contextName, members, false));
+        }
 
         foreach (var module in anonymousModules)
         {
@@ -212,11 +230,13 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
         var ordered = TopologicalSort(allContextEntries);
 
         // Create contexts in dependency order
+        var failures = new List<ModuleActivationFailure>();
         foreach (var (contextName, contextModules, _) in ordered)
-            await RecreateContextWithModulesAsync(contextName, contextModules);
+            failures.AddRange(await RecreateContextWithModulesAsync(contextName, contextModules));
+        return new ModuleActivationReport(failures);
     }
 
-    public async Task ProcessModuleAddedAsync(ITsakModule module)
+    public async Task<ModuleActivationReport> ProcessModuleAddedAsync(ITsakModule module)
     {
         _logger.LogInformation("Processing added module {Module}", module.ModuleName);
 
@@ -224,19 +244,18 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
 
         if (isNamed)
         {
+            // Collision logged — skip this module (node stays up). Not reported as an activation failure.
             if (!TryClaimContextName(contextName, module.ModuleName))
-                return; // collision logged — skip this module (node stays up)
+                return ModuleActivationReport.Success;
 
             // Named context: recreate with ALL configured modules (existing + new)
             var allModulesForContext = GetAllModulesForNamedContext(contextName, module);
-            await RecreateContextWithModulesAsync(contextName, allModulesForContext);
+            return new ModuleActivationReport(await RecreateContextWithModulesAsync(contextName, allModulesForContext));
         }
-        else
-        {
-            // Anonymous: create dedicated context
-            contextName = GenerateAnonymousContextName(module.ModuleName);
-            await RecreateContextWithModulesAsync(contextName, [module]);
-        }
+
+        // Anonymous: create dedicated context
+        contextName = GenerateAnonymousContextName(module.ModuleName);
+        return new ModuleActivationReport(await RecreateContextWithModulesAsync(contextName, [module]));
     }
 
     public async Task ProcessModuleRemovedAsync(string moduleName)
@@ -301,13 +320,14 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
     /// Stops, removes, recreates, initializes all modules, and starts a context.
     /// Serialized per context name to prevent races from concurrent ModuleAdded events.
     /// </summary>
-    private async Task RecreateContextWithModulesAsync(string contextName, IReadOnlyList<ITsakModule> modules)
+    private async Task<IReadOnlyList<ModuleActivationFailure>> RecreateContextWithModulesAsync(
+        string contextName, IReadOnlyList<ITsakModule> modules)
     {
         var contextLock = _contextLocks.GetOrAdd(contextName, _ => new SemaphoreSlim(1, 1));
         await contextLock.WaitAsync().ConfigureAwait(false);
         try
         {
-            await RecreateContextWithModulesCoreAsync(contextName, modules).ConfigureAwait(false);
+            return await RecreateContextWithModulesCoreAsync(contextName, modules).ConfigureAwait(false);
         }
         finally
         {
@@ -315,7 +335,8 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
         }
     }
 
-    private async Task RecreateContextWithModulesCoreAsync(string contextName, IReadOnlyList<ITsakModule> modules)
+    private async Task<IReadOnlyList<ModuleActivationFailure>> RecreateContextWithModulesCoreAsync(
+        string contextName, IReadOnlyList<ITsakModule> modules)
     {
         // Remove existing context if present
         var existing = _contextManager.GetContext(contextName);
@@ -325,12 +346,16 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
         var contextConfig = GetContextConfig(contextName, modules);
         var context = _contextManager.CreateContext(contextName, _serviceProvider, contextConfig);
 
-        // Initialize all modules in this context
+        // Initialize all modules in this context. A module's exception is logged and swallowed — one bad
+        // module must not crash the node or keep the rest of its context down — but it is REPORTED, so a
+        // hot swap, a package reload or a cluster assignment can react (roll back, mark Failed).
+        List<ModuleActivationFailure>? failures = null;
         foreach (var module in modules)
         {
             try
             {
-                module.Initialize(context);
+                // Awaited: the context starts only after an async module has finished its setup.
+                await module.InitializeAsync(context).ConfigureAwait(false);
                 _moduleContextMap[module.ModuleName] = contextName;
                 _logger.LogInformation("Initialized module {Module} in context {Context}",
                     module.ModuleName, contextName);
@@ -339,7 +364,19 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
             {
                 _logger.LogError(ex, "Failed to initialize module {Module} in context {Context}",
                     module.ModuleName, contextName);
+                (failures ??= []).Add(new ModuleActivationFailure(module.ModuleName, contextName, ex));
             }
+        }
+
+        // A context in which no module came up has nothing to run. Starting it anyway logged "started
+        // successfully: all 0 endpoints operational" right after the module's error and showed the context
+        // Running on the dashboard. It stays created and stopped: visible, and startable by hand once fixed.
+        if (failures is not null && failures.Count == modules.Count)
+        {
+            _logger.LogError(
+                "Context {Context} not started: none of its {Count} module(s) initialized ({Modules}), see the errors above",
+                contextName, modules.Count, string.Join(", ", modules.Select(m => m.ModuleName)));
+            return failures;
         }
 
         // Auto-start if configured
@@ -352,8 +389,17 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to auto-start context {Context}", contextName);
+                // The context never started, so none of its modules came up: report each one not already reported.
+                failures ??= [];
+                foreach (var module in modules)
+                {
+                    if (!failures.Exists(f => string.Equals(f.ModuleName, module.ModuleName, StringComparison.OrdinalIgnoreCase)))
+                        failures.Add(new ModuleActivationFailure(module.ModuleName, contextName, ex));
+                }
             }
         }
+
+        return failures ?? (IReadOnlyList<ModuleActivationFailure>)Array.Empty<ModuleActivationFailure>();
     }
 
     /// <summary>
@@ -773,8 +819,17 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
         }
     }
 
-    private static string GenerateAnonymousContextName(string moduleName) =>
-        $"{moduleName}_dyn_{DateTimeOffset.UtcNow:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}";
+    /// <summary>
+    /// The anonymous context a module lives in. A module ALREADY running in an anonymous context (a hot
+    /// swap or a package reload re-adds it) gets that same context back, so the recreation replaces it —
+    /// as the named-context path and <see cref="ProcessModuleUpdatedAsync"/> always did. The name carries a
+    /// timestamp and a GUID, so generating a fresh one on every re-add created a second context and left
+    /// the old version running next to the new one.
+    /// </summary>
+    private string GenerateAnonymousContextName(string moduleName) =>
+        _moduleContextMap.TryGetValue(moduleName, out var existing) && IsAnonymousContext(existing)
+            ? existing
+            : $"{moduleName}_dyn_{DateTimeOffset.UtcNow:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}";
 
     private static bool IsAnonymousContext(string contextName) =>
         contextName.Contains("_dyn_", StringComparison.Ordinal);

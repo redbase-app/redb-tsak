@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS tsak_audit_log (
     exception_type    TEXT,
     exception_message TEXT,
     payload           TEXT,
+    cluster_name      TEXT,
     CONSTRAINT uq_tsak_audit_event_id UNIQUE (event_id)
 );
 

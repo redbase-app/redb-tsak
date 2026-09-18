@@ -58,9 +58,25 @@ public interface ITsakModule
     string? SourceDirectory { get; }
 
     /// <summary>
-    /// Initializes routes in the given context.
+    /// Initializes routes in the given context, synchronously. The coordinator reaches it through the
+    /// default <see cref="InitializeAsync"/>.
     /// </summary>
     /// <param name="context">Route context to configure.</param>
     /// <returns>The configured context.</returns>
     IRouteContext Initialize(IRouteContext context);
+
+    /// <summary>
+    /// Initializes routes in the given context. This is the entry the coordinator awaits, and the context
+    /// starts only after it completes. A module whose setup awaits (schema sync, reference data) overrides
+    /// it; the default runs <see cref="Initialize"/>, so existing modules work unchanged, without a rebuild.
+    /// <para>
+    /// Interface mapping is fixed by the class that declares <see cref="ITsakModule"/>. A module that inherits
+    /// the interface from a base class and adds <c>InitializeAsync</c> must list <see cref="ITsakModule"/>
+    /// again (or the base class must declare a virtual <c>InitializeAsync</c> to override); otherwise this
+    /// default runs and its <see cref="Initialize"/> is called instead.
+    /// </para>
+    /// </summary>
+    /// <param name="context">Route context to configure.</param>
+    /// <returns>The configured context.</returns>
+    Task<IRouteContext> InitializeAsync(IRouteContext context) => Task.FromResult(Initialize(context));
 }

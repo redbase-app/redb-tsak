@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS tsak_dlq (
     properties_json   TEXT,
     replayable        INTEGER NOT NULL,
     replayed_at       TEXT,
+    cluster_name      TEXT,
     CONSTRAINT uq_tsak_dlq_entry_id UNIQUE (entry_id)
 );
 

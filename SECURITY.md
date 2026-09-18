@@ -84,6 +84,23 @@ Tsak uses API Key authentication with HMAC-SHA256 hashing.
 
 ## Security Notes for Operators
 
+### What the published image ships with
+
+The image starts with one command and therefore with no secrets of its own: packaging strips the development
+secret, and **`Tsak:Auth:Enabled` is off** — with authentication on and no secret the worker refuses to start.
+Until you change it, the management API on `9090` answers **without a key** (stop contexts, upload modules,
+issue keys, dump config), and it binds every interface of the container. The node says so at every start:
+
+```
+SECURITY: the Tsak management API is bound to a non-loopback address (0.0.0.0:9090) with
+authentication DISABLED. Anyone who can reach this port gets full unauthenticated admin ...
+```
+
+That is fine on a laptop and wrong on a network. Before the port faces anyone else: turn authentication on
+with your own secret (below), publish the port to `127.0.0.1` or a private network, and change the dashboard's
+`admin` / `admin`. A worker you run yourself, outside a container, binds loopback by default and is not
+exposed until you set `Tsak:Api:Host`.
+
 ### Harden the REST API in Production
 
 ```json

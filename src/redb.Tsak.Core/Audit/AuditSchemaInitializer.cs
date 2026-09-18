@@ -67,6 +67,7 @@ internal sealed class AuditSchemaInitializer : IHostedService
             await using var cmd = conn.CreateCommand();
             cmd.CommandText = sql;
             await cmd.ExecuteNonQueryAsync(cancellationToken);
+            await ClusterColumn.EnsureAsync(conn, provider, AuditStorage.TableName, AuditStorage.ClusterIndexName, cancellationToken);
 
             _logger.LogInformation("Audit table {Table} ensured ({Provider})",
                 AuditStorage.TableName, provider);

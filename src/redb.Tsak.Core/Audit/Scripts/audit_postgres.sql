@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS tsak_audit_log (
     exception_type    VARCHAR(200),
     exception_message VARCHAR(2000),
     payload           JSONB,
+    cluster_name      VARCHAR(200),   -- NULL on entries written before cluster isolation
     CONSTRAINT uq_tsak_audit_event_id UNIQUE (event_id)
 );
 

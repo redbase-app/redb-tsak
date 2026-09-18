@@ -1,6 +1,5 @@
 using System.Data;
 using System.Data.Common;
-using System.Globalization;
 
 namespace redb.Tsak.Core.Audit;
 
@@ -20,7 +19,8 @@ namespace redb.Tsak.Core.Audit;
 /// request. SQLite and SQL Server never noticed: neither infers parameter types from the statement.
 /// </para>
 /// <para>
-/// Timestamps are bound as the type the column holds: a UTC <see cref="DateTimeOffset"/> for
+/// Timestamps are bound as the type the column holds, which the provider's
+/// <see cref="TsakSqlDialect.BindTimestamp"/> decides: a UTC <see cref="DateTimeOffset"/> for
 /// PostgreSQL (<c>timestamptz</c>) and SQL Server (<c>datetimeoffset</c>), where a text parameter has
 /// no comparison operator against the column at all, and an ISO-8601 <c>"o"</c> string for SQLite,
 /// whose column is TEXT and orders lexicographically, which is chronological for that format and is
@@ -46,18 +46,10 @@ internal static class DbParameterBinding
     /// the form differs per provider.
     /// </summary>
     public static void AddTimestamp(DbCommand cmd, AuditProvider provider, string name, DateTimeOffset? value)
-    {
-        if (provider == AuditProvider.Sqlite)
-        {
-            Add(cmd, name, DbType.String,
-                value?.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture));
-            return;
-        }
+        => TsakSqlDialect.For(provider).BindTimestamp(cmd, name, value);
 
-        Add(cmd, name, DbType.DateTimeOffset, value?.ToUniversalTime());
-    }
-
-    private static void Add(DbCommand cmd, string name, DbType type, object? value)
+    /// <summary>Binds a parameter of an explicit type; null becomes a typed <see cref="DBNull"/>.</summary>
+    public static void Add(DbCommand cmd, string name, DbType type, object? value)
     {
         var p = cmd.CreateParameter();
         p.ParameterName = name;

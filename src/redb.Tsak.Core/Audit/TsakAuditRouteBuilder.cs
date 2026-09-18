@@ -17,10 +17,17 @@ public sealed class TsakAuditRouteBuilder : RouteBuilder
     public const string RouteIdName = "tsak-audit-writer";
 
     private readonly AuditProvider _provider;
+    private readonly string _clusterName;
 
-    public TsakAuditRouteBuilder(AuditProvider provider)
+    /// <param name="provider">Database provider of the audit table.</param>
+    /// <param name="clusterName">Cluster the written events belong to (<c>Tsak:Cluster:ClusterName</c>);
+    /// the default cluster name when omitted.</param>
+    public TsakAuditRouteBuilder(AuditProvider provider, string? clusterName = null)
     {
         _provider = provider;
+        _clusterName = string.IsNullOrWhiteSpace(clusterName)
+            ? Services.Storage.TsakStorageScope.DefaultClusterName
+            : clusterName;
     }
 
     protected override void Configure()
@@ -44,7 +51,8 @@ public sealed class TsakAuditRouteBuilder : RouteBuilder
                 .Param("duration_ms",       Header(AuditHeaders.DurationMs))
                 .Param("exception_type",    Header(AuditHeaders.ExceptionType))
                 .Param("exception_message", Header(AuditHeaders.ExceptionMessage))
-                .Param("payload",           Body()));
+                .Param("payload",           Body())
+                .Param("cluster_name",      Constant(_clusterName)));
     }
 }
 

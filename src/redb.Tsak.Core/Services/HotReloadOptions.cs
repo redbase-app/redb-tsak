@@ -14,7 +14,11 @@ public class HotReloadOptions
     /// <summary>Number of previous versions to keep for rollback. Default: 2.</summary>
     public int KeepVersions { get; set; } = 2;
 
-    /// <summary>Timeout (seconds) for a new module to start before auto-rollback. Default: 60.</summary>
+    /// <summary>
+    /// RESERVED — not enforced: no code reads this value. A module start is not time-boxed, because the
+    /// coordinator contract takes no CancellationToken (docs/BOUNDARIES_AND_FOLLOWUPS.md, F-5). A new
+    /// version that fails to initialize or start IS rolled back — just not on a timeout. Default: 60.
+    /// </summary>
     public int StartupTimeoutSeconds { get; set; } = 60;
 
     /// <summary>

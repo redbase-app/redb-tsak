@@ -18,6 +18,7 @@ public class MetricsOptions
     /// </summary>
     public int HistoryHours { get; set; } = 12;
 
+    /// <summary>
     /// Computed max data points for the circular buffer.
     /// </summary>
     internal int MaxPoints => HistoryHours * 3600 / Math.Max(1, CollectionIntervalSeconds);
