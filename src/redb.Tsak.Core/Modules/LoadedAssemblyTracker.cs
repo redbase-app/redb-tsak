@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Reflection;
 using System.Runtime.Loader;
+using Microsoft.Extensions.Logging;
 
 namespace redb.Tsak.Core.Modules;
 
@@ -35,17 +36,38 @@ public static class LoadedAssemblyTracker
     }
 
     /// <summary>
-    /// Returns an already-tracked assembly with the given name, or loads <paramref name="bytes"/>
-    /// into the Default ALC and tracks it. Guarantees that the same assembly name always
-    /// maps to a single <see cref="Assembly"/> instance.
+    /// Returns an already-tracked assembly with the given name, the host's own instance when the host
+    /// provides that name, or loads <paramref name="bytes"/> into the Default ALC and tracks it.
+    /// Guarantees that the same assembly name always maps to a single <see cref="Assembly"/> instance.
     /// </summary>
-    public static Assembly LoadOrReuse(string assemblyName, byte[] bytes)
+    /// <param name="assemblyName">Caller's key — the assembly's simple name, or the file basename.</param>
+    /// <param name="bytes">The bytes to load when the name is new to this process.</param>
+    /// <param name="logger">Takes the note when the host's instance is reused instead of the bytes.</param>
+    public static Assembly LoadOrReuse(string assemblyName, byte[] bytes, ILogger? logger = null)
     {
         EnsureResolverRegistered();
 
         // Fast path: reuse existing
         if (_assemblies.TryGetValue(assemblyName, out var existing))
             return existing;
+
+        // The host may already provide this name — a shared-framework assembly above all: a module
+        // library takes Microsoft.Extensions.* from NuGet, while the worker resolves those very names from
+        // Microsoft.AspNetCore.App. Byte-loading the package's copy added a SECOND instance to the Default
+        // context that nothing ever bound to (ModuleAssemblyLoadContext asks Default first, so the host's
+        // copy wins every resolution) and that never unloads. Reuse what the host resolves; only a name the
+        // host cannot resolve is loaded from the bytes. Same first step as ModuleAssemblyLoadContext.Load.
+        if (TryLoadFromHost(assemblyName) is { } hostProvided)
+        {
+            var canonicalName = hostProvided.GetName().Name ?? assemblyName;
+            var hostTracked = _assemblies.GetOrAdd(canonicalName, hostProvided);
+            if (!string.Equals(canonicalName, assemblyName, StringComparison.OrdinalIgnoreCase))
+                _assemblies.TryAdd(assemblyName, hostTracked);
+            logger?.LogDebug(
+                "Assembly {Name} is provided by the host — reusing that instance instead of loading the copy that came with the module",
+                assemblyName);
+            return hostTracked;
+        }
 
         // Use Lazy<T> to guarantee only one Assembly.Load call per name,
         // even under concurrent access. Losers get the winner's Assembly.
@@ -71,6 +93,23 @@ public static class LoadedAssemblyTracker
         return _assemblies.TryGetValue(result.GetName().Name ?? assemblyName, out var byReal) ? byReal
              : _assemblies.TryGetValue(assemblyName, out var tracked) ? tracked
              : result;
+    }
+
+    /// <summary>
+    /// The host's own instance of <paramref name="assemblyName"/>, or null when the host cannot resolve
+    /// that name. Resolution runs against the Default context: the shared frameworks and the worker's own
+    /// directory, plus this tracker's own <c>Resolving</c> handler for names already byte-loaded here.
+    /// </summary>
+    private static Assembly? TryLoadFromHost(string assemblyName)
+    {
+        try
+        {
+            return AssemblyLoadContext.Default.LoadFromAssemblyName(new AssemblyName(assemblyName));
+        }
+        catch (FileNotFoundException) { return null; }   // the host does not have it — load the bytes
+        catch (FileLoadException) { return null; }
+        catch (BadImageFormatException) { return null; }
+        catch (ArgumentException) { return null; }       // a file basename is not always a valid assembly name
     }
 
     /// <summary>

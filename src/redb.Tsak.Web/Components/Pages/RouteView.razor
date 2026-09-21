@@ -1,3 +1,8 @@
+@* A route id is free-form: a module that does not call .RouteId(...) gets one derived from its URI, slashes,
+   '?' and '&' included. Such an id cannot be a path segment — the router matched nothing and the page read
+   "Page not found" — so the id travels in the query string. The path form stays for ids that are plain
+   words, and for links made before this change. *@
+@page "/node/{NodeId}/routes/{ContextName}"
 @page "/node/{NodeId}/routes/{ContextName}/{RouteId}"
 @inject INodeClientProvider NodeProvider
 @inject ILogger<RouteView> Log
@@ -7,7 +12,7 @@
 @using redb.Tsak.Contracts
 @implements IDisposable
 
-<TsakPageHeader Title="@($"Route: {RouteId}")" Description="@($"Context: {ContextName}")"
+<TsakPageHeader Title="@($"Route: {RouteKey}")" Description="@($"Context: {ContextName}")"
                 RefreshInterval="5s" OnRefresh="Refresh">
     <Actions>
         <button class="btn btn-ghost btn-sm" @onclick="GoBack">
@@ -18,17 +23,17 @@
             <AuthorizedView AdminOnly="true">
                 @if (_detail.Status is "Started")
                 {
-                    <button class="btn btn-secondary btn-sm" @onclick="() => RouteAction(false)">
+                    <button class="btn btn-secondary btn-sm" title="@RouteActionHints.Stop" @onclick="() => RouteAction(false)">
                         <TsakIcon Name="stop" Size="14" /> Stop
                     </button>
                 }
                 else
                 {
-                    <button class="btn btn-primary btn-sm" @onclick="() => RouteAction(true)">
+                    <button class="btn btn-primary btn-sm" title="@RouteActionHints.Start" @onclick="() => RouteAction(true)">
                         <TsakIcon Name="play" Size="14" /> Start
                     </button>
                 }
-                <button class="btn btn-danger btn-sm" @onclick="ForceStop">
+                <button class="btn btn-danger btn-sm" title="@RouteActionHints.ForceStop" @onclick="ForceStop">
                     <TsakIcon Name="x-circle" Size="14" /> Force-Stop
                 </button>
             </AuthorizedView>
@@ -215,6 +220,12 @@ else
     [Parameter] public string ContextName { get; set; } = "";
     [Parameter] public string RouteId { get; set; } = "";
 
+    /// <summary>The route id when it cannot be a path segment — see the note above the page directives.</summary>
+    [SupplyParameterFromQuery(Name = "route")] public string? RouteFromQuery { get; set; }
+
+    /// <summary>The id this page works with: the query form wins, the path form is the fallback.</summary>
+    private string RouteKey => string.IsNullOrEmpty(RouteFromQuery) ? RouteId : RouteFromQuery;
+
     private bool _loading = true;
     private RouteDetail? _detail;
     private RouteMetricsSummary? _metrics;
@@ -259,10 +270,10 @@ else
 
         try
         {
-            _detail = await client.GetRouteAsync(ContextName, RouteId, Ct);
-            try { _metrics = await client.GetRouteMetricsAsync(ContextName, RouteId, Ct); } catch { }
-            try { _inflight = await client.GetRouteInflightAsync(ContextName, RouteId, Ct); } catch { }
-            try { _lifecycle = await client.GetLifecycleEventsAsync(context: ContextName, route: RouteId, limit: 20, ct: Ct); } catch { }
+            _detail = await client.GetRouteAsync(ContextName, RouteKey, Ct);
+            try { _metrics = await client.GetRouteMetricsAsync(ContextName, RouteKey, Ct); } catch { }
+            try { _inflight = await client.GetRouteInflightAsync(ContextName, RouteKey, Ct); } catch { }
+            try { _lifecycle = await client.GetLifecycleEventsAsync(context: ContextName, route: RouteKey, limit: 20, ct: Ct); } catch { }
         }
         catch { /* retain previous data */ }
         _loading = false;
@@ -277,11 +288,11 @@ else
             var client = NodeProvider.GetClient(NodeId)
                 ?? throw new InvalidOperationException($"No API client for node {NodeId}");
             if (start)
-                await client.StartRouteAsync(ContextName, RouteId, Ct);
+                await client.StartRouteAsync(ContextName, RouteKey, Ct);
             else
-                await client.StopRouteAsync(ContextName, RouteId, ct: Ct);
+                await client.StopRouteAsync(ContextName, RouteKey, ct: Ct);
             await LoadData();
-            Toast.Success($"Route '{RouteId}' {(start ? "started" : "stopped")}");
+            Toast.Success($"Route '{RouteKey}' {(start ? "started" : "stopped")}");
         }
         catch (Exception ex)
         {
@@ -292,7 +303,7 @@ else
     private async Task ForceStop()
     {
         var confirmed = await _confirmDialog.ShowAsync(
-            $"Force-stop route '{RouteId}'? This will immediately cancel all in-flight exchanges.",
+            $"Force-stop route '{RouteKey}'? This will immediately cancel all in-flight exchanges.",
             "Force-Stop Route");
         if (!confirmed) return;
 
@@ -301,9 +312,9 @@ else
             // Control timeout: force-stop drains longer than the 5s polling default (С12).
             var client = NodeProvider.GetControlClient(NodeId)
                 ?? throw new InvalidOperationException($"No API client for node {NodeId}");
-            await client.ForceStopRouteAsync(ContextName, RouteId, Ct);
+            await client.ForceStopRouteAsync(ContextName, RouteKey, Ct);
             await LoadData();
-            Toast.Success($"Route '{RouteId}' force-stopped");
+            Toast.Success($"Route '{RouteKey}' force-stopped");
         }
         catch (Exception ex)
         {

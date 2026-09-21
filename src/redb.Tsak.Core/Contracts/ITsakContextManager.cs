@@ -25,6 +25,13 @@ public interface ITsakContextManager
     /// <summary>Returns all contexts as (name, context) pairs.</summary>
     IReadOnlyList<(string Name, IRouteContext Context)> GetAllContexts();
 
+    /// <summary>
+    /// Named redb instances as the manager actually registered them, context by context. The context registry
+    /// itself cannot be enumerated, and an instance whose creation failed is not listed — the storage page
+    /// offers to query what it lists.
+    /// </summary>
+    IReadOnlyList<RedbInstanceInfo> GetNamedRedbInstances();
+
     /// <summary>Starts a context. When ignoreAutoStart is true, skips the autoStart check (for manual API/CLI calls).</summary>
     Task StartContextAsync(string contextName, bool ignoreAutoStart = false);
 

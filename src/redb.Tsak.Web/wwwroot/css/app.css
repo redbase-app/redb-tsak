@@ -263,6 +263,16 @@ th {
     border-bottom: 2px solid var(--border-default);
 }
 
+/* A column header that sorts its table when clicked */
+th.grid-sortable {
+    cursor: pointer;
+    user-select: none;
+}
+
+th.grid-sortable:hover {
+    color: var(--text-primary);
+}
+
 td {
     padding: var(--space-3) var(--space-4);
     border-bottom: 1px solid var(--border-default);
@@ -580,6 +590,19 @@ tr:hover td {
     height: 48px;
     margin-bottom: var(--space-4);
     opacity: 0.5;
+}
+
+/* One line of the node overview's "needs attention" list */
+.attention-row {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-3);
+    padding: var(--space-3) 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.attention-row:last-child {
+    border-bottom: none;
 }
 
 /* Toast container */

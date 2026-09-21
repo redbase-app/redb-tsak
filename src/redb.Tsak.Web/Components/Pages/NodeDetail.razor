@@ -114,6 +114,126 @@ else
     <div class="tab-content">
         @switch (_activeTab)
         {
+            case "Overview":
+                <div class="grid-stats" style="margin-bottom: var(--space-4);">
+                    <TsakCard Title="Needs attention" Icon="alert-triangle" Value="@_attention.Count.ToString()"
+                              ValueStyle="@AttentionValueStyle" />
+                    <TsakCard Title="In-flight now" Icon="activity" Value="@(_dashboard?.TotalInflight.ToString() ?? "—")" />
+                    <TsakCard Title="Contexts running" Icon="route"
+                              Value="@(_dashboard is null ? "—" : $"{_dashboard.RunningContexts} / {_dashboard.TotalContexts}")" />
+                </div>
+
+                <div class="card" style="margin-bottom: var(--space-4);">
+                    <div class="card-header">
+                        <span class="card-title" style="display: flex; align-items: center; gap: var(--space-2);">
+                            <TsakIcon Name="alert-triangle" Size="16" /> Needs attention
+                        </span>
+                    </div>
+                    <div style="padding: 0 var(--space-4) var(--space-4);">
+                        @if (_dashboard is null)
+                        {
+                            <div class="empty-state"><div class="spinner"></div></div>
+                        }
+                        else if (_attention.Count == 0)
+                        {
+                            <div class="empty-state">
+                                <TsakIcon Name="check-circle" Size="32" />
+                                <p class="text-secondary">Nothing needs attention on this node</p>
+                            </div>
+                        }
+                        else
+                        {
+                            @foreach (var item in _attention)
+                            {
+                                <div class="attention-row">
+                                    <TsakBadge Text="@item.Level" Variant="@item.Level" ShowDot="false" />
+                                    <div style="flex: 1; min-width: 0;">
+                                        <div style="display: flex; align-items: center; gap: var(--space-2);">
+                                            <TsakIcon Name="@item.Icon" Size="14" />
+                                            <span class="text-sm">@item.Title</span>
+                                        </div>
+                                        <div class="text-xs text-secondary" style="margin-top: var(--space-1); word-break: break-word;">@item.Detail</div>
+                                    </div>
+                                    @if (item.ContextName is { Length: > 0 } ctxName && item.RouteId is { Length: > 0 } routeKey)
+                                    {
+                                        <button class="btn btn-ghost btn-sm" title="Open the route" @onclick="() => OpenRoute(ctxName, routeKey)">
+                                            <TsakIcon Name="arrow-right" Size="14" /> Route
+                                        </button>
+                                    }
+                                </div>
+                            }
+                        }
+                    </div>
+                </div>
+
+                <div class="card" style="margin-bottom: var(--space-4);">
+                    <div class="card-header">
+                        <span class="card-title" style="display: flex; align-items: center; gap: var(--space-2);">
+                            <TsakIcon Name="activity" Size="16" /> Busiest routes
+                        </span>
+                    </div>
+                    <div style="padding: 0 var(--space-4) var(--space-4);">
+                        <TsakGrid Items="_dashboard?.BusiestRoutes" T="RouteMetricsSummary"
+                                  OnRowClick="((RouteMetricsSummary r) => OpenRoute(r.ContextName, r.RouteId))">
+                            <EmptyContent>
+                                <div class="empty-state">
+                                    <TsakIcon Name="activity" Size="32" />
+                                    <p class="text-secondary">No route has processed anything yet</p>
+                                </div>
+                            </EmptyContent>
+                            <HeaderContent>
+                                <th>Route</th>
+                                <th>Context</th>
+                                <th>Status</th>
+                                <th>Msg/s</th>
+                                <th>Avg</th>
+                                <th>In-flight</th>
+                                <th>Errors</th>
+                            </HeaderContent>
+                            <RowContent>
+                                <td class="mono text-sm">@context.RouteId</td>
+                                <td class="mono text-xs text-secondary">@(context.ContextName is { Length: > 0 } ctxCell ? ctxCell : "—")</td>
+                                <td><TsakBadge Text="@context.Status" Variant="@GetContextBadge(context.Status)" /></td>
+                                <td class="mono text-sm">@context.ThroughputPerSecond.ToString("F2")</td>
+                                <td class="mono text-sm">@context.AvgProcessingMs.ToString("F1") ms</td>
+                                <td class="mono text-sm">@context.InflightCount</td>
+                                <td class="mono text-sm" style="@(context.Errors > 0 ? "color: var(--status-error);" : "")">@context.Errors</td>
+                            </RowContent>
+                        </TsakGrid>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title" style="display: flex; align-items: center; gap: var(--space-2);">
+                            <TsakIcon Name="clock" Size="16" /> Recent events
+                        </span>
+                    </div>
+                    <div style="padding: 0 var(--space-4) var(--space-4);">
+                        <TsakGrid Items="_lifecycle" T="LifecycleEvent">
+                            <EmptyContent>
+                                <div class="empty-state">
+                                    <TsakIcon Name="clock" Size="32" />
+                                    <p class="text-secondary">No lifecycle events recorded yet</p>
+                                </div>
+                            </EmptyContent>
+                            <HeaderContent>
+                                <th style="width: 150px;">When</th>
+                                <th style="width: 170px;">Event</th>
+                                <th>Context / Route</th>
+                                <th>Details</th>
+                            </HeaderContent>
+                            <RowContent>
+                                <td class="mono text-xs">@context.Timestamp.ToString("MM-dd HH:mm:ss")</td>
+                                <td><TsakBadge Text="@context.EventType.ToString()" Variant="@GetEventBadge(context.EventType)" ShowDot="false" /></td>
+                                <td class="mono text-xs">@context.ContextName@(context.RouteId is { Length: > 0 } evRoute ? " / " + evRoute : "")</td>
+                                <td class="text-xs text-secondary" style="word-break: break-word;">@(context.Details ?? "—")</td>
+                            </RowContent>
+                        </TsakGrid>
+                    </div>
+                </div>
+                break;
+
             case "Contexts":
                 <TsakGrid Items="_contexts" T="ContextSummary">
                     <EmptyContent>
@@ -345,9 +465,9 @@ else
     [Parameter] public string NodeId { get; set; } = "";
     [Parameter] public string? Tab { get; set; }
 
-    private static readonly string[] _tabs = ["Contexts", "Scheduler", "Modules", "Monitoring", "Logs"];
+    private static readonly string[] _tabs = NodeTabs.All;
     private TsakConfirmDialog? _confirm;
-    private string _activeTab = "Contexts";
+    private string _activeTab = NodeTabs.Default;
     private bool _loading = true;
 
     // Topology
@@ -363,6 +483,39 @@ else
     private SchedulerData? _scheduler;
     private ModuleInfo[]? _modules;
     private LogEntry[]? _logs;
+
+    // Overview tab data
+    private DashboardSnapshot? _dashboard;
+    private LifecycleEvent[]? _lifecycle;
+    private IReadOnlyList<AttentionItem> _attention = [];
+
+    /// <summary>Green when the node is clean, red as soon as one item is an error — the card is read at a glance.</summary>
+    private string AttentionValueStyle =>
+        _attention.Any(i => i.Level == NodeAttention.Error) ? "color: var(--status-error)"
+        : _attention.Count > 0 ? "color: var(--status-warning)"
+        : "color: var(--status-online)";
+
+    /// <summary>
+    /// Opens a route's detail page. The id travels in the query string: a route that was never given an id
+    /// gets one derived from its from-URI, and the slashes in it cannot be a path segment.
+    /// </summary>
+    private void OpenRoute(string contextName, string routeId)
+    {
+        if (string.IsNullOrEmpty(contextName) || string.IsNullOrEmpty(routeId))
+            return;
+
+        Nav.NavigateTo($"node/{NodeId}/routes/{Uri.EscapeDataString(contextName)}?route={Uri.EscapeDataString(routeId)}");
+    }
+
+    private static string GetEventBadge(LifecycleEventType type) => type switch
+    {
+        LifecycleEventType.ContextStarted or LifecycleEventType.RouteStarted => "online",
+        LifecycleEventType.ContextStopped or LifecycleEventType.RouteStopped => "offline",
+        LifecycleEventType.RouteSuspended or LifecycleEventType.ContextRemoved => "warning",
+        LifecycleEventType.WatchdogAutoRestart => "warning",
+        LifecycleEventType.RouteErrored or LifecycleEventType.ExchangeTimedOut or LifecycleEventType.ExchangeHung => "error",
+        _ => "info"
+    };
 
     // Monitoring tab data
     private MetricsHistoryResponse? _monHistory;
@@ -420,14 +573,7 @@ else
         }
     }
 
-    private void SyncTab()
-    {
-        if (!string.IsNullOrEmpty(Tab))
-        {
-            var match = _tabs.FirstOrDefault(t => t.Equals(Tab, StringComparison.OrdinalIgnoreCase));
-            if (match is not null) _activeTab = match;
-        }
-    }
+    private void SyncTab() => _activeTab = NodeTabs.Resolve(Tab);
 
     private async Task PollLoop(CancellationToken ct)
     {
@@ -503,6 +649,15 @@ else
     {
         switch (_activeTab)
         {
+            case "Overview":
+                // One aggregated call carries the alerts, the problem routes and the counters; the other two
+                // bring the event feed and the module states. Everything else the overview shows is already
+                // loaded for the cards above the tabs.
+                _dashboard = await client.GetDashboardAsync(Ct);
+                _lifecycle = await client.GetLifecycleEventsAsync(limit: 15, ct: Ct);
+                _modules = await client.ListModulesAsync(Ct);
+                _attention = NodeAttention.Collect(_dashboard, _modules);
+                break;
             case "Contexts":
                 _contexts = await client.ListContextsAsync(Ct);
                 break;
@@ -559,6 +714,7 @@ else
         "Scheduler" => "clock",
         "Modules" => "package",
         "Monitoring" => "activity",
+        "Overview" => "dashboard",
         "Logs" => "terminal",
         _ => "info"
     };

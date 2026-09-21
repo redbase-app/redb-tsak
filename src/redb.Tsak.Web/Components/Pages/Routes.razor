@@ -87,17 +87,17 @@ else if (_allRoutes.Length > 0)
                                     <div class="btn-group">
                                     @if (context.Route.Status is "Started")
                                     {
-                                        <button class="btn btn-ghost btn-sm" @onclick="() => RouteAction(context, false)" @onclick:stopPropagation="true">
+                                        <button class="btn btn-ghost btn-sm" title="@RouteActionHints.Stop" @onclick="() => RouteAction(context, false)" @onclick:stopPropagation="true">
                                             <TsakIcon Name="stop" Size="14" /> Stop
                                         </button>
                                     }
                                     else
                                     {
-                                        <button class="btn btn-ghost btn-sm" @onclick="() => RouteAction(context, true)" @onclick:stopPropagation="true">
+                                        <button class="btn btn-ghost btn-sm" title="@RouteActionHints.Start" @onclick="() => RouteAction(context, true)" @onclick:stopPropagation="true">
                                             <TsakIcon Name="play" Size="14" /> Start
                                         </button>
                                     }
-                                    <button class="btn btn-ghost btn-sm" style="color: var(--status-error);"
+                                    <button class="btn btn-ghost btn-sm" style="color: var(--status-error);" title="@RouteActionHints.ForceStop"
                                             @onclick="() => ForceStop(context)" @onclick:stopPropagation="true">
                                         <TsakIcon Name="x-circle" Size="14" />
                                     </button>
@@ -259,8 +259,11 @@ else
         }
     }
 
+    // The id goes in the query string: a module that does not call .RouteId(...) gets an id derived from its
+    // URI — slashes, '?' and '&' included — which no path segment can carry, and the detail page answered
+    // "Page not found" for every such route.
     private void NavigateToDetail(RouteEntry entry) =>
-        Nav.NavigateTo($"node/{NodeId}/routes/{entry.ContextName}/{entry.Route.RouteId}");
+        Nav.NavigateTo($"node/{NodeId}/routes/{Uri.EscapeDataString(entry.ContextName)}?route={Uri.EscapeDataString(entry.Route.RouteId)}");
 
     private static string GetStatusBadge(string status) => status switch
     {

@@ -267,27 +267,28 @@ public class ContextInfoCollector
         var route = ctx.GetRoute(routeId);
         if (route is null) return null;
 
-        return BuildRouteMetrics(ctx, route);
+        return BuildRouteMetrics(contextName, ctx, route);
     }
 
     /// <summary>Collects per-route metrics for all routes across all contexts.</summary>
     public IReadOnlyList<RouteMetricsSummary> CollectAllRouteMetrics()
     {
         var result = new List<RouteMetricsSummary>();
-        foreach (var (_, context) in _contextManager.GetAllContexts())
+        foreach (var (name, context) in _contextManager.GetAllContexts())
         {
             if (context is not RouteContext ctx) continue;
             foreach (var route in ctx.Routes)
-                result.Add(BuildRouteMetrics(ctx, route));
+                result.Add(BuildRouteMetrics(name, ctx, route));
         }
         return result;
     }
 
-    private static RouteMetricsSummary BuildRouteMetrics(RouteContext ctx, CompiledRoute route)
+    private static RouteMetricsSummary BuildRouteMetrics(string contextName, RouteContext ctx, CompiledRoute route)
     {
         var stats = route.Endpoint as IEndpointStatistics;
         return new RouteMetricsSummary
         {
+            ContextName = contextName,
             RouteId = route.RouteId,
             Status = route.Status.ToString(),
             InflightCount = ctx.InflightRepository.CountByRoute(route.RouteId),

@@ -667,4 +667,32 @@ public sealed class TsakApiClient : ITsakApiClient
         var query = string.Join("&", pairs);
         return query.Length > 0 ? "?" + query : string.Empty;
     }
+
+    // ── Storage ──────────────────────────────────────────────────────
+
+    /// <inheritdoc />
+    public async Task<RedbInstanceInfo[]> ListRedbInstancesAsync(CancellationToken ct = default)
+    {
+        var response = await _http.GetAsync("api/storage/instances", ct);
+        return await ReadAsync<RedbInstanceInfo[]>(response, ct);
+    }
+
+    /// <inheritdoc />
+    public async Task<RedbStorageStats> GetStorageStatsAsync(
+        string? instance = null, string? context = null, CancellationToken ct = default)
+    {
+        var query = BuildQuery(("instance", instance), ("context", context));
+        var response = await _http.GetAsync($"api/storage/stats{query}", ct);
+        return await ReadAsync<RedbStorageStats>(response, ct);
+    }
+
+    /// <inheritdoc />
+    public async Task<RedbAnalyzeResult> AnalyzeStorageAsync(
+        string? instance = null, string? context = null,
+        string? table = null, string? schema = null, CancellationToken ct = default)
+    {
+        var query = BuildQuery(("instance", instance), ("context", context), ("table", table), ("schema", schema));
+        var response = await _http.PostAsync($"api/storage/analyze{query}", null, ct);
+        return await ReadAsync<RedbAnalyzeResult>(response, ct);
+    }
 }

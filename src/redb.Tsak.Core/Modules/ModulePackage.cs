@@ -173,7 +173,7 @@ public sealed class ModulePackage : IDisposable
                         var asmName = GetAssemblyNameFromBytes(bytes);
                         assembly = forceReload
                             ? LoadedAssemblyTracker.Replace(asmName, bytes)
-                            : LoadedAssemblyTracker.LoadOrReuse(asmName, bytes);
+                            : LoadedAssemblyTracker.LoadOrReuse(asmName, bytes, logger);
                     }
 
                     package.CompanionAssemblies.Add(assembly);

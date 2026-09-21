@@ -39,6 +39,9 @@ public class TsakContextManager : ITsakContextManager
     // Mini-DI containers for named redb instances, keyed by context name.
     // Must be disposed when context is removed.
     private readonly ConcurrentDictionary<string, List<ServiceProvider>> _namedRedbContainers = new(StringComparer.OrdinalIgnoreCase);
+    // What was actually registered, for the storage page. The context registry cannot be enumerated, and
+    // an instance whose creation failed must not appear in a list that offers to query it.
+    private readonly ConcurrentDictionary<string, List<RedbInstanceInfo>> _namedRedbInstances = new(StringComparer.OrdinalIgnoreCase);
 
     private const string AutoStartKeyPrefix = "context:autostart:";
 
@@ -269,6 +272,33 @@ public class TsakContextManager : ITsakContextManager
         await context.Start(CancellationToken.None);
         _auditService?.RecordContextEvent(contextName, LifecycleEventType.ContextStarted);
         _logger.LogInformation("Started context {Context}", contextName);
+        WarnAboutRouteIdsTheApiCannotAddress(contextName, context);
+    }
+
+    /// <summary>
+    /// Names the routes the management API cannot address. A route that is never given an id through
+    /// <c>.RouteId(...)</c> gets one derived from its from-URI, slashes included, and the API addresses a route
+    /// by a path segment: <c>/api/contexts/{ctx}/routes/{routeId}/start</c>. Kestrel passes such a segment on
+    /// with <c>%2F</c> still encoded, the lookup misses, and start, stop and detail all answer 404; in the
+    /// dashboard the route is a row of URI noise whose every button fails. The route itself runs exactly as
+    /// declared — only managing it from outside is impossible, hence a warning and not a refusal to start.
+    /// </summary>
+    private void WarnAboutRouteIdsTheApiCannotAddress(string contextName, IRouteContext context)
+    {
+        if (context is not RouteContext routeContext)
+            return;
+
+        foreach (var route in routeContext.Routes)
+        {
+            if (!route.RouteId.Contains('/'))
+                continue;
+
+            _logger.LogWarning(
+                "Route '{RouteId}' of context {Context} cannot be managed through the API or the dashboard: "
+                + "its id carries a '/', and a route is addressed by a path segment. Give the route an "
+                + "explicit id with .RouteId(...)",
+                route.RouteId, contextName);
+        }
     }
 
     private async Task<ContextActionResponse> StopContextCoreAsync(string contextName, bool setAutoStartFalse = true, CancellationToken ct = default)
@@ -319,6 +349,7 @@ public class TsakContextManager : ITsakContextManager
         if (context.IsStarted)
             await context.Stop(CancellationToken.None);
 
+        _namedRedbInstances.TryRemove(contextName, out _);
         // Dispose named redb mini-containers before context disposal
         if (_namedRedbContainers.TryRemove(contextName, out var containers))
         {
@@ -417,6 +448,7 @@ public class TsakContextManager : ITsakContextManager
         var activeRedbName = ResolveActiveRedbName(configuration);
         var fallbackLicense = redb.Tsak.Core.Extensions.LicenseConfigReader.Read(_configuration, "Tsak:Redb:License");
         var containers = new List<ServiceProvider>();
+        var described = new List<RedbInstanceInfo>();
 
         foreach (var (name, entryRaw) in redbDict)
         {
@@ -457,6 +489,12 @@ public class TsakContextManager : ITsakContextManager
                 context.RegisterRedbService(name, service);
 
                 containers.Add(container);
+                described.Add(RedbInstanceDescription.Describe(
+                    cleanName, contextName,
+                    entryConfig.TryGetValue("Provider", out var providerValue) ? providerValue?.ToString() : null,
+                    entryConfig.TryGetValue("ConnectionString", out var connValue) ? connValue?.ToString() : null,
+                    entryConfig.TryGetValue("UsePro", out var proValue) && proValue is true or "true" or "True" or "TRUE",
+                    isActive));
                 _logger.LogInformation("Registered named IRedbService '{Name}' for context {Context}", name, contextName);
             }
             catch (Exception ex)
@@ -467,7 +505,18 @@ public class TsakContextManager : ITsakContextManager
 
         if (containers.Count > 0)
             _namedRedbContainers[contextName] = containers;
+
+        if (described.Count > 0)
+            _namedRedbInstances[contextName] = described;
     }
+
+    /// <inheritdoc />
+    public IReadOnlyList<RedbInstanceInfo> GetNamedRedbInstances() =>
+        _namedRedbInstances
+            .SelectMany(entry => entry.Value)
+            .OrderBy(i => i.ContextName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(i => i.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
 
     /// <summary>
     /// Picks the active redb instance name for a context. Checks top-level

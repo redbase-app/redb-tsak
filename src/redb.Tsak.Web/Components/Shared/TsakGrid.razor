@@ -21,7 +21,7 @@ else
     {
         <div style="margin-bottom: var(--space-3);">
             <input class="input" style="max-width: 300px;" placeholder="Filter…"
-                   @bind="_filterText" @bind:event="oninput" @bind:after="ApplyFilter" />
+                   @bind="_filterText" @bind:event="oninput" @bind:after="OnFilterChanged" />
         </div>
     }
 
@@ -44,7 +44,7 @@ else
         </table>
     </div>
 
-    @if (PageSize > 0 && TotalPages > 1)
+    @if (EffectivePageSize > 0 && (TotalPages > 1 || PageSizeOptions is { Length: > 0 }))
     {
         <div class="grid-pager">
             <button class="btn btn-ghost btn-sm" disabled="@(_page <= 1)" @onclick="() => GoToPage(_page - 1)">
@@ -54,6 +54,16 @@ else
             <button class="btn btn-ghost btn-sm" disabled="@(_page >= TotalPages)" @onclick="() => GoToPage(_page + 1)">
                 Next ›
             </button>
+            @if (PageSizeOptions is { Length: > 0 } sizes)
+            {
+                <select class="input" style="width: 110px; padding: 2px 6px; font-size: 0.8rem; margin-left: var(--space-3);"
+                        value="@EffectivePageSize" @onchange="OnPageSizeChanged">
+                    @foreach (var size in sizes)
+                    {
+                        <option value="@size">@size per page</option>
+                    }
+                </select>
+            }
         </div>
     }
 }
@@ -65,8 +75,35 @@ else
     [Parameter] public RenderFragment? EmptyContent { get; set; }
     [Parameter] public int PageSize { get; set; }
     [Parameter] public bool Filterable { get; set; }
+    /// <summary>
+    /// Page sizes the reader may switch between, shown next to the pager. Null leaves <see cref="PageSize"/>
+    /// fixed, which is what every grid that does not pass this keeps doing.
+    /// </summary>
+    [Parameter] public int[]? PageSizeOptions { get; set; }
+    /// <summary>
+    /// Raised when the reader picks another page size, so a page that outlives this grid can remember the
+    /// choice. Without it the size is forgotten every time the grid is re-created — which happens as soon as
+    /// the page swaps what it shows.
+    /// </summary>
+    [Parameter] public EventCallback<int> PageSizeChanged { get; set; }
     [Parameter] public Func<T, string>? FilterSelector { get; set; }
     [Parameter] public EventCallback<T> OnRowClick { get; set; }
+
+    // The size the reader picked, if any; otherwise the one the page asked for.
+    private int? _chosenPageSize;
+
+    private int EffectivePageSize => _chosenPageSize ?? PageSize;
+
+    private async Task OnPageSizeChanged(ChangeEventArgs e)
+    {
+        if (!int.TryParse(e.Value?.ToString(), out var size) || size <= 0)
+            return;
+
+        _chosenPageSize = size;
+        // The reader is looking at a row that is now on another page; the first page is the honest answer.
+        _page = 1;
+        await PageSizeChanged.InvokeAsync(size);
+    }
 
     private string _filterText = "";
     private int _page = 1;
@@ -75,10 +112,10 @@ else
     private bool _sortAsc = true;
     private Func<T, IComparable>? _sortSelector;
 
-    private int TotalPages => PageSize > 0 ? Math.Max(1, (int)Math.Ceiling(_filteredItems.Count / (double)PageSize)) : 1;
+    private int TotalPages => EffectivePageSize > 0 ? Math.Max(1, (int)Math.Ceiling(_filteredItems.Count / (double)EffectivePageSize)) : 1;
 
     private IEnumerable<T> PagedItems =>
-        PageSize > 0 ? _filteredItems.Skip((_page - 1) * PageSize).Take(PageSize) : _filteredItems;
+        EffectivePageSize > 0 ? _filteredItems.Skip((_page - 1) * EffectivePageSize).Take(EffectivePageSize) : _filteredItems;
 
     protected override void OnParametersSet()
     {
@@ -102,7 +139,13 @@ else
     public string SortIndicator(string column) =>
         _sortColumn != column ? "" : _sortAsc ? " ↑" : " ↓";
 
-    private void ApplyFilter()
+    /// <summary>
+    /// Rebuilds the visible rows. The page the reader is on survives: every render of the parent lands here,
+    /// and resetting to the first page then meant a row clicked on page three sent the reader back to page
+    /// one. Only a change of the filter starts over; otherwise the page is merely kept inside the range the
+    /// data still has.
+    /// </summary>
+    private void ApplyFilter(bool resetPage = false)
     {
         if (Items is null)
         {
@@ -121,8 +164,10 @@ else
         }
 
         ApplySort();
-        _page = 1;
+        _page = resetPage ? 1 : Math.Clamp(_page, 1, TotalPages);
     }
+
+    private void OnFilterChanged() => ApplyFilter(resetPage: true);
 
     private void ApplySort()
     {

@@ -35,6 +35,13 @@ public class SystemContextBuilder
     /// <summary>Route id of the auth-exempt echo probe on the API port; it ships stopped.</summary>
     public const string EchoRouteId = "system-echo";
 
+    /// <summary>
+    /// Route id of the management API itself. Without it the engine derives an id from the listen URI —
+    /// <c>http://0.0.0.0:9090/{**path}?host=…</c> — which reads as noise in the dashboard and cannot travel
+    /// as a path segment of the routes API.
+    /// </summary>
+    public const string ApiRouteId = "system-api";
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -225,7 +232,7 @@ public class SystemContextBuilder
         var dispatcher = new ControllerDispatcherProcessor(controllerRegistry, routeContext, actionFilters);
         routeContext.AddRoutes(r =>
         {
-            r.From(listenUri).Process(async (exchange, ct) =>
+            r.From(listenUri).RouteId(ApiRouteId).Process(async (exchange, ct) =>
             {
                 BridgeHttpHeaders(exchange);
 

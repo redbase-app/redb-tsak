@@ -5,6 +5,13 @@ namespace redb.Tsak.Contracts;
 /// </summary>
 public sealed record RouteMetricsSummary
 {
+    /// <summary>
+    /// The context the route belongs to. A route id is unique only inside its context, so without this the
+    /// dashboard cannot turn a row of this summary into a link to that route — which is the whole point of
+    /// listing the busiest and the error-prone ones.
+    /// </summary>
+    public string ContextName { get; init; } = "";
+
     public required string RouteId { get; init; }
     public required string Status { get; init; }
     public int InflightCount { get; init; }

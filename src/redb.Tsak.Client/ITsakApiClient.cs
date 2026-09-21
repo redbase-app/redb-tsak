@@ -265,4 +265,23 @@ public interface ITsakApiClient : IDisposable
 
     /// <summary>Delete a user.</summary>
     Task<TsakUserActionResponse> DeleteUserAsync(string login, CancellationToken ct = default);
+
+    // ── Storage ──────────────────────────────────────────────────────
+
+    /// <summary>Lists the redb instances of this node: the host's own storage and every named one (operator).</summary>
+    Task<RedbInstanceInfo[]> ListRedbInstancesAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Index and table statistics of one instance plus the window its usage counters cover (operator).
+    /// Pass no instance for the host's own storage; a named one also needs the context that declares it.
+    /// This is the call that opens the connection of an instance registered without one.
+    /// </summary>
+    Task<RedbStorageStats> GetStorageStatsAsync(string? instance = null, string? context = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Refreshes the planner statistics of one table, or of the whole database when no table is named (admin).
+    /// Runs for minutes on a large database — call it through a control-timeout client.
+    /// </summary>
+    Task<RedbAnalyzeResult> AnalyzeStorageAsync(string? instance = null, string? context = null,
+        string? table = null, string? schema = null, CancellationToken ct = default);
 }
