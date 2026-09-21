@@ -28,8 +28,6 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [Unreleased]
-
 ## [4.1.0] — 2026-09-21
 ### Fixed — a table no longer jumps back to its first page whenever the page around it redraws
 
