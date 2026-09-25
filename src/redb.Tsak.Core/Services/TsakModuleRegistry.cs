@@ -212,6 +212,9 @@ public class TsakModuleRegistry : ITsakModuleRegistry
                         var modules = DiscoverModulesInAssembly(assembly, sourceDir);
                         foreach (var module in modules)
                         {
+                            if (RefuseNameCollision(module.ModuleName, tpkg, isXml: false))
+                                continue;
+
                             packageModuleFound = true;
 
                             // Per-module config from package ({moduleName}.config.json)
@@ -219,41 +222,19 @@ public class TsakModuleRegistry : ITsakModuleRegistry
                                 smm.EmbeddedConfigJson = package.ReadModuleConfigJson(module.ModuleName);
 
                             _moduleFilePaths[module.ModuleName] = tpkg;
-
-                            if (_modules.TryGetValue(module.ModuleName, out var existing))
+                            _modules[module.ModuleName] = module;
+                            added.Add(module);
+                            await _store.SaveAsync(new TsakModuleRecord
                             {
-                                _modules[module.ModuleName] = module;
-                                updated.Add(module);
-                                await _store.SaveAsync(new TsakModuleRecord
-                                {
-                                    ModuleName = module.ModuleName,
-                                    Version = module.Version,
-                                    Description = module.Description,
-                                    Dependencies = module.Dependencies.ToList(),
-                                    Status = TsakModuleStatus.Loaded,
-                                    AssemblyPath = tpkg,
-                                    LastUpdatedAt = DateTimeOffset.UtcNow
-                                });
-                                _logger.LogInformation("Updated module {Module} from package {Pkg}",
-                                    module.ModuleName, package.Manifest.Name);
-                                (existing as IDisposable)?.Dispose();
-                            }
-                            else
-                            {
-                                _modules[module.ModuleName] = module;
-                                added.Add(module);
-                                await _store.SaveAsync(new TsakModuleRecord
-                                {
-                                    ModuleName = module.ModuleName,
-                                    Version = module.Version,
-                                    Description = module.Description,
-                                    Dependencies = module.Dependencies.ToList(),
-                                    Status = TsakModuleStatus.Loaded,
-                                    AssemblyPath = tpkg
-                                });
-                                _logger.LogInformation("Discovered module {Module} v{Ver} from package {Pkg}",
-                                    module.ModuleName, module.Version, package.Manifest.Name);
-                            }
+                                ModuleName = module.ModuleName,
+                                Version = module.Version,
+                                Description = module.Description,
+                                Dependencies = module.Dependencies.ToList(),
+                                Status = TsakModuleStatus.Loaded,
+                                AssemblyPath = tpkg
+                            });
+                            _logger.LogInformation("Discovered module {Module} v{Ver} from package {Pkg}",
+                                module.ModuleName, module.Version, package.Manifest.Name);
                         }
                     }
 
@@ -261,49 +242,30 @@ public class TsakModuleRegistry : ITsakModuleRegistry
                     // AFTER the assembly scan, so bean:#name objects registered by module code
                     // are visible to the artifacts. An XML-only package (no entry points) is a
                     // full module too — before this, it died on packageModuleFound below.
-                    if (package.Manifest.Artifacts.Count > 0)
+                    // The XML module is named after the manifest, so the name is checked before the
+                    // module is built: a refused one is never constructed.
+                    if (package.Manifest.Artifacts.Count > 0
+                        && !RefuseNameCollision(package.Manifest.Name, tpkg, isXml: true))
                     {
                         var sourceDir = Path.GetDirectoryName(tpkgFullPath);
                         var xmlModule = new Modules.XmlRouteModule(package, sourceDir,
                             package.ReadModuleConfigJson(package.Manifest.Name), _logger);
                         packageModuleFound = true;
                         _moduleFilePaths[xmlModule.ModuleName] = tpkg;
-
-                        if (_modules.TryGetValue(xmlModule.ModuleName, out var existingXml))
+                        _modules[xmlModule.ModuleName] = xmlModule;
+                        added.Add(xmlModule);
+                        await _store.SaveAsync(new TsakModuleRecord
                         {
-                            _modules[xmlModule.ModuleName] = xmlModule;
-                            updated.Add(xmlModule);
-                            await _store.SaveAsync(new TsakModuleRecord
-                            {
-                                ModuleName = xmlModule.ModuleName,
-                                Version = xmlModule.Version,
-                                Description = xmlModule.Description,
-                                Dependencies = xmlModule.Dependencies.ToList(),
-                                Status = TsakModuleStatus.Loaded,
-                                AssemblyPath = tpkg,
-                                LastUpdatedAt = DateTimeOffset.UtcNow
-                            });
-                            _logger.LogInformation("Updated XML route module {Module} from package {Pkg}",
-                                xmlModule.ModuleName, package.Manifest.Name);
-                            (existingXml as IDisposable)?.Dispose();
-                        }
-                        else
-                        {
-                            _modules[xmlModule.ModuleName] = xmlModule;
-                            added.Add(xmlModule);
-                            await _store.SaveAsync(new TsakModuleRecord
-                            {
-                                ModuleName = xmlModule.ModuleName,
-                                Version = xmlModule.Version,
-                                Description = xmlModule.Description,
-                                Dependencies = xmlModule.Dependencies.ToList(),
-                                Status = TsakModuleStatus.Loaded,
-                                AssemblyPath = tpkg
-                            });
-                            _logger.LogInformation("Discovered XML route module {Module} v{Ver} from package {Pkg} ({Artifacts} artifact(s))",
-                                xmlModule.ModuleName, xmlModule.Version, package.Manifest.Name,
-                                package.Manifest.Artifacts.Count);
-                        }
+                            ModuleName = xmlModule.ModuleName,
+                            Version = xmlModule.Version,
+                            Description = xmlModule.Description,
+                            Dependencies = xmlModule.Dependencies.ToList(),
+                            Status = TsakModuleStatus.Loaded,
+                            AssemblyPath = tpkg
+                        });
+                        _logger.LogInformation("Discovered XML route module {Module} v{Ver} from package {Pkg} ({Artifacts} artifact(s))",
+                            xmlModule.ModuleName, xmlModule.Version, package.Manifest.Name,
+                            package.Manifest.Artifacts.Count);
                     }
 
                     // Store package for HotReloadService adoption (owns the ALC)
@@ -331,6 +293,37 @@ public class TsakModuleRegistry : ITsakModuleRegistry
         _logger.LogInformation("Discovery scan: {Added} added, {Updated} updated, {Removed} removed",
             added.Count, updated.Count, removed.Count);
         return total;
+    }
+
+    /// <summary>
+    /// Refuses a package module whose name another module already holds. The startup scan runs once, so a
+    /// name met twice is two modules claiming it, never an update of one — a hot swap goes through
+    /// <see cref="ReplaceModuleSilentAsync"/>. Before this, the second claimant replaced the first, disposed it
+    /// and logged "Updated": a package's XML module destroyed the code module it shared a name with, and the
+    /// same package dropped into two scanned folders replaced itself, with no error anywhere.
+    /// <para>
+    /// The node keeps running: the refusal covers the one registration in dispute, the way a module that fails
+    /// to initialize cannot take the node down either.
+    /// </para>
+    /// </summary>
+    /// <returns>True when the registration is refused and must not go ahead.</returns>
+    private bool RefuseNameCollision(string moduleName, string source, bool isXml)
+    {
+        if (!_modules.TryGetValue(moduleName, out var existing))
+            return false;
+
+        var existingSource = _moduleFilePaths.TryGetValue(moduleName, out var path)
+            ? path
+            : "a static provider of the host";
+
+        _logger.LogError(
+            "Module '{Module}' from {Source} ({Kind}) is refused: the name is already held by '{Existing}' from "
+            + "{ExistingSource} ({ExistingKind}). Module names are compared without regard to case and must be "
+            + "unique across everything the node loads — a package's code module and its XML module must not share "
+            + "a name either. The module registered first keeps running; rename the manifest or the InitRoute namespace.",
+            moduleName, source, isXml ? "XML module" : "code module",
+            existing.ModuleName, existingSource, existing is Modules.XmlRouteModule ? "XML module" : "code module");
+        return true;
     }
 
     public async Task RegisterModuleAsync(ITsakModule module)

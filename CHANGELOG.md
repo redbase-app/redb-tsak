@@ -28,6 +28,29 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [4.1.1] — 2026-09-25
+### Fixed — a hot reload no longer leaves a facade taking requests its backend cannot serve
+
+A package reload recreated its contexts one at a time — stop, create, initialize, start, then the next — in
+dependency order. With "the facade depends on the core" declared, the core went first, and for the whole of its
+recreation the old facade kept accepting requests and forwarding them into a context that no longer existed;
+without the dependency declared, the order was arbitrary, and a new facade could come up before its core. The
+contexts of a reload are now replaced as a set: all of them stop in reverse dependency order, facades first,
+and then start in dependency order, facades last. For the length of a reload the set is plainly unavailable
+instead of half-alive, as Camel stops routes in the reverse of their startup order. The locks of the whole set
+are held throughout, so nothing recreates one of its contexts in between.
+
+### Fixed — a module whose name is already taken is refused, instead of silently replacing the one that holds it
+
+Module names are compared without regard to case, and during the startup scan a name met a second time was
+treated as an update: the newcomer took the place of the module holding the name, that module was disposed,
+and the log said "Updated module". The scan runs once — a hot swap goes through its own path — so a name met
+twice is always two modules claiming it. A package's XML module, named after its manifest, destroyed the code
+module that shared its name; the same package dropped into two scanned folders replaced itself. The second
+claimant is now refused with an error naming both sources, and the module registered first keeps running.
+The node itself does not stop, the same way a module that fails to initialize cannot stop it. Bare DLLs keep
+their deliberate rule that a newer version of the same module wins, which the log already reports as such.
+
 ## [4.1.0] — 2026-09-21
 ### Fixed — a table no longer jumps back to its first page whenever the page around it redraws
 

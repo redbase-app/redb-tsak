@@ -46,7 +46,7 @@ properties, by their exact property names. Some worth knowing:
 | Key | Default | What it does |
 |---|---|---|
 | `Tsak:Redb:StringCollation` | `null` | Collation for string comparison, e.g. `und-x-icu`. Without it case-insensitive search folds ASCII only, so Cyrillic, Greek and most other scripts do not match across case. **Read ../COLLATION.md before setting it** — on PostgreSQL a collated operand cannot use an index built with the database's own collation, and a trigram search silently degrades to a full scan. |
-| `Tsak:Redb:EnablePvtPrefilter` | `false` | Pro + PostgreSQL only. Adds a cutting step before the pivot aggregate. It deliberately declines some query shapes — a nested `OR` under an `AND` is skipped because taking it would drop rows, not merely run slower. |
+| `Tsak:Redb:EnablePvtPrefilter` | `false` | Pro only, on all three providers (PostgreSQL, SQL Server, SQLite). Adds a cutting step before the pivot aggregate. It deliberately declines some query shapes — a nested `OR` under an `AND` is skipped because taking it would drop rows, not merely run slower. |
 | `Tsak:Redb:EnsureCreated` | `true` for the unnamed instance, `false` for named ones | Create the schema at startup. Named instances assume the schema exists. |
 | `Tsak:Redb:DefaultCheckPermissionsOnQuery` | `false` | Also `…OnLoad`, `…OnSave`, `…OnDelete`. Access control, not tuning. |
 | `Tsak:Redb:SystemUserId` | `0` | The user id attributed to system writes. |

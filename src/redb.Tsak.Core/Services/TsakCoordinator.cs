@@ -229,11 +229,41 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
         // Topological sort by Dependencies from config
         var ordered = TopologicalSort(allContextEntries);
 
-        // Create contexts in dependency order
-        var failures = new List<ModuleActivationFailure>();
-        foreach (var (contextName, contextModules, _) in ordered)
-            failures.AddRange(await RecreateContextWithModulesAsync(contextName, contextModules));
-        return new ModuleActivationReport(failures);
+        // The set is replaced as a whole: every context in it stops first, in reverse dependency order, and only
+        // then do they come up again, in dependency order. Recreated one at a time — stop, create, start, next —
+        // a facade stayed up while the context it forwards to was being replaced (dependency declared), or a new
+        // facade came up before its backend (not declared); both windows took requests that could only fail.
+        // Now no context runs while one it depends on does not, and for the length of a reload the set is plainly
+        // unavailable. Camel stops routes in the reverse of their startup order for the same reason. The locks of
+        // the whole set are held throughout, taken in name order so that two reloads cannot lock each other out.
+        var locks = ordered
+            .Select(e => e.Name)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+            .Select(n => _contextLocks.GetOrAdd(n, _ => new SemaphoreSlim(1, 1)))
+            .ToList();
+        var taken = 0;
+        try
+        {
+            foreach (var contextLock in locks)
+            {
+                await contextLock.WaitAsync().ConfigureAwait(false);
+                taken++;
+            }
+
+            for (var i = ordered.Count - 1; i >= 0; i--)
+                await RemoveContextIfPresentAsync(ordered[i].Name).ConfigureAwait(false);
+
+            var failures = new List<ModuleActivationFailure>();
+            foreach (var (contextName, contextModules, _) in ordered)
+                failures.AddRange(await BringUpContextCoreAsync(contextName, contextModules).ConfigureAwait(false));
+            return new ModuleActivationReport(failures);
+        }
+        finally
+        {
+            for (var i = 0; i < taken; i++)
+                locks[i].Release();
+        }
     }
 
     public async Task<ModuleActivationReport> ProcessModuleAddedAsync(ITsakModule module)
@@ -338,11 +368,23 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
     private async Task<IReadOnlyList<ModuleActivationFailure>> RecreateContextWithModulesCoreAsync(
         string contextName, IReadOnlyList<ITsakModule> modules)
     {
-        // Remove existing context if present
-        var existing = _contextManager.GetContext(contextName);
-        if (existing != null)
-            await _contextManager.RemoveContextAsync(contextName, preserveState: true);
+        await RemoveContextIfPresentAsync(contextName).ConfigureAwait(false);
+        return await BringUpContextCoreAsync(contextName, modules).ConfigureAwait(false);
+    }
 
+    private async Task RemoveContextIfPresentAsync(string contextName)
+    {
+        if (_contextManager.GetContext(contextName) is not null)
+            await _contextManager.RemoveContextAsync(contextName, preserveState: true).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Creates, initializes and starts a context that is not running. The caller holds the context's lock and has
+    /// already taken down whatever ran under the name — alone for a single module, or as part of a whole set.
+    /// </summary>
+    private async Task<IReadOnlyList<ModuleActivationFailure>> BringUpContextCoreAsync(
+        string contextName, IReadOnlyList<ITsakModule> modules)
+    {
         var contextConfig = GetContextConfig(contextName, modules);
         var context = _contextManager.CreateContext(contextName, _serviceProvider, contextConfig);
 
