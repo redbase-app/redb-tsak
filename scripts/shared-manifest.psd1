@@ -89,5 +89,8 @@
         # SOAP connector. Same rule as As2 — without this line a module using a `soap://` endpoint
         # finds no component in a Tsak worker.
         'redb.Route.Soap'
+        # AS4/ebMS3 (4.1.2). Same rule as As2 and Soap: without this line a module using an `as4://`
+        # endpoint finds no component in a Tsak worker.
+        'redb.Route.As4'
     )
 }

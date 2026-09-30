@@ -1,3 +1,4 @@
+using redb.Route.Abstractions;
 using redb.Route.Core;
 using redb.Route.Sql;
 
@@ -10,11 +11,21 @@ namespace redb.Tsak.Core.Audit;
 /// The sink is an endpoint on purpose: pointing the same event stream at a file, a broker or
 /// an HTTP collector is a configuration change, not a code change.
 /// </para>
+/// <para>
+/// The endpoint names the statement instead of carrying it. The INSERT is a named query the writer
+/// publishes on its own context, and its values travel as a map keyed by column, which the sql
+/// connector binds to <c>:#column</c> by itself. Before, the INSERT text and seventeen <c>param.*</c>
+/// options were the endpoint URI — printed whole in every start log and on the Endpoints page.
+/// Whoever mounts the writer still publishes only the data source, as before.
+/// </para>
 /// </summary>
 public sealed class TsakAuditRouteBuilder : RouteBuilder
 {
     /// <summary>Route id, so the writer can be found in the Routes API and the dashboard.</summary>
     public const string RouteIdName = "tsak-audit-writer";
+
+    /// <summary>Name the INSERT is published under as a named query of the writer's context.</summary>
+    public const string InsertQueryName = "tsak-audit-insert";
 
     private readonly AuditProvider _provider;
     private readonly string _clusterName;
@@ -32,28 +43,70 @@ public sealed class TsakAuditRouteBuilder : RouteBuilder
 
     protected override void Configure()
     {
+        if (Context is not null)
+            PublishInsertQuery(Context, AuditStorage.InsertSql(_provider));
+
+        var clusterName = _clusterName;
         From(AuditStorage.AuditEndpoint)
             .RouteId(RouteIdName)
-            .To(Sql.Execute(AuditStorage.InsertSql(_provider))
-                .DataSource(Constant(AuditStorage.DataSourceName))
-                .Param("event_id",          Header(AuditHeaders.EventId))
-                .Param("ts",                Header(AuditHeaders.Timestamp))
-                .Param("action",            Header(AuditHeaders.Action))
-                .Param("controller_type",   Header(AuditHeaders.ControllerType))
-                .Param("actor_principal",   Header(AuditHeaders.ActorPrincipal))
-                .Param("actor_key_id",      Header(AuditHeaders.ActorKeyId))
-                .Param("remote_ip",         Header(AuditHeaders.RemoteIp))
-                .Param("user_agent",        Header(AuditHeaders.UserAgent))
-                .Param("http_method",       Header(AuditHeaders.HttpMethod))
-                .Param("request_path",      Header(AuditHeaders.RequestPath))
-                .Param("target_resource",   Header(AuditHeaders.TargetResource))
-                .Param("status_code",       Header(AuditHeaders.StatusCode))
-                .Param("duration_ms",       Header(AuditHeaders.DurationMs))
-                .Param("exception_type",    Header(AuditHeaders.ExceptionType))
-                .Param("exception_message", Header(AuditHeaders.ExceptionMessage))
-                .Param("payload",           Body())
-                .Param("cluster_name",      Constant(_clusterName)));
+            .Process(exchange => exchange.In.Body = ToColumnValues(exchange.In, clusterName))
+            .To(Sql.Execute(SqlNamedQueryRegistry.RefPrefix + InsertQueryName)
+                .DataSource(Constant(AuditStorage.DataSourceName)));
     }
+
+    /// <summary>
+    /// Publishes the INSERT on the context. A builder is configured again when its context is rebuilt, so the
+    /// same statement under the same name is already there and nothing is done; a different statement under
+    /// the name is two writers disagreeing about one table, and that is refused.
+    /// </summary>
+    private static void PublishInsertQuery(IRouteContext context, string insertSql)
+    {
+        var namedQueries = context.GetService<ISqlNamedQueryRegistry>();
+        if (namedQueries is null)
+        {
+            namedQueries = new SqlNamedQueryRegistry();
+            context.AddService(typeof(ISqlNamedQueryRegistry), namedQueries);
+        }
+
+        if (!namedQueries.TryResolve(InsertQueryName, out var published))
+        {
+            namedQueries.Register(InsertQueryName, insertSql);
+            return;
+        }
+
+        if (!string.Equals(published, insertSql, StringComparison.Ordinal))
+            throw new InvalidOperationException(
+                $"Named query '{InsertQueryName}' is already published on this context with a different statement. "
+                + "Two audit writers with different providers cannot share one context.");
+    }
+
+    /// <summary>
+    /// The row to insert, keyed by column. An absent header is a present key with a null value, which the sql
+    /// connector binds as NULL — exactly what the per-column header expressions did.
+    /// </summary>
+    internal static Dictionary<string, object?> ToColumnValues(IMessage message, string clusterName) => new()
+    {
+        ["event_id"] = HeaderOrNull(message, AuditHeaders.EventId),
+        ["ts"] = HeaderOrNull(message, AuditHeaders.Timestamp),
+        ["action"] = HeaderOrNull(message, AuditHeaders.Action),
+        ["controller_type"] = HeaderOrNull(message, AuditHeaders.ControllerType),
+        ["actor_principal"] = HeaderOrNull(message, AuditHeaders.ActorPrincipal),
+        ["actor_key_id"] = HeaderOrNull(message, AuditHeaders.ActorKeyId),
+        ["remote_ip"] = HeaderOrNull(message, AuditHeaders.RemoteIp),
+        ["user_agent"] = HeaderOrNull(message, AuditHeaders.UserAgent),
+        ["http_method"] = HeaderOrNull(message, AuditHeaders.HttpMethod),
+        ["request_path"] = HeaderOrNull(message, AuditHeaders.RequestPath),
+        ["target_resource"] = HeaderOrNull(message, AuditHeaders.TargetResource),
+        ["status_code"] = HeaderOrNull(message, AuditHeaders.StatusCode),
+        ["duration_ms"] = HeaderOrNull(message, AuditHeaders.DurationMs),
+        ["exception_type"] = HeaderOrNull(message, AuditHeaders.ExceptionType),
+        ["exception_message"] = HeaderOrNull(message, AuditHeaders.ExceptionMessage),
+        ["payload"] = message.Body,
+        ["cluster_name"] = clusterName
+    };
+
+    private static object? HeaderOrNull(IMessage message, string name) =>
+        message.Headers.TryGetValue(name, out var value) ? value : null;
 }
 
 /// <summary>Header names carrying a single audit event from the sink to the writer route.</summary>

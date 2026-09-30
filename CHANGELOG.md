@@ -28,6 +28,33 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [4.2.0] — 2026-09-30
+### Fixed — the audit writer's endpoint no longer carries its whole INSERT, so it stops flooding the log
+
+The endpoint of the audit writer route was the entire statement plus seventeen `param.*` options, so every
+start logged a single line of some two kilobytes — `Endpoint sql://INSERT INTO tsak_audit_log (...) VALUES
+(...)?dataSource=...&param.user_agent=... started successfully` — and the Endpoints page showed the same wall
+of text. The INSERT is now a named query the writer publishes on its own context, and the values travel as a
+map keyed by column, which the sql connector binds by itself; the endpoint reads
+`sql:ref:tsak-audit-insert?dataSource=tsak-audit-ds&mode=Execute`. Nothing written changes: the same columns
+get the same values, and a missing header is still stored as NULL. Whoever mounts the writer still publishes
+only the data source.
+
+### Security — a module whose http input carries credentials no longer starts, because nothing ever checked them
+
+`authScheme`, `username`, `password` and `authToken` are what an http producer sends to the service it calls.
+They share one options class with the consumer, so on a `from("http:...")` they were accepted — and then checked
+nothing. An input written as `http:0.0.0.0:8080/orders?authScheme=Basic&username=ops&password=...` looked
+protected and took every caller, with the password sitting in the route key. redb.Route now refuses such an
+input when it creates the consumer, naming the parameters and never their values.
+
+What this means in Tsak: the consumer is created while its context starts, so the whole context holding such a
+route stays stopped, not just the one route, and the worker log names the endpoint and the parameters. Nothing
+in this repository declares one, but a module deployed from elsewhere may. The fix is to remove those
+parameters from the input and to put inbound authentication in front of the route — a reverse proxy, or a
+processor that validates the `Authorization` header. The key-based authentication of Tsak's own management API
+does not cover module routes and never did.
+
 ## [4.1.1] — 2026-09-25
 ### Fixed — a hot reload no longer leaves a facade taking requests its backend cannot serve
 
