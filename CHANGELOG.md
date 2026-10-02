@@ -28,6 +28,45 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [4.2.1] — 2026-10-02
+### Fixed — the `tsak-worker` template starts on a machine with nothing installed
+
+`dotnet new tsak-worker` followed by `dotnet run` stopped on `Npgsql: Failed to connect to
+127.0.0.1:5432`: the generated `appsettings.json` pinned `Provider: postgres`, and `-db` offered no other
+database for a laptop — although the runtime has carried `redb.SQLite` since 4.2.0 and the worker image
+itself defaults to SQLite. `sqlite` is now a `-db` choice and the default one (`ConnectionStrings:Sqlite`
+→ `Data Source=tsak.db`), so the host starts by creating its database file next to itself. Postgres and
+SQL Server remain one flag away.
+
+### Fixed — a module no longer dies on its first write when the host runs the Free tier
+
+The template wrote `PropsSaveStrategy: ChangeTracking` next to `UsePro: false`, and the Free provider does
+not implement batch change tracking: any route that saves inside `Transacted()` — the ordinary pattern —
+failed with `NotSupportedException: PropsSaveStrategy.ChangeTracking (batch) is not implemented in this
+provider`. The strategy now follows the tier: `--pro true` (the new default, matching the worker image)
+keeps `ChangeTracking`, `--pro false` writes `DeleteInsert`.
+
+### Security — the management API is bound to loopback by default
+
+`Tsak:Api:Host` was `0.0.0.0` while `Tsak:Auth:Enabled` was false and the secret was the literal
+`CHANGE_ME_TO_A_LONG_RANDOM_VALUE` — the unprotected management API the runtime warns about on every
+start, published in a template. The API now listens on `127.0.0.1` with an empty secret; opening it up is
+a deliberate edit of `Tsak:Api:Host` and `Tsak:Auth`.
+
+### Fixed — the template no longer carries switches the runtime ignores
+
+`HotReload:RollingUpdate: true` made every start log `Tsak:HotReload:RollingUpdate=true is NOT
+implemented`. The default is `false` until the runtime implements it.
+
+### Added — the pack is released apart from the libraries, and the folder rules are written down
+
+`redb.Tsak.Templates` and `redb.Templates` now have their own release path: the packs stay at their own
+version while the libraries move on, and the release tooling gates the redb version the templates pin.
+The generated project's README explains the two rules that decide whether a module loads — modules are
+scanned relative to the working directory, `Libs/shared` is resolved next to the application, not next to
+the module — and the repository's `scripts/` ships the smoke checks that generate, run and verify both
+packs (`smoke-template.ps1`, `smoke-module-in-host.ps1`).
+
 ## [4.2.0] — 2026-09-30
 ### Fixed — the audit writer's endpoint no longer carries its whole INSERT, so it stops flooding the log
 

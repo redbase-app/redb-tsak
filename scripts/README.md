@@ -65,6 +65,39 @@ difference is fine — that is the whole point — but a minor mismatch, or a mi
 `Libs/shared/`, aborts the process. So a given Worker build accepts patches of its own minor only;
 a new ecosystem minor means a full release.
 
+## `smoke-template.ps1` — the template pack is verified before it is published
+
+Packs `redb.Tsak.Templates`, generates the host in each mode the template offers, builds it and — where no
+server is needed — starts it and reads back what the host says about itself: the provider, the tier and the
+save strategy the runtime applied.
+
+| case | database | tier | starts |
+|------|----------|------|--------|
+| `default` | SQLite | Pro | yes |
+| `inmemory` | SQLite | Pro | yes |
+| `free` | SQLite | Free (`DeleteInsert`) | yes |
+| `postgres` | Postgres | Pro | build only — needs a server |
+| `mssql` | SQL Server | Pro | build only — needs a server |
+
+```powershell
+./scripts/smoke-template.ps1
+./scripts/smoke-template.ps1 -PackagePath ..\nupkg\redb.Tsak.Templates.4.2.1.nupkg
+```
+
+## `smoke-module-in-host.ps1` — the module chain, end to end
+
+Walks what the two template packs promise together: generates a `RedbWorker` module from the
+**redb.Templates** pack, packs it with its own `deploy/pack-tpkg.ps1`, generates the host, refreshes the
+shared layer, drops the package into `Libs/` and waits for the module to return a receipt:
+
+```powershell
+./scripts/smoke-module-in-host.ps1
+```
+
+Outside the monorepo — that is, in a checkout of this repository — there is no `redb.Templates` next to
+it, so the module templates are installed from nuget.org; `-TemplatesPackage <file.nupkg>` tests a local
+build of that pack instead, and `-SkipSharedRefresh` keeps the layer the host already has.
+
 ## Do not put modules here
 
 `Libs/shared/` is process-global: everything in it is loaded into the default `AssemblyLoadContext`

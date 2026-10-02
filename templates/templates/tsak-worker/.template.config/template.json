@@ -15,9 +15,10 @@
     "db": {
       "type": "parameter",
       "datatype": "choice",
-      "defaultValue": "postgres",
+      "defaultValue": "sqlite",
       "description": "Database provider (used when storage = redb)",
       "choices": [
+        { "choice": "sqlite",   "description": "SQLite (a file next to the host, nothing to install)" },
         { "choice": "postgres", "description": "PostgreSQL (via Npgsql)" },
         { "choice": "mssql",    "description": "Microsoft SQL Server" }
       ]
@@ -35,8 +36,8 @@
     "pro": {
       "type": "parameter",
       "datatype": "bool",
-      "defaultValue": "false",
-      "description": "Enable Pro features (cluster, redb-backed key store, audit)"
+      "defaultValue": "true",
+      "description": "RedBase Pro tier and Pro features (cluster, redb-backed key store, audit). The 4.x Pro tier is free; --pro false switches the redb provider to the Free one and the save strategy to DeleteInsert"
     },
     "UsePostgres": {
       "type": "computed",
@@ -45,6 +46,10 @@
     "UseMsSql": {
       "type": "computed",
       "value": "(db == \"mssql\")"
+    },
+    "UseSqlite": {
+      "type": "computed",
+      "value": "(db == \"sqlite\")"
     },
     "UseRedbStorage": {
       "type": "computed",
