@@ -5,8 +5,8 @@
     <PackageId>redb.Tsak.Templates</PackageId>
     <!-- The pack version only: the redb.Tsak.Core version the template installs is pinned as plain text
          inside templates/tsak-worker/TsakHost.csproj and checked by deploy/nuget/lib/TemplateVersionGate.ps1. -->
-    <Version>4.2.1</Version>
-    <PackageVersion>4.2.1</PackageVersion>
+    <Version>4.2.2</Version>
+    <PackageVersion>4.2.2</PackageVersion>
     <Title>redb.Tsak Project Templates</Title>
     <Authors>RedBase</Authors>
     <Company>RedBase</Company>

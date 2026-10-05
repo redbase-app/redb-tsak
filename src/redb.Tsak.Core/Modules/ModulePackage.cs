@@ -97,6 +97,28 @@ public sealed class ModulePackage : IDisposable
     }
 
     /// <summary>
+    /// Reads only the manifest from a package's bytes, without loading any assembly. The hot-reload
+    /// scan uses it to order packages by <see cref="ModuleManifest.Dependencies"/> before it commits to
+    /// reloading them. Returns null when the bytes are not a readable package.
+    /// </summary>
+    internal static ModuleManifest? TryReadManifest(byte[] packageBytes)
+    {
+        try
+        {
+            using var zip = new ZipArchive(new MemoryStream(packageBytes), ZipArchiveMode.Read);
+            var manifestEntry = zip.GetEntry("manifest.json");
+            if (manifestEntry is null)
+                return null;
+            using var stream = manifestEntry.Open();
+            return JsonSerializer.Deserialize<ModuleManifest>(stream);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Opens a .tpkg from an in-memory buffer (the caller verified these exact bytes).
     /// <paramref name="isolatedCompanions"/> loads companion DLLs into the package's own ALC
     /// instead of publishing them to the process-wide tracker — for staged validation, whose

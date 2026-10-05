@@ -28,6 +28,27 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [4.2.2] — 2026-10-05
+### Fixed — a package reload follows the manifest's order, and a replaced carrier drags its dependents along
+
+Hot reload scanned the module directory in filesystem order (`Directory.GetFiles` does not sort), so when a
+carrier and the packages that depend on it were replaced in the same pass, the dependent could be reloaded
+before the carrier and come up on the carrier's old shared types. The startup scan never had this problem:
+`TsakCoordinator` topologically sorts what it starts by the declared `Dependencies`. A reload now does the
+same, by the package's own `Manifest.Dependencies`: every changed `.tpkg` across the scanned paths is
+gathered first, ordered so that a carrier precedes the packages that declare it, and only then reloaded. A
+cycle is logged and the packages keep their scan order rather than being dropped.
+
+The second half is the rule `redb.Identity.Contracts.Module` states in prose: reloading a package replaces
+the companion DLLs it ships, so it must be followed by reloading every module that uses them. A reload
+force-replaces its companions in `LoadedAssemblyTracker`, and a dependent keeps the old assembly identity in
+its already-loaded code, so leaving it alone handed it the same CLR type in two copies and a typed body
+crossing `direct-vm` quietly became `null`. TSAK now reloads those dependents itself: a reloaded
+package that ships companions pulls in, transitively, every loaded package that names it in
+`Manifest.Dependencies`, after the carrier. A dependent that cannot be re-verified is named in a warning and
+stays up on the old types until its own reload. The deployment no longer has to order the drops by hand to
+match the manifest.
+
 ## [4.2.1] — 2026-10-02
 ### Fixed — the `tsak-worker` template starts on a machine with nothing installed
 

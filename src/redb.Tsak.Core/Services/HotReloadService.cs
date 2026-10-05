@@ -227,12 +227,14 @@ public sealed class HotReloadService : IDisposable
             _sharedLoader.AcknowledgeChanges();
         }
 
+        var packageScanPaths = new List<string>();
         foreach (var path in paths)
         {
             if (!Directory.Exists(path))
                 continue;
 
             _logger.LogDebug("Hot-reload scan: {Path}", path);
+            packageScanPaths.Add(path);
 
             foreach (var dll in Directory.GetFiles(path, "*.dll"))
             {
@@ -344,149 +346,15 @@ public sealed class HotReloadService : IDisposable
                 }
             }
 
-            // Scan .tpkg packages (CAR-style hot deploy) — atomic package-level reload
-            foreach (var tpkg in Directory.GetFiles(path, "*.tpkg"))
-            {
-                try
-                {
-                    var tpkgInfo = new FileInfo(tpkg);
-                    var lastWrite = tpkgInfo.LastWriteTimeUtc;
-
-                    // Skip if unchanged since the last SUCCESSFUL process. The tracked time is now written
-                    // only after a successful open/verify (4.11), so a transient failure is retried rather
-                    // than permanently skipped.
-                    if (_ignoredDlls.TryGetValue(tpkg, out var trackedWrite) && lastWrite <= trackedWrite)
-                    {
-                        _additionStability.TryRemove(tpkg, out _);
-                        continue;
-                    }
-
-                    // Copy-stability debounce (4.11): a freshly-dropped package may still be copying.
-                    // Require its size+mtime to hold steady for AdditionStabilityScans scans before opening
-                    // it, so we never read a half-written ZIP. Mirrors RemovalDebounceScans for deletions.
-                    if (!IsPackageStableForLoad(tpkg, tpkgInfo.Length, lastWrite))
-                        continue;
-
-                    // Load-boundary trust gate: verify the signature before ANY code from this package is
-                    // loaded. On failure we do NOT record the timestamp, so the package is retried once its
-                    // detached .sig is copied in (or the file is fixed). The verified bytes are also the
-                    // loaded bytes — no verify-then-reopen window (review 2026-09-02, К3).
-                    var verifiedBytes = _loadGate.ReadVerifiedTpkg(tpkg);
-                    if (verifiedBytes is null)
-                        continue;
-
-                    if (_packageModules.TryGetValue(tpkg, out var oldModuleNames) && oldModuleNames.Count > 0)
-                    {
-                        // Package update — reload preserving state (autoStart etc.). ReloadPackageAsync
-                        // records the tracked timestamp itself only after a successful reload.
-                        reloaded += await ReloadPackageAsync(tpkg, verifiedBytes, oldModuleNames, ct).ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        // New package — first-time load with per-package ALC
-                        var package = ModulePackage.Open(verifiedBytes, tpkg, lastWrite,
-                            probePaths: _assemblyProbePaths, logger: _logger, collectible: _collectible);
-                        if (package is null)
-                            continue; // corrupt/partial — do NOT record; retry next scan
-
-                        var newModuleNames = new List<string>();
-
-                        // Discover every entry point before registering any: a package whose entry point Tsak
-                        // cannot use (an InitRoute.main of an unsupported shape) is refused whole, said once, and
-                        // ignored until the file changes. The throw used to leave the package's ALC and its
-                        // extracted files behind and re-open it on every scan.
-                        var discovered = new List<ITsakModule>();
-                        try
-                        {
-                            var packageSourceDir = Path.GetDirectoryName(Path.GetFullPath(tpkg));
-                            foreach (var assembly in package.LoadedAssemblies)
-                                discovered.AddRange(TsakModuleRegistry.DiscoverModulesInAssembly(assembly, packageSourceDir));
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(ex, "Package {Path} cannot be used and is ignored until it changes", tpkg);
-                            package.Dispose();
-                            _ignoredDlls[tpkg] = lastWrite;
-                            _additionStability.TryRemove(tpkg, out _);
-                            continue;
-                        }
-
-                        {
-                            foreach (var module in discovered)
-                            {
-                                if (module is Modules.StaticMethodModule smm)
-                                    smm.EmbeddedConfigJson = package.ReadModuleConfigJson(module.ModuleName);
-
-                                var existingModule = _registry.GetModule(module.ModuleName);
-                                if (existingModule is not null)
-                                {
-                                    // Already in registry (loaded at startup discovery) — just track it
-                                    _loadedModules[module.ModuleName] = new LoadedModuleInfo(package.Alc, tpkg, module.Version);
-                                    newModuleNames.Add(module.ModuleName);
-                                    continue;
-                                }
-
-                                _logger.LogInformation("New module {Module} from package {Pkg}",
-                                    module.ModuleName, package.Manifest.Name);
-                                await _registry.RegisterModuleAsync(module);
-                                _loadedModules[module.ModuleName] = new LoadedModuleInfo(package.Alc, tpkg, module.Version);
-                                newModuleNames.Add(module.ModuleName);
-                                reloaded++;
-                            }
-                        }
-
-                        // Third convention (Route-XML Ф5.2): XML artifacts from the manifest — the
-                        // same block the startup discovery runs. Without it an XML-only package
-                        // dropped into a RUNNING worker was opened, found module-less, disposed and
-                        // ignored (такт 5 E2E find); one adopted at startup lost its hot-reload
-                        // tracking the same way, so a redrop never reached ReloadPackageAsync.
-                        if (package.Manifest.Artifacts.Count > 0)
-                        {
-                            var sourceDir = Path.GetDirectoryName(Path.GetFullPath(tpkg));
-                            var xmlModule = new Modules.XmlRouteModule(package, sourceDir,
-                                package.ReadModuleConfigJson(package.Manifest.Name), _logger);
-
-                            if (_registry.GetModule(xmlModule.ModuleName) is not null)
-                            {
-                                // Already in registry (loaded at startup discovery) — just track it
-                                _loadedModules[xmlModule.ModuleName] = new LoadedModuleInfo(package.Alc, tpkg, xmlModule.Version);
-                                newModuleNames.Add(xmlModule.ModuleName);
-                            }
-                            else
-                            {
-                                _logger.LogInformation("New XML route module {Module} from package {Pkg}",
-                                    xmlModule.ModuleName, package.Manifest.Name);
-                                await _registry.RegisterModuleAsync(xmlModule);
-                                _loadedModules[xmlModule.ModuleName] = new LoadedModuleInfo(package.Alc, tpkg, xmlModule.Version);
-                                newModuleNames.Add(xmlModule.ModuleName);
-                                reloaded++;
-                            }
-                        }
-
-                        if (newModuleNames.Count > 0)
-                        {
-                            _packageModules[tpkg] = newModuleNames;
-                            _packageInstances[tpkg] = package;
-                        }
-                        else
-                        {
-                            // No modules found — dispose the ALC
-                            package.Dispose();
-                        }
-
-                        // Opened & verified successfully — NOW record the tracked time (4.11), so an
-                        // earlier mid-copy failure did not permanently skip this package. (A package with
-                        // no modules still opened cleanly and should not be re-opened every scan.)
-                        _ignoredDlls[tpkg] = lastWrite;
-                        _additionStability.TryRemove(tpkg, out _);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Error scanning package {Path}", tpkg);
-                }
-            }
         }
+
+        // .tpkg packages (CAR-style hot deploy) — atomic package-level reload. Every changed package
+        // across all scan paths is gathered first and reloaded in Manifest.Dependencies order, carrier
+        // before dependents, and a reloaded carrier drags its dependents along — see
+        // ReloadPackagesInDependencyOrderAsync. Scanning the directory in filesystem order
+        // (Directory.GetFiles does not sort) made the outcome depend on the order the file system
+        // happened to return, so a dependent could come up on the carrier's old shared types.
+        reloaded += await ReloadPackagesInDependencyOrderAsync(packageScanPaths, ct).ConfigureAwait(false);
 
         // Detect modules whose DLLs have been removed from disk
         var removed = await DetectRemovedModulesAsync(paths, ct).ConfigureAwait(false);
@@ -496,6 +364,333 @@ public sealed class HotReloadService : IDisposable
         var configReloads = await DetectConfigFileChangesAsync(ct).ConfigureAwait(false);
         reloaded += configReloads;
 
+        return reloaded;
+    }
+
+    /// <summary>
+    /// A .tpkg this scan pass must (re)load, with the manifest data needed to order it against the
+    /// others. <see cref="OldModuleNames"/> is empty for a first-time load and non-empty for a reload;
+    /// <see cref="IsCascade"/> marks a package pulled in because another reload replaced the shared
+    /// companion DLLs it binds to.
+    /// </summary>
+    private sealed record PackageCandidate(
+        string Path, byte[] Bytes, DateTime LastWriteUtc,
+        List<string> OldModuleNames, ModuleManifest Manifest, bool IsCascade);
+
+    /// <summary>
+    /// Collects every changed .tpkg across the scan paths, expands the set with the packages that depend
+    /// on the reloaded ones, orders the whole set by <see cref="ModuleManifest.Dependencies"/> and only
+    /// then reloads, carrier before dependent. The package scan reads the directory in filesystem order
+    /// (<c>Directory.GetFiles</c> does not sort), so a carrier and its dependent replaced together were
+    /// reloaded in whatever order the file system returned — the dependent could come up on the old
+    /// types. Ordering by the manifest is the same rule <c>TsakCoordinator</c> applies to contexts at
+    /// startup, applied to packages.
+    /// </summary>
+    private async Task<int> ReloadPackagesInDependencyOrderAsync(IReadOnlyList<string> paths, CancellationToken ct)
+    {
+        var candidates = new List<PackageCandidate>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Phase 1 — direct changes on disk, through the same gates the per-file scan applied.
+        foreach (var path in paths)
+        {
+            foreach (var tpkg in Directory.GetFiles(path, "*.tpkg"))
+            {
+                try
+                {
+                    var tpkgInfo = new FileInfo(tpkg);
+                    var lastWrite = tpkgInfo.LastWriteTimeUtc;
+
+                    // Skip if unchanged since the last SUCCESSFUL process (4.11).
+                    if (_ignoredDlls.TryGetValue(tpkg, out var trackedWrite) && lastWrite <= trackedWrite)
+                    {
+                        _additionStability.TryRemove(tpkg, out _);
+                        continue;
+                    }
+
+                    // Copy-stability debounce (4.11): never read a half-written ZIP.
+                    if (!IsPackageStableForLoad(tpkg, tpkgInfo.Length, lastWrite))
+                        continue;
+
+                    // Load-boundary trust gate (review 2026-09-02, К3): the verified bytes are the loaded bytes.
+                    var verifiedBytes = _loadGate.ReadVerifiedTpkg(tpkg);
+                    if (verifiedBytes is null)
+                        continue;
+
+                    var manifest = ModulePackage.TryReadManifest(verifiedBytes) ?? new ModuleManifest();
+                    var oldModuleNames = _packageModules.TryGetValue(tpkg, out var names) ? names : [];
+                    candidates.Add(new PackageCandidate(tpkg, verifiedBytes, lastWrite, oldModuleNames, manifest, IsCascade: false));
+                    seen.Add(FullPathKey(tpkg));
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error scanning package {Path}", tpkg);
+                }
+            }
+        }
+
+        // Phase 2 — pull in the packages that depend on a reloaded carrier.
+        CollectDependentPackages(candidates, seen);
+
+        // Phase 3 — carrier before dependent.
+        var ordered = OrderPackagesByDependencies(candidates);
+
+        // Phase 4 — (re)load in that order.
+        var reloaded = 0;
+        foreach (var candidate in ordered)
+        {
+            try
+            {
+                reloaded += candidate.OldModuleNames.Count > 0
+                    ? await ReloadPackageAsync(candidate.Path, candidate.Bytes, candidate.OldModuleNames, ct).ConfigureAwait(false)
+                    : await LoadNewPackageAsync(candidate.Path, candidate.Bytes, candidate.LastWriteUtc).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error reloading package {Path}", candidate.Path);
+            }
+        }
+
+        return reloaded;
+    }
+
+    /// <summary>
+    /// Adds, transitively, every loaded package whose <see cref="ModuleManifest.Dependencies"/> names a
+    /// package being reloaded that ships companion DLLs. A reload force-replaces those companions in
+    /// <see cref="LoadedAssemblyTracker"/>, and a dependent keeps the old assembly identity in its
+    /// already-loaded code, so its context must be recreated as well. This is the rule
+    /// <c>redb.Identity.Contracts.Module</c> records in prose ("reloading this package must be followed
+    /// by reloading every module that uses them") — enforced by TSAK instead of left to the deploy.
+    /// </summary>
+    private void CollectDependentPackages(List<PackageCandidate> candidates, HashSet<string> seen)
+    {
+        var carriers = new Queue<string>();
+        foreach (var candidate in candidates)
+        {
+            if (ShipsCompanions(candidate.Path))
+                carriers.Enqueue(candidate.Manifest.Name);
+        }
+
+        var handled = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        while (carriers.Count > 0)
+        {
+            var carrierName = carriers.Dequeue();
+            if (string.IsNullOrWhiteSpace(carrierName) || !handled.Add(carrierName))
+                continue;
+
+            foreach (var (path, package) in _packageInstances)
+            {
+                if (!package.Manifest.Dependencies.Any(d =>
+                        string.Equals(d, carrierName, StringComparison.OrdinalIgnoreCase)))
+                    continue;
+                if (!seen.Add(FullPathKey(path)))
+                    continue; // already a candidate this pass
+
+                var bytes = _loadGate.ReadVerifiedTpkg(path);
+                if (bytes is null)
+                {
+                    _logger.LogWarning(
+                        "Package {Pkg} depends on reloaded {Carrier}, whose shared companions were replaced, "
+                        + "but it could not be re-verified — it keeps running against the old types until its own reload",
+                        Path.GetFileName(path), carrierName);
+                    continue;
+                }
+
+                var oldModuleNames = _packageModules.TryGetValue(path, out var names) ? names : [];
+                candidates.Add(new PackageCandidate(path, bytes, package.LastWriteUtc, oldModuleNames, package.Manifest, IsCascade: true));
+                _logger.LogInformation(
+                    "Package {Pkg} depends on reloaded {Carrier} — reloading it too so its types rebind to the replaced companions",
+                    Path.GetFileName(path), carrierName);
+
+                if (ShipsCompanions(path))
+                    carriers.Enqueue(package.Manifest.Name);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Orders packages so that every dependency is reloaded before the packages that declare it. Only
+    /// edges between two packages in the same pass are honoured — a dependency outside the set is
+    /// already running and is left alone (the same rule the coordinator's context sort uses). A cycle
+    /// is logged and the remaining packages keep their scan order rather than being dropped.
+    /// </summary>
+    private List<PackageCandidate> OrderPackagesByDependencies(List<PackageCandidate> candidates)
+    {
+        if (candidates.Count <= 1)
+            return candidates;
+
+        var byName = new Dictionary<string, PackageCandidate>(StringComparer.OrdinalIgnoreCase);
+        foreach (var candidate in candidates)
+        {
+            if (!string.IsNullOrWhiteSpace(candidate.Manifest.Name))
+                byName[candidate.Manifest.Name] = candidate;
+        }
+
+        var dependencies = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        var inDegree = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var candidate in candidates)
+        {
+            var deps = new List<string>();
+            foreach (var dep in candidate.Manifest.Dependencies)
+            {
+                if (!byName.TryGetValue(dep, out var dependency)
+                    || string.Equals(dependency.Path, candidate.Path, StringComparison.OrdinalIgnoreCase)
+                    || deps.Contains(dependency.Path, StringComparer.OrdinalIgnoreCase))
+                    continue;
+                deps.Add(dependency.Path);
+            }
+            dependencies[candidate.Path] = deps;
+            inDegree[candidate.Path] = deps.Count;
+        }
+
+        var queue = new Queue<PackageCandidate>();
+        foreach (var candidate in candidates)
+        {
+            if (inDegree[candidate.Path] == 0)
+                queue.Enqueue(candidate);
+        }
+
+        var ordered = new List<PackageCandidate>(candidates.Count);
+        var emitted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        while (queue.Count > 0)
+        {
+            var current = queue.Dequeue();
+            ordered.Add(current);
+            emitted.Add(current.Path);
+
+            foreach (var candidate in candidates)
+            {
+                if (emitted.Contains(candidate.Path))
+                    continue;
+                if (!dependencies[candidate.Path].Any(p => string.Equals(p, current.Path, StringComparison.OrdinalIgnoreCase)))
+                    continue;
+                if (--inDegree[candidate.Path] == 0)
+                    queue.Enqueue(candidate);
+            }
+        }
+
+        if (ordered.Count < candidates.Count)
+        {
+            var cyclic = candidates.Where(c => !emitted.Contains(c.Path)).ToList();
+            _logger.LogError(
+                "Cyclic Manifest.Dependencies among hot-reloaded packages: {Packages}. Reloading them in scan order.",
+                string.Join(", ", cyclic.Select(c => c.Manifest.Name)));
+            ordered.AddRange(cyclic);
+        }
+
+        return ordered;
+    }
+
+    /// <summary>Whether the package's loaded instance ships shared (companion) DLLs a reload would force-replace.</summary>
+    private bool ShipsCompanions(string tpkgPath) =>
+        _packageInstances.TryGetValue(tpkgPath, out var package) && package.CompanionAssemblies.Count > 0;
+
+    private static string FullPathKey(string path)
+    {
+        try { return Path.GetFullPath(path); }
+        catch { return path; }
+    }
+
+    /// <summary>
+    /// First-time load of a package found in a running worker. Opens the package in its own ALC,
+    /// registers every discovered module (skipping ones already in the registry, loaded at startup) and
+    /// records the tracked write time only after a successful open. Returns the number of newly
+    /// registered modules. The startup discovery has its own path in <c>TsakModuleRegistry</c>.
+    /// </summary>
+    private async Task<int> LoadNewPackageAsync(string tpkg, byte[] verifiedBytes, DateTime lastWrite)
+    {
+        var package = ModulePackage.Open(verifiedBytes, tpkg, lastWrite,
+            probePaths: _assemblyProbePaths, logger: _logger, collectible: _collectible);
+        if (package is null)
+            return 0; // corrupt/partial — do NOT record; retry next scan
+
+        var reloaded = 0;
+        var newModuleNames = new List<string>();
+
+        // Discover every entry point before registering any: a package whose entry point Tsak cannot use
+        // (an InitRoute.main of an unsupported shape) is refused whole, said once, and ignored until the
+        // file changes. The throw used to leave the package's ALC and its extracted files behind and
+        // re-open it on every scan.
+        var discovered = new List<ITsakModule>();
+        try
+        {
+            var packageSourceDir = Path.GetDirectoryName(Path.GetFullPath(tpkg));
+            foreach (var assembly in package.LoadedAssemblies)
+                discovered.AddRange(TsakModuleRegistry.DiscoverModulesInAssembly(assembly, packageSourceDir));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Package {Path} cannot be used and is ignored until it changes", tpkg);
+            package.Dispose();
+            _ignoredDlls[tpkg] = lastWrite;
+            _additionStability.TryRemove(tpkg, out _);
+            return 0;
+        }
+
+        foreach (var module in discovered)
+        {
+            if (module is Modules.StaticMethodModule smm)
+                smm.EmbeddedConfigJson = package.ReadModuleConfigJson(module.ModuleName);
+
+            var existingModule = _registry.GetModule(module.ModuleName);
+            if (existingModule is not null)
+            {
+                // Already in registry (loaded at startup discovery) — just track it
+                _loadedModules[module.ModuleName] = new LoadedModuleInfo(package.Alc, tpkg, module.Version);
+                newModuleNames.Add(module.ModuleName);
+                continue;
+            }
+
+            _logger.LogInformation("New module {Module} from package {Pkg}",
+                module.ModuleName, package.Manifest.Name);
+            await _registry.RegisterModuleAsync(module);
+            _loadedModules[module.ModuleName] = new LoadedModuleInfo(package.Alc, tpkg, module.Version);
+            newModuleNames.Add(module.ModuleName);
+            reloaded++;
+        }
+
+        // Third convention (Route-XML Ф5.2): XML artifacts from the manifest — the same block the startup
+        // discovery runs. Without it an XML-only package dropped into a RUNNING worker was opened, found
+        // module-less, disposed and ignored (такт 5 E2E find).
+        if (package.Manifest.Artifacts.Count > 0)
+        {
+            var sourceDir = Path.GetDirectoryName(Path.GetFullPath(tpkg));
+            var xmlModule = new Modules.XmlRouteModule(package, sourceDir,
+                package.ReadModuleConfigJson(package.Manifest.Name), _logger);
+
+            if (_registry.GetModule(xmlModule.ModuleName) is not null)
+            {
+                // Already in registry (loaded at startup discovery) — just track it
+                _loadedModules[xmlModule.ModuleName] = new LoadedModuleInfo(package.Alc, tpkg, xmlModule.Version);
+                newModuleNames.Add(xmlModule.ModuleName);
+            }
+            else
+            {
+                _logger.LogInformation("New XML route module {Module} from package {Pkg}",
+                    xmlModule.ModuleName, package.Manifest.Name);
+                await _registry.RegisterModuleAsync(xmlModule);
+                _loadedModules[xmlModule.ModuleName] = new LoadedModuleInfo(package.Alc, tpkg, xmlModule.Version);
+                newModuleNames.Add(xmlModule.ModuleName);
+                reloaded++;
+            }
+        }
+
+        if (newModuleNames.Count > 0)
+        {
+            _packageModules[tpkg] = newModuleNames;
+            _packageInstances[tpkg] = package;
+        }
+        else
+        {
+            // No modules found — dispose the ALC
+            package.Dispose();
+        }
+
+        // Opened & verified successfully — NOW record the tracked time (4.11), so an earlier mid-copy
+        // failure did not permanently skip this package. (A package with no modules still opened cleanly
+        // and should not be re-opened every scan.)
+        _ignoredDlls[tpkg] = lastWrite;
+        _additionStability.TryRemove(tpkg, out _);
         return reloaded;
     }
 
