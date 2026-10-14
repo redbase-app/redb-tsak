@@ -86,30 +86,21 @@ public class TsakContextManager : ITsakContextManager
         var loggerFactory = serviceProvider.GetService<ILoggerFactory>();
         var context = new RouteContext(serviceProvider, contextName, loggerFactory);
 
-        // Install the DLQ error handler (Tier-3): a failed exchange carrying a replay checkpoint is
-        // dead-lettered. Resolved from the context's provider (not ctor-injected) to avoid a
-        // TsakContextManager ↔ DlqService circular dependency. No-op for routes without a checkpoint.
+        // The checkpoint DLQ goes on when the context starts (InstallCheckpointDlq), after the module configured
+        // its context: an error handler of the module's own then runs after the capture instead of colliding with it.
+        // tsak-dlq: is there from the start, for the OnException bodies that dead-letter a failure they took.
         if (serviceProvider.GetService<Dlq.DlqService>() is { } dlq)
-            context.ErrorHandler = new Dlq.CheckpointDlqHandler(contextName, dlq);
+            context.AddComponent(new Dlq.TsakDlqComponent(contextName, dlq));
 
         // Register shared components (connectors, shared models) from Libs/shared/
         if (_sharedLoader is { LoadedAssemblies.Count: > 0 })
             context.AddComponents(_sharedLoader.LoadedAssemblies.ToArray());
 
-        // Inject IScheduler from DI if available (like lt.tsak pattern)
-        try
-        {
-            var scheduler = serviceProvider.GetService<IScheduler>();
-            if (scheduler != null)
-            {
-                context.AddService(typeof(IScheduler), scheduler);
-                _logger.LogInformation("IScheduler injected into context {Context}", contextName);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to inject IScheduler into context {Context}", contextName);
-        }
+        // The Quartz scheduler options, not a scheduler: the context builds its own with its first cron/qtimer route
+        // (redb.Route.Quartz, a scheduler per context as Apache Camel's per CamelContext) — its own job namespace and,
+        // clustered, a cluster of the nodes that run this context.
+        if (serviceProvider.GetService<redb.Route.Quartz.QuartzSchedulerOptions>() is { } quartzOptions)
+            context.AddService(typeof(redb.Route.Quartz.QuartzSchedulerOptions), quartzOptions);
 
         // Run context customizers (e.g. cluster policy factory registration)
         foreach (var customizer in _contextCustomizers)
@@ -269,10 +260,26 @@ public class TsakContextManager : ITsakContextManager
         if (ignoreAutoStart && !IsAnonymousContext(contextName))
             await _stateStore.SetAsync(AutoStartKeyPrefix + contextName, "true");
 
+        InstallCheckpointDlq(contextName, context);
         await context.Start(CancellationToken.None);
         _auditService?.RecordContextEvent(contextName, LifecycleEventType.ContextStarted);
         _logger.LogInformation("Started context {Context}", contextName);
         WarnAboutRouteIdsTheApiCannotAddress(contextName, context);
+    }
+
+    /// <summary>
+    /// Makes the checkpoint DLQ the context's error handler: a failure no <c>OnException</c> took, of a route that
+    /// left a replay checkpoint, is dead-lettered. The module's own error handler (its <c>&lt;deadLetterChannel&gt;</c>,
+    /// or one set in code) runs after the capture. Once per context — a restart finds it in place. Resolved from the
+    /// context's provider (not ctor-injected) to avoid a TsakContextManager ↔ DlqService circular dependency.
+    /// </summary>
+    private static void InstallCheckpointDlq(string contextName, IRouteContext context)
+    {
+        if (context.ErrorHandler is Dlq.CheckpointDlqHandler)
+            return;
+        if (context.GetServiceProvider()?.GetService<Dlq.DlqService>() is not { } dlq)
+            return;
+        context.ErrorHandler = new Dlq.CheckpointDlqHandler(contextName, dlq, next: context.ErrorHandler);
     }
 
     /// <summary>

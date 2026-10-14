@@ -62,7 +62,9 @@ builder.Services
         // proxy, Tsak:Web:TrustProxyHeaders=true makes the request scheme (and thus Secure) real.
         options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
         options.LoginPath = "/login";
-        options.AccessDeniedPath = "/login";
+        // A signed-in user below a page's role is told so; the login form read as a logout, and signing in
+        // again led back to the same refusal.
+        options.AccessDeniedPath = "/denied";
         options.ExpireTimeSpan = TimeSpan.FromHours(8);
         options.SlidingExpiration = true;
         // A deleted or demoted user must not ride an 8-hour sliding cookie (review 2026-09-02,

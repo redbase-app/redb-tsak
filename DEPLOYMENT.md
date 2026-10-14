@@ -216,7 +216,7 @@ These feed any OTLP collector (Jaeger/Tempo) and a Prometheus scrape of `<host>:
 |---------|-----|---------|---------|
 | `Tsak:Logs` | `BufferSize` | `2000` | In-memory log ring buffer (dashboard tail). |
 | `Tsak:Contexts:default` | `AutoStart` | `true` | Auto-start contexts on boot. |
-| `Quartz` | `quartz.jobStore.*`, `threadCount` | AdoJobStore, `10` | Scheduler (Quartz clustering stays `false` on SQLite). |
+| `Quartz` | `quartz.jobStore.*`, `threadCount` | AdoJobStore, `10` | The scheduler of every context; the pool is per context (§6). Quartz clustering stays `false` on SQLite. |
 | `Serilog` | `MinimumLevel`, `WriteTo` | Console + `Logs/log-.txt` (7-day roll) | Logging sinks/levels. |
 | `ASPNETCORE_PATHBASE` | — | — | Host under a sub-path, e.g. `/tsak` (see §5). |
 
@@ -305,6 +305,51 @@ So **one worker = a working one-node cluster** (self-elected leader). To scale, 
 pointing at the **same redb store** (use Postgres/MSSql, §3) with the same
 `ClusterName`/`GroupName` and an empty `NodeId` (each self-assigns); they join automatically, as
 many as you need. Run standalone with `Tsak__Cluster__Enabled=false`.
+
+### Quartz: a scheduler per context
+
+Each context runs its own Quartz scheduler, named `{instanceName}-{context}` (`TsakScheduler-{ClusterName}-{context}`
+with the shipped config), as Apache Camel runs one per CamelContext. On a clustered `AdoJobStore` the nodes that
+run a context form that context's Quartz cluster: a job fires on one of them. Two consequences:
+
+- Don't put `.Cluster(true)` on a `cron:` / `qtimer:` route: Quartz already fires it once per cluster, and Tsak
+  leaves such a route on every node (with a Warning) rather than lose the fires other nodes take.
+- The `Quartz` section configures every context's scheduler; `threadCount` / `maxConcurrency` is the pool of each
+  context, not of the node.
+
+### Upgrading to the per-context scheduler
+
+Releases before the per-context scheduler ran one scheduler per node, named `TsakScheduler-{ClusterName}`. A node
+of the new release does not read that scheduler's rows, and a node of the old release does not know the new names:
+the two cannot share a cluster. **Upgrade with a full stop** — there is no compatibility mode:
+
+1. Stop every worker of the cluster.
+2. Deploy the new release on all of them.
+3. Start them. Each context schedules its jobs again from its routes under its own scheduler name.
+
+The old scheduler's rows stay in the database: a node never deletes or pauses what a shared store holds. Removing
+them is an operator command, run once with every worker stopped (child tables first). PostgreSQL, with the
+shipped table prefix:
+
+```sql
+BEGIN;
+DELETE FROM qrtz_fired_triggers      WHERE sched_name = 'TsakScheduler-<ClusterName>';
+DELETE FROM qrtz_simple_triggers     WHERE sched_name = 'TsakScheduler-<ClusterName>';
+DELETE FROM qrtz_simprop_triggers    WHERE sched_name = 'TsakScheduler-<ClusterName>';
+DELETE FROM qrtz_cron_triggers       WHERE sched_name = 'TsakScheduler-<ClusterName>';
+DELETE FROM qrtz_blob_triggers       WHERE sched_name = 'TsakScheduler-<ClusterName>';
+DELETE FROM qrtz_triggers            WHERE sched_name = 'TsakScheduler-<ClusterName>';
+DELETE FROM qrtz_job_details         WHERE sched_name = 'TsakScheduler-<ClusterName>';
+DELETE FROM qrtz_calendars           WHERE sched_name = 'TsakScheduler-<ClusterName>';
+DELETE FROM qrtz_paused_trigger_grps WHERE sched_name = 'TsakScheduler-<ClusterName>';
+DELETE FROM qrtz_scheduler_state     WHERE sched_name = 'TsakScheduler-<ClusterName>';
+DELETE FROM qrtz_locks               WHERE sched_name = 'TsakScheduler-<ClusterName>';
+COMMIT;
+```
+
+The same statements apply to SQL Server (`BEGIN TRANSACTION; … COMMIT;`). If `quartz.scheduler.instanceName` was
+configured to a name other than `TsakScheduler`, the old scheduler had exactly that name, and each context's
+scheduler is now `<that name>-<context>`.
 
 ---
 

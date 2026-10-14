@@ -591,7 +591,10 @@ public static class Program
                     ("Standby", s.InStandbyMode ? "Yes" : "No"),
                     ("Shutdown", s.IsShutdown ? "Yes" : "No"),
                     ("Total Jobs", s.TotalJobs.ToString()),
-                    ("Running Jobs", s.RunningJobs.ToString()));
+                    ("Running Jobs", s.RunningJobs.ToString()),
+                    ("Contexts", s.Schedulers.Length == 0
+                        ? "—"
+                        : string.Join(", ", s.Schedulers.Select(c => $"{c.Context} ({c.Status}, {c.TotalJobs} jobs)"))));
             });
         });
 
@@ -603,6 +606,7 @@ public static class Program
             var r = CreateRenderer(ctx);
             var result = await client.ListScheduledJobsAsync(ctx.GetCancellationToken());
             r.RenderTable(result.Jobs,
+                ("Context", j => j.Context ?? "—"),
                 ("Job", j => j.JobName),
                 ("Group", j => j.JobGroup),
                 ("Trigger", j => j.TriggerState),
@@ -620,6 +624,7 @@ public static class Program
             {
                 var result = await client.ListRunningJobsAsync(ct);
                 r.RenderTable(result.Jobs,
+                    ("Context", j => j.Context ?? "—"),
                     ("Job", j => j.JobName),
                     ("Group", j => j.JobGroup),
                     ("Fire Time", j => j.FireTime.ToString("yyyy-MM-dd HH:mm:ss")),
@@ -627,59 +632,77 @@ public static class Program
             });
         });
 
-        // tsak scheduler start
-        var startCmd = new Command("start", "Start the scheduler");
+        // Every route context owns its Quartz scheduler. Without --context a command addresses all of them;
+        // a job key that two contexts share has to be qualified.
+        const string jobContextHelp = "Route context whose scheduler holds the job (required when the key is in several)";
+
+        // tsak scheduler start [--context NAME]
+        var startContextOpt = new Option<string?>("--context", "Start only the scheduler of this route context");
+        var startCmd = new Command("start", "Start the scheduler") { startContextOpt };
         startCmd.SetHandler(async ctx =>
         {
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var result = await client.StartSchedulerAsync(ctx.GetCancellationToken());
-            r.Success(result.Message);
+            var result = await client.StartSchedulerAsync(
+                ctx.ParseResult.GetValueForOption(startContextOpt), ctx.GetCancellationToken());
+            if (result.Success) r.Success(result.Message);
+            else { r.Error(result.Message); ctx.ExitCode = 1; }
         });
 
-        // tsak scheduler standby
-        var standbyCmd = new Command("standby", "Put scheduler in standby mode");
+        // tsak scheduler standby [--context NAME]
+        var standbyContextOpt = new Option<string?>("--context", "Put only the scheduler of this route context in standby");
+        var standbyCmd = new Command("standby", "Put scheduler in standby mode") { standbyContextOpt };
         standbyCmd.SetHandler(async ctx =>
         {
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var result = await client.StandbySchedulerAsync(ctx.GetCancellationToken());
-            r.Success(result.Message);
+            var result = await client.StandbySchedulerAsync(
+                ctx.ParseResult.GetValueForOption(standbyContextOpt), ctx.GetCancellationToken());
+            if (result.Success) r.Success(result.Message);
+            else { r.Error(result.Message); ctx.ExitCode = 1; }
         });
 
-        // tsak scheduler pause <group> <name>
+        // tsak scheduler pause <key> [--context NAME]
         var pauseKeyArg = new Argument<string>("key", "Job key (group.name)");
-        var pauseCmd = new Command("pause", "Pause a specific job") { pauseKeyArg };
+        var pauseContextOpt = new Option<string?>("--context", jobContextHelp);
+        var pauseCmd = new Command("pause", "Pause a specific job") { pauseKeyArg, pauseContextOpt };
         pauseCmd.SetHandler(async ctx =>
         {
             var key = ctx.ParseResult.GetValueForArgument(pauseKeyArg);
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var result = await client.PauseJobAsync(key, ctx.GetCancellationToken());
-            r.Success(result.Message);
+            var result = await client.PauseJobAsync(
+                key, ctx.ParseResult.GetValueForOption(pauseContextOpt), ctx.GetCancellationToken());
+            if (result.Success) r.Success(result.Message);
+            else { r.Error(result.Message); ctx.ExitCode = 1; }
         });
 
-        // tsak scheduler resume <key>
+        // tsak scheduler resume <key> [--context NAME]
         var resumeKeyArg = new Argument<string>("key", "Job key (group.name)");
-        var resumeCmd = new Command("resume", "Resume a specific job") { resumeKeyArg };
+        var resumeContextOpt = new Option<string?>("--context", jobContextHelp);
+        var resumeCmd = new Command("resume", "Resume a specific job") { resumeKeyArg, resumeContextOpt };
         resumeCmd.SetHandler(async ctx =>
         {
             var key = ctx.ParseResult.GetValueForArgument(resumeKeyArg);
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var result = await client.ResumeJobAsync(key, ctx.GetCancellationToken());
-            r.Success(result.Message);
+            var result = await client.ResumeJobAsync(
+                key, ctx.ParseResult.GetValueForOption(resumeContextOpt), ctx.GetCancellationToken());
+            if (result.Success) r.Success(result.Message);
+            else { r.Error(result.Message); ctx.ExitCode = 1; }
         });
 
-        // tsak scheduler fire <key>
+        // tsak scheduler fire <key> [--context NAME]
         var fireKeyArg = new Argument<string>("key", "Job key (group.name)");
-        var fireCmd = new Command("fire", "Fire a job immediately (out of schedule)") { fireKeyArg };
+        var fireContextOpt = new Option<string?>("--context", jobContextHelp);
+        var fireCmd = new Command("fire", "Fire a job immediately (out of schedule)") { fireKeyArg, fireContextOpt };
         fireCmd.SetHandler(async ctx =>
         {
             var key = ctx.ParseResult.GetValueForArgument(fireKeyArg);
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var result = await client.FireJobAsync(key, ctx.GetCancellationToken());
+            var result = await client.FireJobAsync(
+                key, ctx.ParseResult.GetValueForOption(fireContextOpt), ctx.GetCancellationToken());
             if (result.Success) r.Success(result.Message);
             else { r.Error(result.Message); ctx.ExitCode = 1; }
         });

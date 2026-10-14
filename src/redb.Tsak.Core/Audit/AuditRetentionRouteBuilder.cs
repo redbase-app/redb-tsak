@@ -39,11 +39,9 @@ public sealed class AuditRetentionRouteBuilder : RouteBuilder
     {
         From($"cron://{RouteIdName}?schedule={CronSchedule}")
             .RouteId(RouteIdName)
-            // Cluster-singleton: only the leader runs the daily sweep. In standalone the AlwaysLeader
-            // fallback still runs it; in a multi-node cluster it runs once, not once per node. The
-            // prune is an idempotent DELETE-by-cutoff, so a run missed during a leader failover is
-            // harmless — the next day's sweep covers the same window.
-            .Cluster(true)
+            // No .Cluster(true): on a clustered job store Quartz fires the sweep on one node of the cluster, and the
+            // cluster layer does not apply a leader-only policy to a Quartz consumer. On a store that is not shared
+            // every node runs it; the prune is an idempotent DELETE-by-cutoff, so that is harmless.
             .Process(async (IExchange exchange, CancellationToken ct) =>
             {
                 if (!_audit.IsAvailable || _retentionDays <= 0) return;

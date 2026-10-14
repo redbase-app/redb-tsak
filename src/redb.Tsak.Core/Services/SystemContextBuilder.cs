@@ -486,11 +486,11 @@ public class SystemContextBuilder
         if (!auditOn && !dlqOn)
             return;
 
-        // cron:// consumers resolve IScheduler from the context; ensure it is the shared Tsak scheduler
-        // so these sweeps land on the same scheduler the dashboard reads (visible on the scheduler page).
+        // The retention sweeps are cron routes of this context: it builds its own scheduler from the Tsak options, as
+        // every context does; the dashboard reads the scheduler of each context, this one included.
         routeContext.AddComponent(new CronComponent());
-        if (_serviceProvider.GetService<global::Quartz.IScheduler>() is { } scheduler)
-            routeContext.AddService(typeof(global::Quartz.IScheduler), scheduler);
+        if (_serviceProvider.GetService<redb.Route.Quartz.QuartzSchedulerOptions>() is { } quartzOptions)
+            routeContext.AddService(typeof(redb.Route.Quartz.QuartzSchedulerOptions), quartzOptions);
 
         if (auditOn)
         {

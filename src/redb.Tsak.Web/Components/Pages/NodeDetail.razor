@@ -307,9 +307,52 @@ else
                         </AuthorizedView>
                     </div>
 
+                    @* Every route context owns its Quartz scheduler; the header above sums them up. *@
+                    @if (_scheduler.Status.Schedulers.Length > 0)
+                    {
+                        <div style="margin-bottom: var(--space-4);">
+                        <TsakGrid Items="_scheduler.Status.Schedulers" T="SchedulerContextStatus">
+                            <HeaderContent>
+                                <th>Context</th>
+                                <th>Scheduler</th>
+                                <th>Status</th>
+                                <th>Jobs</th>
+                                <th>Running</th>
+                                <th>Actions</th>
+                            </HeaderContent>
+                            <RowContent>
+                                <td class="mono text-sm">@context.Context</td>
+                                <td class="mono text-sm">@context.SchedulerName</td>
+                                <td><TsakBadge Text="@context.Status" Variant="@(context.IsStarted && !context.InStandbyMode ? "online" : "offline")" /></td>
+                                <td class="text-sm">@context.TotalJobs</td>
+                                <td class="text-sm">@context.RunningJobs</td>
+                                <td>
+                                    <AuthorizedView AdminOnly="true">
+                                    @if (context.IsStarted && !context.InStandbyMode)
+                                    {
+                                        <button class="btn btn-ghost btn-sm"
+                                                @onclick="@(() => SchedulerAction(c => c.StandbySchedulerAsync(context.Context, Ct), $"of '{context.Context}' set to standby"))">
+                                            <TsakIcon Name="pause" Size="14" />
+                                        </button>
+                                    }
+                                    else if (!context.IsShutdown)
+                                    {
+                                        <button class="btn btn-ghost btn-sm"
+                                                @onclick="@(() => SchedulerAction(c => c.StartSchedulerAsync(context.Context, Ct), $"of '{context.Context}' started"))">
+                                            <TsakIcon Name="play" Size="14" />
+                                        </button>
+                                    }
+                                    </AuthorizedView>
+                                </td>
+                            </RowContent>
+                        </TsakGrid>
+                        </div>
+                    }
+
                     <TsakGrid Items="_scheduler.Jobs.Jobs" T="ScheduledJobInfo">
                         <EmptyContent><p class="text-secondary text-sm">No scheduled jobs on this node.</p></EmptyContent>
                         <HeaderContent>
+                            <th>Context</th>
                             <th>Job</th>
                             <th>Group</th>
                             <th>Cron</th>
@@ -318,6 +361,7 @@ else
                             <th>Actions</th>
                         </HeaderContent>
                         <RowContent>
+                            <td class="mono text-sm">@(context.Context ?? "—")</td>
                             <td class="mono text-sm">@context.JobName</td>
                             <td class="text-sm">@context.JobGroup</td>
                             <td class="mono text-sm">@(context.CronExpression ?? "—")</td>
@@ -328,14 +372,14 @@ else
                                 @if (context.TriggerState == "Normal")
                                 {
                                     <button class="btn btn-ghost btn-sm"
-                                            @onclick="@(() => SchedulerAction(c => c.PauseJobAsync(context.JobKey), $"job '{context.JobName}' paused"))">
+                                            @onclick="@(() => SchedulerAction(c => c.PauseJobAsync(context.JobKey, context.Context, Ct), $"job '{context.JobName}' paused"))">
                                         <TsakIcon Name="pause" Size="14" />
                                     </button>
                                 }
                                 else if (context.TriggerState == "Paused")
                                 {
                                     <button class="btn btn-ghost btn-sm"
-                                            @onclick="@(() => SchedulerAction(c => c.ResumeJobAsync(context.JobKey), $"job '{context.JobName}' resumed"))">
+                                            @onclick="@(() => SchedulerAction(c => c.ResumeJobAsync(context.JobKey, context.Context, Ct), $"job '{context.JobName}' resumed"))">
                                         <TsakIcon Name="play" Size="14" />
                                     </button>
                                 }
@@ -751,17 +795,18 @@ else
         await ContextAction(c => c.StopContextAsync(name), $"'{name}' stopped");
     }
 
-    private async Task SchedulerAction(Func<TsakApiClient, Task> action, string actionName)
+    private async Task SchedulerAction(Func<TsakApiClient, Task<SchedulerActionResponse>> action, string actionName)
     {
         try
         {
             var client = NodeProvider.GetClient(NodeId)
                 ?? throw new InvalidOperationException($"No API client for node {NodeId}");
-            await action(client);
+            var result = await action(client);
             _scheduler = new SchedulerData(
                 await client.GetSchedulerStatusAsync(Ct),
                 await client.ListScheduledJobsAsync(Ct));
-            Toast.Success($"Scheduler {actionName}");
+            if (result.Success) Toast.Success($"Scheduler {actionName}");
+            else Toast.Error($"Scheduler action failed: {result.Message}");
         }
         catch (Exception ex)
         {

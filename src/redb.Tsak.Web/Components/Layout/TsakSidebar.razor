@@ -65,31 +65,39 @@
                     <TsakIcon Name="activity" Size="18" />
                     <span>Monitoring</span>
                 </NavLink>
-                <NavLink class="sidebar-link" href="@($"node/{_activeNodeId}/logs")">
-                    <TsakIcon Name="terminal" Size="18" />
-                    <span>Logs</span>
-                </NavLink>
-                <NavLink class="sidebar-link" href="@($"node/{_activeNodeId}/audit")">
-                    <TsakIcon Name="shield" Size="18" />
-                    <span>Audit</span>
-                </NavLink>
+                <AuthorizedView OperatorOnly="true">
+                    <NavLink class="sidebar-link" href="@($"node/{_activeNodeId}/logs")">
+                        <TsakIcon Name="terminal" Size="18" />
+                        <span>Logs</span>
+                    </NavLink>
+                </AuthorizedView>
+                <AuthorizedView AdminOnly="true">
+                    <NavLink class="sidebar-link" href="@($"node/{_activeNodeId}/audit")">
+                        <TsakIcon Name="shield" Size="18" />
+                        <span>Audit</span>
+                    </NavLink>
+                </AuthorizedView>
                 <NavLink class="sidebar-link" href="@($"node/{_activeNodeId}/storage")">
                     <TsakIcon Name="database" Size="18" />
                     <span>Storage</span>
                 </NavLink>
-                <NavLink class="sidebar-link" href="@($"node/{_activeNodeId}/dlq")">
-                    <TsakIcon Name="alert-triangle" Size="18" />
-                    <span>Dead-letter</span>
-                </NavLink>
+                <AuthorizedView OperatorOnly="true">
+                    <NavLink class="sidebar-link" href="@($"node/{_activeNodeId}/dlq")">
+                        <TsakIcon Name="alert-triangle" Size="18" />
+                        <span>Dead-letter</span>
+                    </NavLink>
+                </AuthorizedView>
             </div>
         }
 
         <div class="sidebar-group">
             <span class="sidebar-group-label">Settings</span>
-            <NavLink class="sidebar-link" href="auth">
-                <TsakIcon Name="shield" Size="18" />
-                <span>Auth & Users</span>
-            </NavLink>
+            <AuthorizedView AdminOnly="true">
+                <NavLink class="sidebar-link" href="auth">
+                    <TsakIcon Name="shield" Size="18" />
+                    <span>Auth & Users</span>
+                </NavLink>
+            </AuthorizedView>
             <NavLink class="sidebar-link" href="about">
                 <TsakIcon Name="info" Size="18" />
                 <span>About</span>

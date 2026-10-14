@@ -4,8 +4,16 @@
 <Router AppAssembly="typeof(Program).Assembly">
     <Found Context="routeData">
         <AuthorizeRouteView RouteData="routeData" DefaultLayout="typeof(TsakShell)">
-            <NotAuthorized>
-                <RedirectToLogin />
+            <NotAuthorized Context="auth">
+                @* Anonymous: to the login form. Signed in, but below the page's role: told so, in place. *@
+                @if (auth.User.Identity?.IsAuthenticated == true)
+                {
+                    <AccessDenied />
+                }
+                else
+                {
+                    <RedirectToLogin />
+                }
             </NotAuthorized>
         </AuthorizeRouteView>
         <FocusOnNavigate RouteData="routeData" Selector="h1" />

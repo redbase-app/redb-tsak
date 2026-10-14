@@ -238,7 +238,10 @@ command, and the dashboard **Audit** page.
 An exchange that fails at a redb.Route **replay checkpoint** (`.Replayable("…")` in the route) is
 captured into the flat `tsak_dlq` table — snapshot, route, marker, exception. **Opt-in by
 construction**: only routes carrying a marker leave a checkpoint, so the DLQ never tries to own an
-exchange a broker/transaction already redelivers. Replay rehydrates the snapshot and re-runs the
+exchange a broker/transaction already redelivers. The capture is the context's error handler, so it takes
+the failures no `OnException` took — an `OnException` that takes one owns it, as in Apache Camel, and
+dead-letters it explicitly with `.To("tsak-dlq:")`. A module's own `<deadLetterChannel>` runs after the
+capture. Replay rehydrates the snapshot and re-runs the
 route tail (the tail gets fresh redb/SQL connections). Replay is **at-least-once + manual** — make
 replayed side-effects idempotent. Client `GetFailedExchangesAsync`/`ReplayExchangeAsync`, CLI
 `tsak dlq`, dashboard **Dead-letter** page. Without a database the endpoint reports
@@ -256,14 +259,19 @@ replayed side-effects idempotent. Client `GetFailedExchangesAsync`/`ReplayExchan
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/scheduler/status` | started / standby / stopped, job and trigger counts |
-| GET | `/api/scheduler/scheduled` | every scheduled job with its triggers and next fire time |
-| GET | `/api/scheduler/jobs` | jobs **currently executing** |
-| POST | `/api/scheduler/start` | start the scheduler |
-| POST | `/api/scheduler/standby` | pause firing without losing schedules |
-| POST | `/api/scheduler/pause-job?key={jobKey}` | pause one job |
-| POST | `/api/scheduler/resume-job?key={jobKey}` | resume it |
-| POST | `/api/scheduler/fire-job?key={jobKey}` | fire a job immediately, out of schedule (`operator`) |
+| GET | `/api/scheduler/status` | the node's summary (started / standby / stopped, job counts) and `schedulers[]`, one entry per context |
+| GET | `/api/scheduler/scheduled` | every scheduled job with its context, triggers and next fire time |
+| GET | `/api/scheduler/jobs` | jobs **currently executing**, with their context |
+| POST | `/api/scheduler/start?context=` | start the schedulers — of one context, or all |
+| POST | `/api/scheduler/standby?context=` | pause firing without losing schedules — one context, or all |
+| POST | `/api/scheduler/pause-job?key={jobKey}&context=` | pause one job |
+| POST | `/api/scheduler/resume-job?key={jobKey}&context=` | resume it |
+| POST | `/api/scheduler/fire-job?key={jobKey}&context=` | fire a job immediately, out of schedule (`operator`) |
+
+Every context runs its own Quartz scheduler, and a job key is unique within it only: two modules may both
+schedule `redb.nightly`. `context` is optional. Without it a job action finds the key in the one context that has
+it; a key held by several contexts is refused (`success: false`) with their names — never guessed. The summary
+fields of `status` sum the contexts (`isStarted`: all started, `inStandbyMode`: at least one in standby).
 
 ### Cluster — `/api/cluster` (6, Pro)
 

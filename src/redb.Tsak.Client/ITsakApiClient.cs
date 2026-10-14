@@ -229,6 +229,25 @@ public interface ITsakApiClient : IDisposable
     /// <summary>Fire a scheduled job immediately (out of schedule).</summary>
     Task<SchedulerActionResponse> FireJobAsync(string jobKey, CancellationToken ct = default);
 
+    // Every route context owns its scheduler and a job key is unique within it only. Without a context the key must
+    // be in exactly one context of the node (otherwise the call fails, naming them); start/standby without a context
+    // act on every scheduler of the node.
+
+    /// <summary>Start (or resume from standby) the scheduler of <paramref name="context"/>; all when <c>null</c>.</summary>
+    Task<SchedulerActionResponse> StartSchedulerAsync(string? context, CancellationToken ct = default);
+
+    /// <summary>Put the scheduler of <paramref name="context"/> in standby; all when <c>null</c>.</summary>
+    Task<SchedulerActionResponse> StandbySchedulerAsync(string? context, CancellationToken ct = default);
+
+    /// <summary>Pause a job of the scheduler of <paramref name="context"/>.</summary>
+    Task<SchedulerActionResponse> PauseJobAsync(string jobKey, string? context, CancellationToken ct = default);
+
+    /// <summary>Resume a job of the scheduler of <paramref name="context"/>.</summary>
+    Task<SchedulerActionResponse> ResumeJobAsync(string jobKey, string? context, CancellationToken ct = default);
+
+    /// <summary>Fire a job of the scheduler of <paramref name="context"/> immediately (out of schedule).</summary>
+    Task<SchedulerActionResponse> FireJobAsync(string jobKey, string? context, CancellationToken ct = default);
+
     // ── System ───────────────────────────────────────────────────────
 
     /// <summary>Get system health status.</summary>

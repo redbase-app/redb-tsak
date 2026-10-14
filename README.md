@@ -26,7 +26,7 @@
 | **5-layer configuration** | Module ships defaults. DevOps overrides. Config hot-reloads. No code changes, no restarts. |
 | **Built-in observability** | Per-process metrics (CPU/RAM/threads/GC, 12h history), per-route metrics (count/error rate/latency), ring-buffer logs, OpenTelemetry traces, optional Prometheus scrape. |
 | **Watchdog** | Detects suspected and hung routes. Optionally auto-restarts them. |
-| **Quartz scheduler** | Built-in `IScheduler` injected into every context. `RAMJobStore` standalone, `AdoJobStore` cluster-safe — schema auto-created on first start. |
+| **Quartz scheduler** | A scheduler per context, as Apache Camel has one per CamelContext — modules never collide on job names. `RAMJobStore` standalone, `AdoJobStore` cluster-safe — schema auto-created on first start. |
 | **Security** | API Key + HMAC-SHA256 + roles + expiry + revocation. Constant-time comparison. redb-backed key store. Optional user binding (disabled user → key dies). |
 | **Module isolation** | Per-module `AssemblyLoadContext` — dependencies don't conflict between modules. |
 | **Clients ready to ship** | Typed C# `ITsakApiClient`, 30-command `tsak` CLI with profiles and JSON output, Blazor Server dashboard. |
@@ -77,7 +77,7 @@ What Tsak adds **on top** of a plain `redb.Route` worker:
 | One process = one bag of routes. | Multiple **named contexts**, each with its own properties, lifecycle and assembly load context. |
 | Stop one route = stop the process. | `tsak route stop <ctx> <id>` or `POST /api/routes/{id}/stop`. |
 | Distribute across nodes = roll your own coordinator. | Built-in leader election + per-context assignment across cluster nodes. |
-| Schedule a job = wire Quartz yourself in `Program.cs`. | `IScheduler` injected into every context, schema auto-bootstrapped. |
+| Schedule a job = wire Quartz yourself in `Program.cs`. | Every context gets its own scheduler with its first `cron:` route, schema auto-bootstrapped. |
 | Operate it = parse logs, build a dashboard, expose metrics yourself. | REST + CLI + Blazor + Prometheus + OTel out of the box. |
 
 A `RouteBuilder` you wrote against `redb.Route`'s plain `IHostedService` runs unchanged inside a Tsak module — the same `Configure()` is called, the same `IExchange` flows through, the same `OnException` and `.Transacted()` semantics apply. Tsak only owns **how** the routes are loaded, scheduled, observed and torn down.
@@ -515,7 +515,7 @@ Concretely, this means:
 3. **For a `.tpkg`**: the manifest is read, **companion DLLs load first** (so dependency resolution works), then **entry-point DLLs load into a fresh per-package ALC**.
 4. **For a bare `.dll`**: the file loads into a fresh per-module ALC. If `ITsakModule`/`InitRoute.main` is found → it becomes a module; otherwise it is registered as a shared dependency and remembered as "not a module".
 5. `ConfigMerger` deep-merges all 5 config layers into a single `IDictionary<string, object?>` and exposes it as the context's property bag.
-6. `TsakContextManager` creates an `IRouteContext`, registers Quartz `IScheduler`, and awaits the module's `InitializeAsync` — which runs `InitRoute.main(ctx)` in either form, or the `ITsakModule`'s own initialization — before the context starts.
+6. `TsakContextManager` creates an `IRouteContext`, hands it the Quartz scheduler options and the `tsak-dlq:` endpoint, and awaits the module's `InitializeAsync` — which runs `InitRoute.main(ctx)` in either form, or the `ITsakModule`'s own initialization — before the context starts.
 7. The context starts (if `AutoStart = true`): transports connect, consumers begin reading, routes go live.
 
 ### Hot-swap
@@ -1103,9 +1103,8 @@ Tsak's startup and shutdown sequences are **deterministic** — `LifecycleHookOr
 ### Startup order (Worker DI)
 
 1. **`QuartzSchemaInitializer`** — applies Quartz DDL (Postgres / MSSQL) idempotently via raw ADO.NET. No redb dependency at this stage to avoid bootstrap deadlocks.
-2. **`QuartzHostedService`** — starts the scheduler (`RAMJobStore` standalone, `AdoJobStore` cluster).
-3. **`MetricsCollectionService`** — periodic process / GC sampling into the circular buffer.
-4. **`TsakHostedService`** — main coordinator: shared assembly loader → module discovery → context start → cluster register.
+2. **`MetricsCollectionService`** — periodic process / GC sampling into the circular buffer.
+3. **`TsakHostedService`** — main coordinator: shared assembly loader → module discovery → context start → cluster register.
 5. **`RouteWatchdogService`** — hung-exchange detector (Pro).
 
 ### Shutdown sequence (`TsakHostedService.StopAsync`)
@@ -1257,7 +1256,11 @@ Distinct probes for the three K8s lifecycle phases. All three are **auth-exempt*
 
 ## Quartz scheduler
 
-Every Tsak context gets an `IScheduler` injected for free. Modules use it via `redb.Route.Quartz`:
+Every Tsak context runs its own Quartz scheduler — `{instanceName}-{context}`, as Apache Camel runs one per
+CamelContext — built with the context's first `cron:` / `qtimer:` route from the host's `Quartz` section. A job
+key is unique within a context, so two modules that both schedule `cron://nightly` never collide. On a clustered
+`AdoJobStore` a job fires on one of the nodes that run its context; don't add `.Cluster(true)` to such a route.
+Modules use it via `redb.Route.Quartz`:
 
 ```csharp
 From("cron:0 */5 * * * ?")           // every 5 minutes
@@ -1272,7 +1275,7 @@ From("cron:0 */5 * * * ?")           // every 5 minutes
 
 Schema is auto-created on first start by `QuartzSchemaInitializer` — embedded SQL scripts for both Postgres and MSSQL, idempotent, runs **before** Quartz initializes its own connection pool. No DBA action required.
 
-REST endpoints under `/api/scheduler` cover: status, listing scheduled jobs, listing currently-running jobs, start/standby, pause/resume/fire-now per job key.
+REST endpoints under `/api/scheduler` cover: status (per context and for the node), listing scheduled jobs, listing currently-running jobs, start/standby, pause/resume/fire-now per job key — each with an optional `context`.
 
 ---
 

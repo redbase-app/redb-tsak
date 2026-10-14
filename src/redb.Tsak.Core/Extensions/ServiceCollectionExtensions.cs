@@ -510,28 +510,48 @@ public static class ServiceCollectionExtensions
         }
         else
         {
-            // No `Quartz` config section — still stand up a shared IN-MEMORY scheduler. Tsak must ALWAYS
-            // hand out one IScheduler so every RouteContext resolves the SAME instance: the `_system`
-            // management API context (which backs the dashboard scheduler page) AND the business contexts
-            // running cron routes. Without this, a cron consumer finds no injected scheduler and
-            // self-creates a per-context RAMJobStore (see redb.Route.Quartz QuartzConsumerBase) that the
-            // `_system` context cannot see — so the dashboard shows no jobs even though the route runs.
-            // RAMJobStore is Quartz's default; set it explicitly for clarity (non-persistent, single node).
+            // No `Quartz` config section: in-memory schedulers (non-persistent, single node). RAMJobStore is
+            // Quartz's default; set it explicitly for clarity.
             services.Configure<QuartzOptions>(opts =>
                 opts.TryAdd("quartz.jobStore.type", "Quartz.Simpl.RAMJobStore, Quartz"));
         }
 
-        // Schema initializer must run before QuartzHostedService validates tables (it no-ops unless
-        // AdoJobStore is configured). Hosted services start sequentially in registration order.
+        // The schema initializer creates the AdoJobStore tables before any context — and so any scheduler — starts
+        // (it no-ops otherwise). Hosted services start sequentially in registration order; TsakHostedService is
+        // registered after this.
         services.AddSingleton<IHostedService, QuartzSchemaInitializer>();
 
-        services.AddQuartz();
-        services.AddQuartzHostedService(q => q.WaitForJobsToComplete = true);
-
-        // Register the IScheduler singleton ALWAYS (RAM by default, AdoJobStore/DB when configured) so
-        // TsakContextManager injects one shared scheduler into every context — including `_system`.
+        // A scheduler per route context, as Apache Camel's per CamelContext (redb.Route.Quartz builds it from these
+        // options with the context's first cron/qtimer route, names it {prefix}-{context}, starts it after the
+        // context and shuts it down with the context). Tsak shares the options, not a scheduler: each context has its
+        // own job namespace — two modules that both say cron://nightly do not collide — and, clustered, a Quartz
+        // cluster of exactly the nodes that run that context. TsakContextManager and SystemContextBuilder hand the
+        // options to every context; the dashboard reads the scheduler of each.
         services.AddSingleton(provider =>
-            provider.GetRequiredService<ISchedulerFactory>()
-                .GetScheduler().GetAwaiter().GetResult());
+            SchedulerOptionsOf(provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<QuartzOptions>>().Value));
     }
+
+    /// <summary>
+    /// The per-context scheduler options from the resolved Quartz properties: the configured name (scoped to the Tsak
+    /// cluster above) becomes the prefix the context name follows. A scheduler per context keeps a small pool unless
+    /// configured otherwise.
+    /// </summary>
+    internal static redb.Route.Quartz.QuartzSchedulerOptions SchedulerOptionsOf(QuartzOptions quartz)
+    {
+        var properties = quartz
+            .Where(p => p.Value is not null && p.Key != "quartz.scheduler.instanceName")
+            .ToDictionary(p => p.Key, p => p.Value!, StringComparer.Ordinal);
+        // threadCount is Quartz's older name of maxConcurrency (the shipped appsettings use it): either one is a
+        // configured pool, and adding the other would leave the pool size to the order Quartz applies them in.
+        if (!properties.ContainsKey("quartz.threadPool.maxConcurrency") && !properties.ContainsKey("quartz.threadPool.threadCount"))
+            properties["quartz.threadPool.maxConcurrency"] = DefaultContextSchedulerThreads;
+
+        var prefix = quartz.TryGetValue("quartz.scheduler.instanceName", out var name) && !string.IsNullOrWhiteSpace(name)
+            ? name
+            : DefaultSchedulerName;
+        return new redb.Route.Quartz.QuartzSchedulerOptions { InstanceNamePrefix = prefix, Properties = properties };
+    }
+
+    /// <summary>Thread pool of one context's scheduler when the configuration sets none.</summary>
+    private const string DefaultContextSchedulerThreads = "4";
 }

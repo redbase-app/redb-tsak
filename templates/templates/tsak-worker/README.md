@@ -54,9 +54,7 @@ scripts/build-shared.ps1 -Clean     # the whole connector layer at once
 ## Management API
 
 The API is bound to `127.0.0.1:9090` and has no authentication by default. Before exposing it, set
-`Tsak:Api:Host` and turn `Tsak:Auth` on with a long random `Secret`. On a Free provider the worker also
-logs a warning about built-in retention routes that declare `.Cluster(true)` while no route policy
-factory is registered: that is expected single-node behaviour, not a failure.
+`Tsak:Api:Host` and turn `Tsak:Auth` on with a long random `Secret`.
 
 ## Docker
 

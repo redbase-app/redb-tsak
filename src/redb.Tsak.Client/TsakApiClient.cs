@@ -509,42 +509,65 @@ public sealed class TsakApiClient : ITsakApiClient
     }
 
     /// <inheritdoc />
-    public async Task<SchedulerActionResponse> StartSchedulerAsync(CancellationToken ct = default)
+    public Task<SchedulerActionResponse> StartSchedulerAsync(CancellationToken ct = default)
+        => StartSchedulerAsync(null, ct);
+
+    /// <inheritdoc />
+    public Task<SchedulerActionResponse> StandbySchedulerAsync(CancellationToken ct = default)
+        => StandbySchedulerAsync(null, ct);
+
+    /// <inheritdoc />
+    public Task<SchedulerActionResponse> PauseJobAsync(string jobKey, CancellationToken ct = default)
+        => PauseJobAsync(jobKey, null, ct);
+
+    /// <inheritdoc />
+    public Task<SchedulerActionResponse> ResumeJobAsync(string jobKey, CancellationToken ct = default)
+        => ResumeJobAsync(jobKey, null, ct);
+
+    /// <inheritdoc />
+    public Task<SchedulerActionResponse> FireJobAsync(string jobKey, CancellationToken ct = default)
+        => FireJobAsync(jobKey, null, ct);
+
+    /// <inheritdoc />
+    public async Task<SchedulerActionResponse> StartSchedulerAsync(string? context, CancellationToken ct = default)
     {
-        var response = await _http.PostAsync("api/scheduler/start", null, ct);
+        var response = await _http.PostAsync($"api/scheduler/start{ContextQuery(context, '?')}", null, ct);
         return await ReadAsync<SchedulerActionResponse>(response, ct);
     }
 
     /// <inheritdoc />
-    public async Task<SchedulerActionResponse> StandbySchedulerAsync(CancellationToken ct = default)
+    public async Task<SchedulerActionResponse> StandbySchedulerAsync(string? context, CancellationToken ct = default)
     {
-        var response = await _http.PostAsync("api/scheduler/standby", null, ct);
+        var response = await _http.PostAsync($"api/scheduler/standby{ContextQuery(context, '?')}", null, ct);
         return await ReadAsync<SchedulerActionResponse>(response, ct);
     }
 
     /// <inheritdoc />
-    public async Task<SchedulerActionResponse> PauseJobAsync(string jobKey, CancellationToken ct = default)
+    public async Task<SchedulerActionResponse> PauseJobAsync(string jobKey, string? context, CancellationToken ct = default)
     {
         var response = await _http.PostAsync(
-            $"api/scheduler/pause-job?key={Uri.EscapeDataString(jobKey)}", null, ct);
+            $"api/scheduler/pause-job?key={Uri.EscapeDataString(jobKey)}{ContextQuery(context, '&')}", null, ct);
         return await ReadAsync<SchedulerActionResponse>(response, ct);
     }
 
     /// <inheritdoc />
-    public async Task<SchedulerActionResponse> ResumeJobAsync(string jobKey, CancellationToken ct = default)
+    public async Task<SchedulerActionResponse> ResumeJobAsync(string jobKey, string? context, CancellationToken ct = default)
     {
         var response = await _http.PostAsync(
-            $"api/scheduler/resume-job?key={Uri.EscapeDataString(jobKey)}", null, ct);
+            $"api/scheduler/resume-job?key={Uri.EscapeDataString(jobKey)}{ContextQuery(context, '&')}", null, ct);
         return await ReadAsync<SchedulerActionResponse>(response, ct);
     }
 
     /// <inheritdoc />
-    public async Task<SchedulerActionResponse> FireJobAsync(string jobKey, CancellationToken ct = default)
+    public async Task<SchedulerActionResponse> FireJobAsync(string jobKey, string? context, CancellationToken ct = default)
     {
         var response = await _http.PostAsync(
-            $"api/scheduler/fire-job?key={Uri.EscapeDataString(jobKey)}", null, ct);
+            $"api/scheduler/fire-job?key={Uri.EscapeDataString(jobKey)}{ContextQuery(context, '&')}", null, ct);
         return await ReadAsync<SchedulerActionResponse>(response, ct);
     }
+
+    private static string ContextQuery(string? context, char separator)
+        => context is null ? "" : $"{separator}context={Uri.EscapeDataString(context)}";
 
     // ── System ───────────────────────────────────────────────────────
 
