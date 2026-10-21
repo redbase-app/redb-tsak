@@ -1,5 +1,4 @@
 using System.CommandLine;
-using System.CommandLine.Invocation;
 using redb.Tsak.CLI.Rendering;
 
 namespace redb.Tsak.CLI.Commands;
@@ -15,7 +14,7 @@ public static class WatchdogCommands
 
         // tsak watchdog status [--watch]
         var statusCmd = new Command("status", "Show watchdog status");
-        statusCmd.SetHandler(async ctx =>
+        Program.Handle(statusCmd, async ctx =>
         {
             using var client = Program.CreateClient(ctx);
             var r = Program.CreateRenderer(ctx);
@@ -34,7 +33,7 @@ public static class WatchdogCommands
 
         // tsak watchdog alerts [--watch]
         var alertsCmd = new Command("alerts", "List active watchdog alerts");
-        alertsCmd.SetHandler(async ctx =>
+        Program.Handle(alertsCmd, async ctx =>
         {
             using var client = Program.CreateClient(ctx);
             var r = Program.CreateRenderer(ctx);
@@ -53,28 +52,28 @@ public static class WatchdogCommands
 
         // tsak watchdog enable
         var enableCmd = new Command("enable", "Enable the watchdog service");
-        enableCmd.SetHandler(async ctx =>
+        Program.Handle(enableCmd, async ctx =>
         {
             using var client = Program.CreateClient(ctx);
             var r = Program.CreateRenderer(ctx);
-            await client.EnableWatchdogAsync(ctx.GetCancellationToken());
+            await client.EnableWatchdogAsync(ctx.CancellationToken);
             r.Success("Watchdog enabled.");
         });
 
         // tsak watchdog disable
         var disableCmd = new Command("disable", "Disable the watchdog service");
-        disableCmd.SetHandler(async ctx =>
+        Program.Handle(disableCmd, async ctx =>
         {
             using var client = Program.CreateClient(ctx);
             var r = Program.CreateRenderer(ctx);
-            await client.DisableWatchdogAsync(ctx.GetCancellationToken());
+            await client.DisableWatchdogAsync(ctx.CancellationToken);
             r.Success("Watchdog disabled.");
         });
 
-        cmd.AddCommand(statusCmd);
-        cmd.AddCommand(alertsCmd);
-        cmd.AddCommand(enableCmd);
-        cmd.AddCommand(disableCmd);
+        cmd.Add(statusCmd);
+        cmd.Add(alertsCmd);
+        cmd.Add(enableCmd);
+        cmd.Add(disableCmd);
         return cmd;
     }
 }

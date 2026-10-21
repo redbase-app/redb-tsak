@@ -1,5 +1,4 @@
 using System.CommandLine;
-using System.CommandLine.Invocation;
 using redb.Tsak.CLI.Rendering;
 
 namespace redb.Tsak.CLI.Commands;
@@ -13,14 +12,14 @@ public static class RouteCommands
     {
         var cmd = new Command("route", "Manage individual routes within contexts");
 
-        var ctxArg = new Argument<string>("context", "Context name");
+        var ctxArg = new Argument<string>("context") { Description = "Context name" };
 
         // tsak route list <context>
-        var listCtxArg = new Argument<string>("context", "Context name");
+        var listCtxArg = new Argument<string>("context") { Description = "Context name" };
         var listCmd = new Command("list", "List routes in a context") { listCtxArg };
-        listCmd.SetHandler(async ctx =>
+        Program.Handle(listCmd, async ctx =>
         {
-            var name = ctx.ParseResult.GetValueForArgument(listCtxArg);
+            var name = ctx.ParseResult.GetValue(listCtxArg);
             using var client = Program.CreateClient(ctx);
             var r = Program.CreateRenderer(ctx);
             await Program.RunOrWatch(ctx, async ct =>
@@ -36,16 +35,16 @@ public static class RouteCommands
         });
 
         // tsak route get <context> <routeId>
-        var getCtxArg = new Argument<string>("context", "Context name");
-        var getRouteArg = new Argument<string>("routeId", "Route identifier");
+        var getCtxArg = new Argument<string>("context") { Description = "Context name" };
+        var getRouteArg = new Argument<string>("routeId") { Description = "Route identifier" };
         var getCmd = new Command("get", "Get route details") { getCtxArg, getRouteArg };
-        getCmd.SetHandler(async ctx =>
+        Program.Handle(getCmd, async ctx =>
         {
-            var name = ctx.ParseResult.GetValueForArgument(getCtxArg);
-            var routeId = ctx.ParseResult.GetValueForArgument(getRouteArg);
+            var name = ctx.ParseResult.GetValue(getCtxArg);
+            var routeId = ctx.ParseResult.GetValue(getRouteArg);
             using var client = Program.CreateClient(ctx);
             var r = Program.CreateRenderer(ctx);
-            var detail = await client.GetRouteAsync(name, routeId, ctx.GetCancellationToken());
+            var detail = await client.GetRouteAsync(name, routeId, ctx.CancellationToken);
             r.RenderDetail(
                 ("RouteId", detail.RouteId),
                 ("FromUri", detail.FromUri),
@@ -56,43 +55,48 @@ public static class RouteCommands
         });
 
         // tsak route start <context> <routeId>
-        var startCtxArg = new Argument<string>("context", "Context name");
-        var startRouteArg = new Argument<string>("routeId", "Route identifier");
+        var startCtxArg = new Argument<string>("context") { Description = "Context name" };
+        var startRouteArg = new Argument<string>("routeId") { Description = "Route identifier" };
         var startCmd = new Command("start", "Start a route") { startCtxArg, startRouteArg };
-        startCmd.SetHandler(async ctx =>
+        Program.Handle(startCmd, async ctx =>
         {
-            var name = ctx.ParseResult.GetValueForArgument(startCtxArg);
-            var routeId = ctx.ParseResult.GetValueForArgument(startRouteArg);
+            var name = ctx.ParseResult.GetValue(startCtxArg);
+            var routeId = ctx.ParseResult.GetValue(startRouteArg);
             using var client = Program.CreateClient(ctx);
             var r = Program.CreateRenderer(ctx);
-            var result = await client.StartRouteAsync(name, routeId, ctx.GetCancellationToken());
+            var result = await client.StartRouteAsync(name, routeId, ctx.CancellationToken);
             r.Success($"Route '{result.RouteId}' → {result.Status}");
         });
 
         // tsak route stop <context> <routeId> [--timeout N]
-        var stopCtxArg = new Argument<string>("context", "Context name");
-        var stopRouteArg = new Argument<string>("routeId", "Route identifier");
-        var timeoutOpt = new Option<int?>("--timeout", "Drain timeout in seconds");
+        var stopCtxArg = new Argument<string>("context") { Description = "Context name" };
+        var stopRouteArg = new Argument<string>("routeId") { Description = "Route identifier" };
+        var timeoutOpt = new Option<int?>("--timeout") { Description = "Drain timeout in seconds" };
         var stopCmd = new Command("stop", "Stop a route with graceful drain") { stopCtxArg, stopRouteArg, timeoutOpt };
-        stopCmd.SetHandler(async ctx =>
+        Program.Handle(stopCmd, async ctx =>
         {
-            var name = ctx.ParseResult.GetValueForArgument(stopCtxArg);
-            var routeId = ctx.ParseResult.GetValueForArgument(stopRouteArg);
-            var timeout = ctx.ParseResult.GetValueForOption(timeoutOpt);
+            var name = ctx.ParseResult.GetValue(stopCtxArg);
+            var routeId = ctx.ParseResult.GetValue(stopRouteArg);
+            var timeout = ctx.ParseResult.GetValue(timeoutOpt);
             using var client = Program.CreateClient(ctx);
             var r = Program.CreateRenderer(ctx);
-            var result = await client.StopRouteAsync(name, routeId, timeout, ctx.GetCancellationToken());
+            var result = await client.StopRouteAsync(name, routeId, timeout, ctx.CancellationToken);
             r.Success($"Route '{result.RouteId}' → {result.Status}");
         });
 
         // tsak route inflight <context> [routeId]
-        var inflightCtxArg = new Argument<string>("context", "Context name");
-        var inflightRouteArg = new Argument<string?>("routeId", () => null!, "Route identifier (optional, all routes if omitted)");
-        var inflightCmd = new Command("inflight", "Browse in-flight exchanges") { inflightCtxArg, inflightRouteArg };
-        inflightCmd.SetHandler(async ctx =>
+        var inflightCtxArg = new Argument<string>("context") { Description = "Context name" };
+        var inflightRouteArg = new Argument<string?>("routeId")
         {
-            var name = ctx.ParseResult.GetValueForArgument(inflightCtxArg);
-            var routeId = ctx.ParseResult.GetValueForArgument(inflightRouteArg);
+            Arity = ArgumentArity.ZeroOrOne,
+            DefaultValueFactory = _ => null,
+            Description = "Route identifier (optional, all routes if omitted)",
+        };
+        var inflightCmd = new Command("inflight", "Browse in-flight exchanges") { inflightCtxArg, inflightRouteArg };
+        Program.Handle(inflightCmd, async ctx =>
+        {
+            var name = ctx.ParseResult.GetValue(inflightCtxArg);
+            var routeId = ctx.ParseResult.GetValue(inflightRouteArg);
             using var client = Program.CreateClient(ctx);
             var r = Program.CreateRenderer(ctx);
             await Program.RunOrWatch(ctx, async ct =>
@@ -110,26 +114,26 @@ public static class RouteCommands
         });
 
         // tsak route force-stop <context> <routeId> [--yes]
-        var forceCtxArg = new Argument<string>("context", "Context name");
-        var forceRouteArg = new Argument<string>("routeId", "Route identifier");
+        var forceCtxArg = new Argument<string>("context") { Description = "Context name" };
+        var forceRouteArg = new Argument<string>("routeId") { Description = "Route identifier" };
         var forceCmd = new Command("force-stop", "Force-stop a route (no drain)") { forceCtxArg, forceRouteArg };
-        forceCmd.SetHandler(async ctx =>
+        Program.Handle(forceCmd, async ctx =>
         {
-            var name = ctx.ParseResult.GetValueForArgument(forceCtxArg);
-            var routeId = ctx.ParseResult.GetValueForArgument(forceRouteArg);
+            var name = ctx.ParseResult.GetValue(forceCtxArg);
+            var routeId = ctx.ParseResult.GetValue(forceRouteArg);
             Program.ConfirmOrAbort(ctx, $"Force-stop route '{routeId}' in context '{name}'?");
             using var client = Program.CreateClient(ctx);
             var r = Program.CreateRenderer(ctx);
-            var result = await client.ForceStopRouteAsync(name, routeId, ctx.GetCancellationToken());
+            var result = await client.ForceStopRouteAsync(name, routeId, ctx.CancellationToken);
             r.Success($"Route '{result.RouteId}' → {result.Status} (force-stopped)");
         });
 
-        cmd.AddCommand(listCmd);
-        cmd.AddCommand(getCmd);
-        cmd.AddCommand(startCmd);
-        cmd.AddCommand(stopCmd);
-        cmd.AddCommand(inflightCmd);
-        cmd.AddCommand(forceCmd);
+        cmd.Add(listCmd);
+        cmd.Add(getCmd);
+        cmd.Add(startCmd);
+        cmd.Add(stopCmd);
+        cmd.Add(inflightCmd);
+        cmd.Add(forceCmd);
         return cmd;
     }
 }

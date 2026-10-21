@@ -337,6 +337,46 @@ Write-Host ""
 
 if (-not (Test-Path $routeRoot)) { throw "redb.Route source not found at $routeRoot" }
 
+# ---- Every publish starts empty ----
+# Each project used to publish into %TEMP%\tsak_shared_<tfm>\<project>, kept from run to run. dotnet publish
+# does not overwrite a file whose copy in the output folder is NEWER than the source, so a package rolled back
+# to a version with an older file date never replaced its predecessor: 4.4.0-beta.1 shipped JsonPath.Net 3.0.2
+# and Json.More 3.0.1 in the layer while every deps.json and the host said 2.2.0, and the worker logged two
+# "Failed to load shared assembly". Now each run publishes into a folder of its own, removed when the run ends.
+$runTemp = Join-Path $env:TEMP ("tsak_shared_run_" + [guid]::NewGuid().ToString('N'))
+
+# What a project's publish put on disk must be what its deps.json resolved: an assembly whose version differs
+# from the deps.json entry is a leftover, not this build's output. Checked for lib and runtimes/<rid> entries.
+function Assert-PublishMatchesDeps([string]$proj, [string]$pubDir) {
+    $depsFile = Join-Path $pubDir "$proj.deps.json"
+    if (-not (Test-Path $depsFile)) { return }
+    $deps = Get-Content $depsFile -Raw | ConvertFrom-Json
+    $target = $deps.targets.PSObject.Properties | Select-Object -First 1
+    $wrong = @()
+    foreach ($lib in $target.Value.PSObject.Properties) {
+        $entries = @()
+        if ($lib.Value.runtime) {
+            $entries += $lib.Value.runtime.PSObject.Properties | ForEach-Object { @{ Rel = (Split-Path $_.Name -Leaf); Want = $_.Value.assemblyVersion } }
+        }
+        if ($lib.Value.runtimeTargets) {
+            $entries += $lib.Value.runtimeTargets.PSObject.Properties | ForEach-Object { @{ Rel = $_.Name; Want = $_.Value.assemblyVersion } }
+        }
+        foreach ($e in $entries) {
+            if (-not $e.Want) { continue }
+            $file = Join-Path $pubDir ($e.Rel -replace '/', [IO.Path]::DirectorySeparatorChar)
+            if (-not (Test-Path $file)) { continue }
+            try { $have = [System.Reflection.AssemblyName]::GetAssemblyName($file).Version } catch { continue }
+            if ($have.ToString() -ne $e.Want) {
+                $wrong += "$proj : $($e.Rel) is assembly $have on disk, deps.json resolved $($e.Want) ($($lib.Name))"
+            }
+        }
+    }
+    if ($wrong.Count -gt 0) {
+        $wrong | ForEach-Object { Write-Host "  STALE FILE: $_" -ForegroundColor Red }
+        throw "Publish of $proj left $($wrong.Count) assembly(ies) that do not match its deps.json - a leftover in $pubDir, not this build's output."
+    }
+}
+
 # Builds one TFM into $sharedDir. Returns @{ Copied=<int>; Incompatible=@(...); Conflicts=<int> }.
 function Build-Tfm([string]$tfm, [string]$sharedDir, [string[]]$runtimeDirs) {
     if ($Clean -and (Test-Path $sharedDir)) {
@@ -361,7 +401,7 @@ function Build-Tfm([string]$tfm, [string]$sharedDir, [string[]]$runtimeDirs) {
             continue
         }
 
-        $tmpPub = Join-Path (Join-Path $env:TEMP "tsak_shared_$tfm") $proj
+        $tmpPub = Join-Path (Join-Path $runTemp $tfm) $proj
         Write-Host "  $proj ($tfm)..." -NoNewline
         $logFile = Join-Path $env:TEMP "tsak_shared_$tfm`_$proj.log"
         & dotnet publish $projPath -c $Configuration -f $tfm --nologo -v q -o $tmpPub 2>&1 |
@@ -377,6 +417,7 @@ function Build-Tfm([string]$tfm, [string]$sharedDir, [string[]]$runtimeDirs) {
             }
         }
         Write-Host " OK" -ForegroundColor Green
+        Assert-PublishMatchesDeps $proj $tmpPub
 
         if (Test-Path $tmpPub) {
             $dlls = Get-ChildItem -Path $tmpPub -Filter "*.dll" | Where-Object {
@@ -421,6 +462,7 @@ function Build-Tfm([string]$tfm, [string]$sharedDir, [string[]]$runtimeDirs) {
 }
 
 $summary = @{}
+try {
 foreach ($tfm in $Tfms) {
     if ($publishMode) {
         Write-Host "===== TFM: $tfm =====" -ForegroundColor Magenta
@@ -459,6 +501,9 @@ foreach ($tfm in $Tfms) {
         }
     }
     Write-Host ""
+}
+} finally {
+    if (Test-Path $runTemp) { Remove-Item $runTemp -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
 Write-Host "=== Summary ===" -ForegroundColor Cyan

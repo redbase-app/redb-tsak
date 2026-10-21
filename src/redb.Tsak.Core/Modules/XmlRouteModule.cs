@@ -31,6 +31,13 @@ public sealed class XmlRouteModule : ITsakModule, IEmbeddedConfigModule
         _logger = logger;
     }
 
+    /// <summary>The manifest of the package, whose Dependencies order this module's context at start.</summary>
+    internal ModuleManifest Manifest => _package.Manifest;
+
+    /// <summary>The package's own code, for its type resolver: the entry points and the companions.</summary>
+    internal IEnumerable<System.Reflection.Assembly> PackageAssemblies
+        => _package.LoadedAssemblies.Concat(_package.CompanionAssemblies);
+
     public string ModuleName => _package.Manifest.Name;
     public string Version => _package.Manifest.Version;
     public string Description =>

@@ -238,6 +238,11 @@ public sealed class ModulePackage : IDisposable
                     entryPoint, manifest.Name, alcName);
             }
 
+            // The module's type resolver searches the companions too, though they live in the Default context.
+            alc.Companions = package.CompanionAssemblies;
+            // Its manifest's Dependencies order the contexts of the package's modules at start.
+            alc.Manifest = manifest;
+
             if (package.CompanionAssemblies.Count > 0)
                 logger?.LogInformation("Package {Name}: {EP} entry points, {Comp} companion DLLs loaded",
                     manifest.Name, package.LoadedAssemblies.Count, package.CompanionAssemblies.Count);

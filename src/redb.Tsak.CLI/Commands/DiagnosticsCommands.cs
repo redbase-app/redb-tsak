@@ -1,5 +1,4 @@
 using System.CommandLine;
-using System.CommandLine.Invocation;
 using redb.Tsak.CLI.Rendering;
 
 namespace redb.Tsak.CLI.Commands;
@@ -13,10 +12,10 @@ public static class DiagnosticsCommands
     {
         var cmd = new Command("diagnostics", "Diagnostics, lifecycle events, and dashboard");
 
-        cmd.AddCommand(BuildLifecycleCommand());
-        cmd.AddCommand(BuildDumpCommand());
-        cmd.AddCommand(BuildRouteDumpCommand());
-        cmd.AddCommand(BuildDashboardCommand());
+        cmd.Add(BuildLifecycleCommand());
+        cmd.Add(BuildDumpCommand());
+        cmd.Add(BuildRouteDumpCommand());
+        cmd.Add(BuildDashboardCommand());
 
         return cmd;
     }
@@ -24,24 +23,24 @@ public static class DiagnosticsCommands
     // tsak diagnostics lifecycle [--context X] [--route Y] [--type Z] [--since DT] [--limit N] [--watch]
     private static Command BuildLifecycleCommand()
     {
-        var contextOpt = new Option<string?>("--context", "Filter by context name");
-        var routeOpt = new Option<string?>("--route", "Filter by route identifier");
-        var typeOpt = new Option<string?>("--type", "Filter by event type");
-        var sinceOpt = new Option<DateTime?>("--since", "Events since this timestamp (ISO 8601)");
-        var limitOpt = new Option<int?>("--limit", "Maximum number of events to return");
+        var contextOpt = new Option<string?>("--context") { Description = "Filter by context name" };
+        var routeOpt = new Option<string?>("--route") { Description = "Filter by route identifier" };
+        var typeOpt = new Option<string?>("--type") { Description = "Filter by event type" };
+        var sinceOpt = new Option<DateTime?>("--since") { Description = "Events since this timestamp (ISO 8601)" };
+        var limitOpt = new Option<int?>("--limit") { Description = "Maximum number of events to return" };
 
         var lifecycleCmd = new Command("lifecycle", "Browse lifecycle audit events")
         {
             contextOpt, routeOpt, typeOpt, sinceOpt, limitOpt
         };
 
-        lifecycleCmd.SetHandler(async ctx =>
+        Program.Handle(lifecycleCmd, async ctx =>
         {
-            var context = ctx.ParseResult.GetValueForOption(contextOpt);
-            var route = ctx.ParseResult.GetValueForOption(routeOpt);
-            var type = ctx.ParseResult.GetValueForOption(typeOpt);
-            var since = ctx.ParseResult.GetValueForOption(sinceOpt);
-            var limit = ctx.ParseResult.GetValueForOption(limitOpt);
+            var context = ctx.ParseResult.GetValue(contextOpt);
+            var route = ctx.ParseResult.GetValue(routeOpt);
+            var type = ctx.ParseResult.GetValue(typeOpt);
+            var since = ctx.ParseResult.GetValue(sinceOpt);
+            var limit = ctx.ParseResult.GetValue(limitOpt);
 
             using var client = Program.CreateClient(ctx);
             var r = Program.CreateRenderer(ctx);
@@ -64,11 +63,11 @@ public static class DiagnosticsCommands
     private static Command BuildDumpCommand()
     {
         var dumpCmd = new Command("dump", "Full system diagnostic dump");
-        dumpCmd.SetHandler(async ctx =>
+        Program.Handle(dumpCmd, async ctx =>
         {
             using var client = Program.CreateClient(ctx);
             var r = Program.CreateRenderer(ctx);
-            var dump = await client.GetDiagnosticDumpAsync(ctx.GetCancellationToken());
+            var dump = await client.GetDiagnosticDumpAsync(ctx.CancellationToken);
 
             r.RenderDetail(
                 ("Timestamp", dump.Timestamp.ToString("yyyy-MM-dd HH:mm:ss")),
@@ -109,17 +108,17 @@ public static class DiagnosticsCommands
     // tsak diagnostics route <context> <routeId>
     private static Command BuildRouteDumpCommand()
     {
-        var ctxArg = new Argument<string>("context", "Context name");
-        var routeArg = new Argument<string>("routeId", "Route identifier");
+        var ctxArg = new Argument<string>("context") { Description = "Context name" };
+        var routeArg = new Argument<string>("routeId") { Description = "Route identifier" };
         var routeCmd = new Command("route", "Diagnostic dump for a specific route") { ctxArg, routeArg };
 
-        routeCmd.SetHandler(async ctx =>
+        Program.Handle(routeCmd, async ctx =>
         {
-            var name = ctx.ParseResult.GetValueForArgument(ctxArg);
-            var routeId = ctx.ParseResult.GetValueForArgument(routeArg);
+            var name = ctx.ParseResult.GetValue(ctxArg);
+            var routeId = ctx.ParseResult.GetValue(routeArg);
             using var client = Program.CreateClient(ctx);
             var r = Program.CreateRenderer(ctx);
-            var dump = await client.GetRouteDiagnosticsAsync(name, routeId, ctx.GetCancellationToken());
+            var dump = await client.GetRouteDiagnosticsAsync(name, routeId, ctx.CancellationToken);
 
             r.RenderDetail(
                 ("RouteId", dump.RouteId),
@@ -158,7 +157,7 @@ public static class DiagnosticsCommands
     private static Command BuildDashboardCommand()
     {
         var dashCmd = new Command("dashboard", "Live dashboard summary");
-        dashCmd.SetHandler(async ctx =>
+        Program.Handle(dashCmd, async ctx =>
         {
             using var client = Program.CreateClient(ctx);
             var r = Program.CreateRenderer(ctx);

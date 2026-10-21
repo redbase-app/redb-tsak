@@ -1,7 +1,5 @@
 using System.CommandLine;
-using System.CommandLine.Builder;
-using System.CommandLine.Invocation;
-using System.CommandLine.Parsing;
+using System.Globalization;
 using redb.Tsak.Client;
 using redb.Tsak.Contracts;
 using redb.Tsak.CLI.Config;
@@ -17,92 +15,144 @@ public static class Program
 {
     // ── Global options ──────────────────────────────────────────────
 
-    private static readonly Option<string?> ProfileOption = new(
-        aliases: ["--profile", "-p"],
-        description: "Connection profile name");
+    // Recursive: every subcommand takes them, as global options did before System.CommandLine 2.0.
 
-    private static readonly Option<string?> UrlOption = new(
-        aliases: ["--url", "-u"],
-        description: "Tsak runtime URL (overrides profile)");
+    private static readonly Option<string?> ProfileOption = new("--profile", "-p")
+    {
+        Description = "Connection profile name",
+        Recursive = true,
+    };
 
-    private static readonly Option<string?> KeyOption = new(
-        aliases: ["--key", "-k"],
-        description: "API key (overrides profile)");
+    private static readonly Option<string?> UrlOption = new("--url", "-u")
+    {
+        Description = "Tsak runtime URL (overrides profile)",
+        Recursive = true,
+    };
 
-    private static readonly Option<OutputFormat> OutputOption = new(
-        aliases: ["--output", "-o"],
-        getDefaultValue: () => OutputFormat.Table,
-        description: "Output format: table | json | quiet");
+    private static readonly Option<string?> KeyOption = new("--key", "-k")
+    {
+        Description = "API key (overrides profile)",
+        Recursive = true,
+    };
 
-    private static readonly Option<bool> NoColorOption = new(
-        "--no-color",
-        description: "Disable colored output");
+    private static readonly Option<OutputFormat> OutputOption = new("--output", "-o")
+    {
+        DefaultValueFactory = _ => OutputFormat.Table,
+        Description = "Output format: table | json | quiet",
+        Recursive = true,
+    };
 
-    private static readonly Option<bool> YesOption = new(
-        aliases: ["--yes", "-y"],
-        description: "Skip confirmation prompts");
+    private static readonly Option<bool> NoColorOption = new("--no-color")
+    {
+        Description = "Disable colored output",
+        Recursive = true,
+    };
 
-    private static readonly Option<bool> WatchOption = new(
-        "--watch",
-        description: "Poll repeatedly (Ctrl+C to stop)");
+    private static readonly Option<bool> YesOption = new("--yes", "-y")
+    {
+        Description = "Skip confirmation prompts",
+        Recursive = true,
+    };
 
-    private static readonly Option<int> IntervalOption = new(
-        "--interval",
-        getDefaultValue: () => 5,
-        description: "Polling interval in seconds (used with --watch)");
+    private static readonly Option<bool> WatchOption = new("--watch")
+    {
+        Description = "Poll repeatedly (Ctrl+C to stop)",
+        Recursive = true,
+    };
 
-    private static readonly Option<int?> TimeoutOption = new(
-        "--timeout",
-        description: "HTTP request timeout in seconds (default: 5). Useful for slow operations like diagnostics dump, force-stop, module install.");
+    private static readonly Option<int> IntervalOption = new("--interval")
+    {
+        DefaultValueFactory = _ => 5,
+        Description = "Polling interval in seconds (used with --watch)",
+        Recursive = true,
+    };
+
+    private static readonly Option<int?> TimeoutOption = new("--timeout")
+    {
+        Description = "HTTP request timeout in seconds (default: 5). Useful for slow operations like diagnostics dump, force-stop, module install.",
+        Recursive = true,
+    };
 
     public static async Task<int> Main(string[] args)
     {
+        // System.CommandLine ships localized resources and picks them by the OS UI language; the CLI
+        // speaks English everywhere, so help, usage and parse errors match the rest of its output.
+        CultureInfo.DefaultThreadCurrentUICulture = CultureInfo.InvariantCulture;
+        CultureInfo.CurrentUICulture = CultureInfo.InvariantCulture;
+
         var root = new RootCommand("tsak — CLI for redb.Tsak runtime management");
 
-        root.AddGlobalOption(ProfileOption);
-        root.AddGlobalOption(UrlOption);
-        root.AddGlobalOption(KeyOption);
-        root.AddGlobalOption(OutputOption);
-        root.AddGlobalOption(NoColorOption);
-        root.AddGlobalOption(YesOption);
-        root.AddGlobalOption(WatchOption);
-        root.AddGlobalOption(IntervalOption);
-        root.AddGlobalOption(TimeoutOption);
+        root.Add(ProfileOption);
+        root.Add(UrlOption);
+        root.Add(KeyOption);
+        root.Add(OutputOption);
+        root.Add(NoColorOption);
+        root.Add(YesOption);
+        root.Add(WatchOption);
+        root.Add(IntervalOption);
+        root.Add(TimeoutOption);
 
         // ── Register command groups ─────────────────────────────────
-        root.AddCommand(BuildSystemCommand());
-        root.AddCommand(BuildContextCommand());
-        root.AddCommand(BuildModuleCommand());
-        root.AddCommand(BuildSchedulerCommand());
-        root.AddCommand(BuildClusterCommand());
-        root.AddCommand(BuildLogCommand());
-        root.AddCommand(BuildAuditCommand());
-        root.AddCommand(BuildDlqCommand());
-        root.AddCommand(BuildAuthCommand());
-        root.AddCommand(BuildProfileCommand());
-        root.AddCommand(Commands.RouteCommands.Create());
-        root.AddCommand(Commands.WatchdogCommands.Create());
-        root.AddCommand(Commands.DiagnosticsCommands.Create());
+        root.Add(BuildSystemCommand());
+        root.Add(BuildContextCommand());
+        root.Add(BuildModuleCommand());
+        root.Add(BuildSchedulerCommand());
+        root.Add(BuildClusterCommand());
+        root.Add(BuildLogCommand());
+        root.Add(BuildAuditCommand());
+        root.Add(BuildDlqCommand());
+        root.Add(BuildAuthCommand());
+        root.Add(BuildProfileCommand());
+        root.Add(Commands.RouteCommands.Create());
+        root.Add(Commands.WatchdogCommands.Create());
+        root.Add(Commands.DiagnosticsCommands.Create());
 
-        var parser = new CommandLineBuilder(root)
-            .UseDefaults()
-            .UseExceptionHandler(HandleException)
-            .Build();
-
-        return await parser.InvokeAsync(args);
+        // Help, version, parse errors and Ctrl+C are the library's defaults; a command's exception is handled by
+        // Handle, which sets the exit code the way the CLI always has.
+        return await root.Parse(args).InvokeAsync();
     }
 
     // ── Helpers ─────────────────────────────────────────────────────
 
     /// <summary>
+    /// Sets the action of <paramref name="command"/>: runs <paramref name="action"/> with the parse result and the
+    /// Ctrl+C token, turns an exception into a message and an exit code (<see cref="HandleException"/>), and returns
+    /// the exit code the action set.
+    /// </summary>
+    internal static void Handle(Command command, Func<CliInvocation, Task> action)
+    {
+        command.SetAction(async (parseResult, cancellationToken) =>
+        {
+            var invocation = new CliInvocation(parseResult, cancellationToken);
+            try
+            {
+                await action(invocation);
+            }
+            catch (Exception ex)
+            {
+                HandleException(ex, invocation);
+            }
+            return invocation.ExitCode;
+        });
+    }
+
+    /// <summary>A synchronous action, otherwise as <see cref="Handle(Command, Func{CliInvocation, Task})"/>.</summary>
+    internal static void Handle(Command command, Action<CliInvocation> action)
+        => Handle(command, invocation =>
+        {
+            action(invocation);
+            return Task.CompletedTask;
+        });
+
+    /// <summary>
     /// Resolves connection settings and creates an API client from the invocation context.
     /// </summary>
-    internal static TsakApiClient CreateClient(InvocationContext ctx)
+    internal static TsakApiClient CreateClient(CliInvocation ctx)
     {
         var profile = new ProfileManager().Resolve(
-            ctx.ParseResult.GetValueForOption(ProfileOption),
-            ctx.ParseResult.GetValueForOption(UrlOption),
-            ctx.ParseResult.GetValueForOption(KeyOption));
+            ctx.ParseResult.GetValue(ProfileOption),
+            ctx.ParseResult.GetValue(UrlOption),
+            ctx.ParseResult.GetValue(KeyOption));
 
         if (profile is null)
         {
@@ -111,7 +161,7 @@ public static class Program
             throw new OperationCanceledException();
         }
 
-        var timeoutSeconds = ctx.ParseResult.GetValueForOption(TimeoutOption);
+        var timeoutSeconds = ctx.ParseResult.GetValue(TimeoutOption);
         var timeout = timeoutSeconds is > 0 ? TimeSpan.FromSeconds(timeoutSeconds.Value) : (TimeSpan?)null;
         return new TsakApiClient(profile.Url, profile.ApiKey, timeout);
     }
@@ -119,10 +169,10 @@ public static class Program
     /// <summary>
     /// Creates the appropriate output renderer from the invocation context.
     /// </summary>
-    internal static IOutputRenderer CreateRenderer(InvocationContext ctx)
+    internal static IOutputRenderer CreateRenderer(CliInvocation ctx)
     {
-        var format = ctx.ParseResult.GetValueForOption(OutputOption);
-        var noColor = ctx.ParseResult.GetValueForOption(NoColorOption);
+        var format = ctx.ParseResult.GetValue(OutputOption);
+        var noColor = ctx.ParseResult.GetValue(NoColorOption);
         return RendererFactory.Create(format, noColor);
     }
 
@@ -130,10 +180,10 @@ public static class Program
     /// Asks for confirmation before a destructive action. Aborts if declined.
     /// Skipped when --yes is set or output format is not Table (scripts).
     /// </summary>
-    internal static void ConfirmOrAbort(InvocationContext ctx, string prompt)
+    internal static void ConfirmOrAbort(CliInvocation ctx, string prompt)
     {
-        var yes = ctx.ParseResult.GetValueForOption(YesOption);
-        var format = ctx.ParseResult.GetValueForOption(OutputOption);
+        var yes = ctx.ParseResult.GetValue(YesOption);
+        var format = ctx.ParseResult.GetValue(OutputOption);
         if (yes || format != OutputFormat.Table)
             return;
 
@@ -150,11 +200,11 @@ public static class Program
     /// <summary>
     /// Runs an async action once or in a polling loop if --watch is set.
     /// </summary>
-    internal static async Task RunOrWatch(InvocationContext ctx, Func<CancellationToken, Task> action)
+    internal static async Task RunOrWatch(CliInvocation ctx, Func<CancellationToken, Task> action)
     {
-        var watch = ctx.ParseResult.GetValueForOption(WatchOption);
-        var interval = ctx.ParseResult.GetValueForOption(IntervalOption);
-        var ct = ctx.GetCancellationToken();
+        var watch = ctx.ParseResult.GetValue(WatchOption);
+        var interval = ctx.ParseResult.GetValue(IntervalOption);
+        var ct = ctx.CancellationToken;
 
         if (!watch)
         {
@@ -184,7 +234,7 @@ public static class Program
     /// <summary>
     /// Global exception handler for the CLI.
     /// </summary>
-    private static void HandleException(Exception ex, InvocationContext ctx)
+    private static void HandleException(Exception ex, CliInvocation ctx)
     {
         if (ex is OperationCanceledException)
             return;
@@ -212,7 +262,7 @@ public static class Program
 
         // tsak system health [--watch] [--interval N]
         var healthCmd = new Command("health", "Show system health status");
-        healthCmd.SetHandler(async ctx =>
+        Handle(healthCmd, async ctx =>
         {
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
@@ -234,7 +284,7 @@ public static class Program
 
         // tsak system metrics [--watch] [--interval N]
         var metricsCmd = new Command("metrics", "Show system metrics");
-        metricsCmd.SetHandler(async ctx =>
+        Handle(metricsCmd, async ctx =>
         {
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
@@ -260,11 +310,11 @@ public static class Program
 
         // tsak system info
         var infoCmd = new Command("info", "Show system information");
-        infoCmd.SetHandler(async ctx =>
+        Handle(infoCmd, async ctx =>
         {
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var info = await client.GetInfoAsync(ctx.GetCancellationToken());
+            var info = await client.GetInfoAsync(ctx.CancellationToken);
             r.RenderDetail(
                 ("Version", info.Version),
                 ("Started", info.StartedAt.ToString("yyyy-MM-dd HH:mm:ss")),
@@ -277,11 +327,11 @@ public static class Program
         });
 
         var configCmd = new Command("config", "Show effective (merged, redacted) configuration");
-        configCmd.SetHandler(async ctx =>
+        Handle(configCmd, async ctx =>
         {
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var cfg = await client.GetConfigAsync(ctx.GetCancellationToken());
+            var cfg = await client.GetConfigAsync(ctx.CancellationToken);
             if (!cfg.Available)
             {
                 r.Error("Configuration is not available.");
@@ -293,10 +343,10 @@ public static class Program
                 ("Value", kv => kv.Value ?? "—"));
         });
 
-        cmd.AddCommand(healthCmd);
-        cmd.AddCommand(metricsCmd);
-        cmd.AddCommand(infoCmd);
-        cmd.AddCommand(configCmd);
+        cmd.Add(healthCmd);
+        cmd.Add(metricsCmd);
+        cmd.Add(infoCmd);
+        cmd.Add(configCmd);
         return cmd;
     }
 
@@ -310,11 +360,11 @@ public static class Program
 
         // tsak context list
         var listCmd = new Command("list", "List all contexts");
-        listCmd.SetHandler(async ctx =>
+        Handle(listCmd, async ctx =>
         {
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var contexts = await client.ListContextsAsync(ctx.GetCancellationToken());
+            var contexts = await client.ListContextsAsync(ctx.CancellationToken);
             r.RenderTable(contexts,
                 ("Name", c => c.Name),
                 ("Status", c => c.Status),
@@ -322,14 +372,14 @@ public static class Program
         });
 
         // tsak context get <name>
-        var nameArg = new Argument<string>("name", "Context name");
+        var nameArg = new Argument<string>("name") { Description = "Context name" };
         var getCmd = new Command("get", "Get context details") { nameArg };
-        getCmd.SetHandler(async (ctx) =>
+        Handle(getCmd, async (ctx) =>
         {
-            var name = ctx.ParseResult.GetValueForArgument(nameArg);
+            var name = ctx.ParseResult.GetValue(nameArg);
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var detail = await client.GetContextAsync(name, ctx.GetCancellationToken());
+            var detail = await client.GetContextAsync(name, ctx.CancellationToken);
             r.RenderDetail(
                 ("Name", detail.Name),
                 ("Status", detail.Status),
@@ -338,60 +388,60 @@ public static class Program
         });
 
         // tsak context start <name>
-        var startArg = new Argument<string>("name", "Context name");
+        var startArg = new Argument<string>("name") { Description = "Context name" };
         var startCmd = new Command("start", "Start a context") { startArg };
-        startCmd.SetHandler(async ctx =>
+        Handle(startCmd, async ctx =>
         {
-            var name = ctx.ParseResult.GetValueForArgument(startArg);
+            var name = ctx.ParseResult.GetValue(startArg);
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var result = await client.StartContextAsync(name, ctx.GetCancellationToken());
+            var result = await client.StartContextAsync(name, ctx.CancellationToken);
             r.Success($"Context '{result.Name}' → {result.Status}");
         });
 
         // tsak context stop <name>
-        var stopArg = new Argument<string>("name", "Context name");
+        var stopArg = new Argument<string>("name") { Description = "Context name" };
         var stopCmd = new Command("stop", "Stop a context") { stopArg };
-        stopCmd.SetHandler(async ctx =>
+        Handle(stopCmd, async ctx =>
         {
-            var name = ctx.ParseResult.GetValueForArgument(stopArg);
+            var name = ctx.ParseResult.GetValue(stopArg);
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var result = await client.StopContextAsync(name, ctx.GetCancellationToken());
+            var result = await client.StopContextAsync(name, ctx.CancellationToken);
             r.Success($"Context '{result.Name}' → {result.Status}");
         });
 
         // tsak context restart <name>
-        var restartArg = new Argument<string>("name", "Context name");
+        var restartArg = new Argument<string>("name") { Description = "Context name" };
         var restartCmd = new Command("restart", "Restart a context") { restartArg };
-        restartCmd.SetHandler(async ctx =>
+        Handle(restartCmd, async ctx =>
         {
-            var name = ctx.ParseResult.GetValueForArgument(restartArg);
+            var name = ctx.ParseResult.GetValue(restartArg);
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var result = await client.RestartContextAsync(name, ctx.GetCancellationToken());
+            var result = await client.RestartContextAsync(name, ctx.CancellationToken);
             r.Success($"Context '{result.Name}' → {result.Status}");
         });
 
         // tsak context remove <name> [--yes]
-        var removeArg = new Argument<string>("name", "Context name");
+        var removeArg = new Argument<string>("name") { Description = "Context name" };
         var removeCmd = new Command("remove", "Remove a context") { removeArg };
-        removeCmd.SetHandler(async ctx =>
+        Handle(removeCmd, async ctx =>
         {
-            var name = ctx.ParseResult.GetValueForArgument(removeArg);
+            var name = ctx.ParseResult.GetValue(removeArg);
             ConfirmOrAbort(ctx, $"Remove context '{name}'?");
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var result = await client.RemoveContextAsync(name, ctx.GetCancellationToken());
+            var result = await client.RemoveContextAsync(name, ctx.CancellationToken);
             r.Success($"Context '{result.Name}' removed.");
         });
 
-        cmd.AddCommand(listCmd);
-        cmd.AddCommand(getCmd);
-        cmd.AddCommand(startCmd);
-        cmd.AddCommand(stopCmd);
-        cmd.AddCommand(restartCmd);
-        cmd.AddCommand(removeCmd);
+        cmd.Add(listCmd);
+        cmd.Add(getCmd);
+        cmd.Add(startCmd);
+        cmd.Add(stopCmd);
+        cmd.Add(restartCmd);
+        cmd.Add(removeCmd);
         return cmd;
     }
 
@@ -405,11 +455,11 @@ public static class Program
 
         // tsak module list
         var listCmd = new Command("list", "List all modules");
-        listCmd.SetHandler(async ctx =>
+        Handle(listCmd, async ctx =>
         {
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var modules = await client.ListModulesAsync(ctx.GetCancellationToken());
+            var modules = await client.ListModulesAsync(ctx.CancellationToken);
             r.RenderTable(modules,
                 ("Name", m => m.ModuleName),
                 ("Version", m => m.Version ?? "—"),
@@ -418,14 +468,14 @@ public static class Program
         });
 
         // tsak module get <name>
-        var nameArg = new Argument<string>("name", "Module name");
+        var nameArg = new Argument<string>("name") { Description = "Module name" };
         var getCmd = new Command("get", "Get module details") { nameArg };
-        getCmd.SetHandler(async ctx =>
+        Handle(getCmd, async ctx =>
         {
-            var name = ctx.ParseResult.GetValueForArgument(nameArg);
+            var name = ctx.ParseResult.GetValue(nameArg);
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var mod = await client.GetModuleAsync(name, ctx.GetCancellationToken());
+            var mod = await client.GetModuleAsync(name, ctx.CancellationToken);
             r.RenderDetail(
                 ("Name", mod.ModuleName),
                 ("Version", mod.Version ?? "—"),
@@ -436,25 +486,25 @@ public static class Program
         });
 
         // tsak module remove <name> [--yes]
-        var removeArg = new Argument<string>("name", "Module name");
+        var removeArg = new Argument<string>("name") { Description = "Module name" };
         var removeCmd = new Command("remove", "Remove a module") { removeArg };
-        removeCmd.SetHandler(async ctx =>
+        Handle(removeCmd, async ctx =>
         {
-            var name = ctx.ParseResult.GetValueForArgument(removeArg);
+            var name = ctx.ParseResult.GetValue(removeArg);
             ConfirmOrAbort(ctx, $"Remove module '{name}'?");
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var result = await client.RemoveModuleAsync(name, ctx.GetCancellationToken());
+            var result = await client.RemoveModuleAsync(name, ctx.CancellationToken);
             r.Success($"Module '{result.ModuleName}' removed.");
         });
 
         // tsak module keygen --out <prefix>  → writes <prefix>.key (private) + <prefix>.pub (public)
-        var keygenOut = new Option<string>("--out", () => "tsak-module", "Output file prefix");
+        var keygenOut = new Option<string>("--out") { DefaultValueFactory = _ => "tsak-module", Description = "Output file prefix" };
         var keygenCmd = new Command("keygen", "Generate an ECDSA signing key pair for module packages")
         { keygenOut };
-        keygenCmd.SetHandler(ctx =>
+        Handle(keygenCmd, ctx =>
         {
-            var prefix = ctx.ParseResult.GetValueForOption(keygenOut)!;
+            var prefix = ctx.ParseResult.GetValue(keygenOut)!;
             var r = CreateRenderer(ctx);
             using var ecdsa = System.Security.Cryptography.ECDsa.Create(
                 System.Security.Cryptography.ECCurve.NamedCurves.nistP256);
@@ -465,14 +515,14 @@ public static class Program
         });
 
         // tsak module sign <file.tpkg> --key <private.pem>  → writes <file.tpkg.sig> (base64)
-        var signFileArg = new Argument<string>("file", "Path to the .tpkg to sign");
-        var signKey = new Option<string>("--key", "Path to the PEM private key") { IsRequired = true };
+        var signFileArg = new Argument<string>("file") { Description = "Path to the .tpkg to sign" };
+        var signKey = new Option<string>("--key") { Description = "Path to the PEM private key", Required = true };
         var signCmd = new Command("sign", "Sign a .tpkg with a private key (produces .tpkg.sig)")
         { signFileArg, signKey };
-        signCmd.SetHandler(ctx =>
+        Handle(signCmd, ctx =>
         {
-            var file = ctx.ParseResult.GetValueForArgument(signFileArg);
-            var keyPath = ctx.ParseResult.GetValueForOption(signKey)!;
+            var file = ctx.ParseResult.GetValue(signFileArg);
+            var keyPath = ctx.ParseResult.GetValue(signKey)!;
             var r = CreateRenderer(ctx);
             var data = File.ReadAllBytes(file);
             var pem = File.ReadAllText(keyPath);
@@ -498,71 +548,71 @@ public static class Program
         });
 
         // tsak module deploy <file.tpkg> [--sig <file.tpkg.sig>]  → upload to the node
-        var deployFileArg = new Argument<string>("file", "Path to the .tpkg to deploy");
-        var deploySig = new Option<string?>("--sig", "Path to the .tpkg.sig (defaults to <file>.sig if present)");
+        var deployFileArg = new Argument<string>("file") { Description = "Path to the .tpkg to deploy" };
+        var deploySig = new Option<string?>("--sig") { Description = "Path to the .tpkg.sig (defaults to <file>.sig if present)" };
         var deployCmd = new Command("deploy", "Upload a .tpkg to the node for hot-deploy")
         { deployFileArg, deploySig };
-        deployCmd.SetHandler(async ctx =>
+        Handle(deployCmd, async ctx =>
         {
-            var file = ctx.ParseResult.GetValueForArgument(deployFileArg);
-            var sigPath = ctx.ParseResult.GetValueForOption(deploySig) ?? (File.Exists(file + ".sig") ? file + ".sig" : null);
+            var file = ctx.ParseResult.GetValue(deployFileArg);
+            var sigPath = ctx.ParseResult.GetValue(deploySig) ?? (File.Exists(file + ".sig") ? file + ".sig" : null);
             var r = CreateRenderer(ctx);
 
-            var bytes = await File.ReadAllBytesAsync(file, ctx.GetCancellationToken());
+            var bytes = await File.ReadAllBytesAsync(file, ctx.CancellationToken);
             string? sigB64 = null;
             if (sigPath is not null)
             {
-                var raw = await File.ReadAllTextAsync(sigPath, ctx.GetCancellationToken());
+                var raw = await File.ReadAllTextAsync(sigPath, ctx.CancellationToken);
                 sigB64 = raw.Trim();
             }
 
             using var client = CreateClient(ctx);
-            var result = await client.UploadModuleAsync(bytes, sigB64, ctx.GetCancellationToken());
+            var result = await client.UploadModuleAsync(bytes, sigB64, ctx.CancellationToken);
             if (result.Success) r.Success($"{result.Message} (module: {result.ModuleName ?? "?"}, v{result.Version ?? "?"})");
             else { r.Error(result.Message); ctx.ExitCode = 1; }
         });
 
         // tsak module validate <file.tpkg> [--sig <file.tpkg.sig>]  → dry-run, installs nothing
-        var validateFileArg = new Argument<string>("file", "Path to the .tpkg to validate");
-        var validateSig = new Option<string?>("--sig", "Path to the .tpkg.sig (defaults to <file>.sig if present)");
+        var validateFileArg = new Argument<string>("file") { Description = "Path to the .tpkg to validate" };
+        var validateSig = new Option<string?>("--sig") { Description = "Path to the .tpkg.sig (defaults to <file>.sig if present)" };
         var validateCmd = new Command("validate", "Validate a .tpkg without installing it") { validateFileArg, validateSig };
-        validateCmd.SetHandler(async ctx =>
+        Handle(validateCmd, async ctx =>
         {
-            var file = ctx.ParseResult.GetValueForArgument(validateFileArg);
-            var sigPath = ctx.ParseResult.GetValueForOption(validateSig) ?? (File.Exists(file + ".sig") ? file + ".sig" : null);
+            var file = ctx.ParseResult.GetValue(validateFileArg);
+            var sigPath = ctx.ParseResult.GetValue(validateSig) ?? (File.Exists(file + ".sig") ? file + ".sig" : null);
             var r = CreateRenderer(ctx);
 
-            var bytes = await File.ReadAllBytesAsync(file, ctx.GetCancellationToken());
-            string? sigB64 = sigPath is not null ? (await File.ReadAllTextAsync(sigPath, ctx.GetCancellationToken())).Trim() : null;
+            var bytes = await File.ReadAllBytesAsync(file, ctx.CancellationToken);
+            string? sigB64 = sigPath is not null ? (await File.ReadAllTextAsync(sigPath, ctx.CancellationToken)).Trim() : null;
 
             using var client = CreateClient(ctx);
-            var result = await client.ValidateModuleAsync(bytes, sigB64, ctx.GetCancellationToken());
+            var result = await client.ValidateModuleAsync(bytes, sigB64, ctx.CancellationToken);
             if (result.Success) r.Success($"{result.Message} (module: {result.ModuleName ?? "?"}, v{result.Version ?? "?"})");
             else { r.Error(result.Message); ctx.ExitCode = 1; }
         });
 
         // tsak module rollback <name>
-        var rollbackArg = new Argument<string>("name", "Module name to roll back");
+        var rollbackArg = new Argument<string>("name") { Description = "Module name to roll back" };
         var rollbackCmd = new Command("rollback", "Roll a module back to its previous version") { rollbackArg };
-        rollbackCmd.SetHandler(async ctx =>
+        Handle(rollbackCmd, async ctx =>
         {
-            var name = ctx.ParseResult.GetValueForArgument(rollbackArg);
+            var name = ctx.ParseResult.GetValue(rollbackArg);
             ConfirmOrAbort(ctx, $"Roll module '{name}' back to the previous version?");
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var result = await client.RollbackModuleAsync(name, ctx.GetCancellationToken());
+            var result = await client.RollbackModuleAsync(name, ctx.CancellationToken);
             if (result.Success) r.Success(result.Message);
             else { r.Error(result.Message); ctx.ExitCode = 1; }
         });
 
-        cmd.AddCommand(listCmd);
-        cmd.AddCommand(getCmd);
-        cmd.AddCommand(removeCmd);
-        cmd.AddCommand(keygenCmd);
-        cmd.AddCommand(signCmd);
-        cmd.AddCommand(deployCmd);
-        cmd.AddCommand(validateCmd);
-        cmd.AddCommand(rollbackCmd);
+        cmd.Add(listCmd);
+        cmd.Add(getCmd);
+        cmd.Add(removeCmd);
+        cmd.Add(keygenCmd);
+        cmd.Add(signCmd);
+        cmd.Add(deployCmd);
+        cmd.Add(validateCmd);
+        cmd.Add(rollbackCmd);
         return cmd;
     }
 
@@ -576,7 +626,7 @@ public static class Program
 
         // tsak scheduler status [--watch] [--interval N]
         var statusCmd = new Command("status", "Show scheduler status");
-        statusCmd.SetHandler(async ctx =>
+        Handle(statusCmd, async ctx =>
         {
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
@@ -600,11 +650,11 @@ public static class Program
 
         // tsak scheduler jobs
         var jobsCmd = new Command("jobs", "List scheduled jobs");
-        jobsCmd.SetHandler(async ctx =>
+        Handle(jobsCmd, async ctx =>
         {
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var result = await client.ListScheduledJobsAsync(ctx.GetCancellationToken());
+            var result = await client.ListScheduledJobsAsync(ctx.CancellationToken);
             r.RenderTable(result.Jobs,
                 ("Context", j => j.Context ?? "—"),
                 ("Job", j => j.JobName),
@@ -616,7 +666,7 @@ public static class Program
 
         // tsak scheduler running [--watch] [--interval N]
         var runningCmd = new Command("running", "List currently running jobs");
-        runningCmd.SetHandler(async ctx =>
+        Handle(runningCmd, async ctx =>
         {
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
@@ -637,84 +687,84 @@ public static class Program
         const string jobContextHelp = "Route context whose scheduler holds the job (required when the key is in several)";
 
         // tsak scheduler start [--context NAME]
-        var startContextOpt = new Option<string?>("--context", "Start only the scheduler of this route context");
+        var startContextOpt = new Option<string?>("--context") { Description = "Start only the scheduler of this route context" };
         var startCmd = new Command("start", "Start the scheduler") { startContextOpt };
-        startCmd.SetHandler(async ctx =>
+        Handle(startCmd, async ctx =>
         {
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
             var result = await client.StartSchedulerAsync(
-                ctx.ParseResult.GetValueForOption(startContextOpt), ctx.GetCancellationToken());
+                ctx.ParseResult.GetValue(startContextOpt), ctx.CancellationToken);
             if (result.Success) r.Success(result.Message);
             else { r.Error(result.Message); ctx.ExitCode = 1; }
         });
 
         // tsak scheduler standby [--context NAME]
-        var standbyContextOpt = new Option<string?>("--context", "Put only the scheduler of this route context in standby");
+        var standbyContextOpt = new Option<string?>("--context") { Description = "Put only the scheduler of this route context in standby" };
         var standbyCmd = new Command("standby", "Put scheduler in standby mode") { standbyContextOpt };
-        standbyCmd.SetHandler(async ctx =>
+        Handle(standbyCmd, async ctx =>
         {
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
             var result = await client.StandbySchedulerAsync(
-                ctx.ParseResult.GetValueForOption(standbyContextOpt), ctx.GetCancellationToken());
+                ctx.ParseResult.GetValue(standbyContextOpt), ctx.CancellationToken);
             if (result.Success) r.Success(result.Message);
             else { r.Error(result.Message); ctx.ExitCode = 1; }
         });
 
         // tsak scheduler pause <key> [--context NAME]
-        var pauseKeyArg = new Argument<string>("key", "Job key (group.name)");
-        var pauseContextOpt = new Option<string?>("--context", jobContextHelp);
+        var pauseKeyArg = new Argument<string>("key") { Description = "Job key (group.name)" };
+        var pauseContextOpt = new Option<string?>("--context") { Description = jobContextHelp };
         var pauseCmd = new Command("pause", "Pause a specific job") { pauseKeyArg, pauseContextOpt };
-        pauseCmd.SetHandler(async ctx =>
+        Handle(pauseCmd, async ctx =>
         {
-            var key = ctx.ParseResult.GetValueForArgument(pauseKeyArg);
+            var key = ctx.ParseResult.GetValue(pauseKeyArg);
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
             var result = await client.PauseJobAsync(
-                key, ctx.ParseResult.GetValueForOption(pauseContextOpt), ctx.GetCancellationToken());
+                key, ctx.ParseResult.GetValue(pauseContextOpt), ctx.CancellationToken);
             if (result.Success) r.Success(result.Message);
             else { r.Error(result.Message); ctx.ExitCode = 1; }
         });
 
         // tsak scheduler resume <key> [--context NAME]
-        var resumeKeyArg = new Argument<string>("key", "Job key (group.name)");
-        var resumeContextOpt = new Option<string?>("--context", jobContextHelp);
+        var resumeKeyArg = new Argument<string>("key") { Description = "Job key (group.name)" };
+        var resumeContextOpt = new Option<string?>("--context") { Description = jobContextHelp };
         var resumeCmd = new Command("resume", "Resume a specific job") { resumeKeyArg, resumeContextOpt };
-        resumeCmd.SetHandler(async ctx =>
+        Handle(resumeCmd, async ctx =>
         {
-            var key = ctx.ParseResult.GetValueForArgument(resumeKeyArg);
+            var key = ctx.ParseResult.GetValue(resumeKeyArg);
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
             var result = await client.ResumeJobAsync(
-                key, ctx.ParseResult.GetValueForOption(resumeContextOpt), ctx.GetCancellationToken());
+                key, ctx.ParseResult.GetValue(resumeContextOpt), ctx.CancellationToken);
             if (result.Success) r.Success(result.Message);
             else { r.Error(result.Message); ctx.ExitCode = 1; }
         });
 
         // tsak scheduler fire <key> [--context NAME]
-        var fireKeyArg = new Argument<string>("key", "Job key (group.name)");
-        var fireContextOpt = new Option<string?>("--context", jobContextHelp);
+        var fireKeyArg = new Argument<string>("key") { Description = "Job key (group.name)" };
+        var fireContextOpt = new Option<string?>("--context") { Description = jobContextHelp };
         var fireCmd = new Command("fire", "Fire a job immediately (out of schedule)") { fireKeyArg, fireContextOpt };
-        fireCmd.SetHandler(async ctx =>
+        Handle(fireCmd, async ctx =>
         {
-            var key = ctx.ParseResult.GetValueForArgument(fireKeyArg);
+            var key = ctx.ParseResult.GetValue(fireKeyArg);
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
             var result = await client.FireJobAsync(
-                key, ctx.ParseResult.GetValueForOption(fireContextOpt), ctx.GetCancellationToken());
+                key, ctx.ParseResult.GetValue(fireContextOpt), ctx.CancellationToken);
             if (result.Success) r.Success(result.Message);
             else { r.Error(result.Message); ctx.ExitCode = 1; }
         });
 
-        cmd.AddCommand(statusCmd);
-        cmd.AddCommand(jobsCmd);
-        cmd.AddCommand(runningCmd);
-        cmd.AddCommand(startCmd);
-        cmd.AddCommand(standbyCmd);
-        cmd.AddCommand(pauseCmd);
-        cmd.AddCommand(resumeCmd);
-        cmd.AddCommand(fireCmd);
+        cmd.Add(statusCmd);
+        cmd.Add(jobsCmd);
+        cmd.Add(runningCmd);
+        cmd.Add(startCmd);
+        cmd.Add(standbyCmd);
+        cmd.Add(pauseCmd);
+        cmd.Add(resumeCmd);
+        cmd.Add(fireCmd);
         return cmd;
     }
 
@@ -728,11 +778,11 @@ public static class Program
 
         // tsak cluster status
         var statusCmd = new Command("status", "Show cluster status");
-        statusCmd.SetHandler(async ctx =>
+        Handle(statusCmd, async ctx =>
         {
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var s = await client.GetClusterStatusAsync(ctx.GetCancellationToken());
+            var s = await client.GetClusterStatusAsync(ctx.CancellationToken);
             r.RenderDetail(
                 ("Enabled", s.Enabled ? "Yes" : "No"),
                 ("Node ID", s.NodeId ?? "—"),
@@ -742,11 +792,11 @@ public static class Program
 
         // tsak cluster nodes
         var nodesCmd = new Command("nodes", "List cluster nodes");
-        nodesCmd.SetHandler(async ctx =>
+        Handle(nodesCmd, async ctx =>
         {
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var result = await client.ListClusterNodesAsync(ctx.GetCancellationToken());
+            var result = await client.ListClusterNodesAsync(ctx.CancellationToken);
             if (!result.Enabled)
             {
                 r.Error("Clustering is not enabled.");
@@ -764,44 +814,44 @@ public static class Program
 
         // tsak cluster rebalance [--yes]
         var rebalanceCmd = new Command("rebalance", "Trigger cluster rebalance");
-        rebalanceCmd.SetHandler(async ctx =>
+        Handle(rebalanceCmd, async ctx =>
         {
             ConfirmOrAbort(ctx, "Trigger cluster rebalance?");
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var result = await client.RebalanceClusterAsync(ctx.GetCancellationToken());
+            var result = await client.RebalanceClusterAsync(ctx.CancellationToken);
             r.Success($"Rebalanced. Epoch: {result.CurrentEpoch}");
         });
 
         // tsak cluster cordon <nodeId>
-        var cordonArg = new Argument<string>("nodeId", "Node id");
+        var cordonArg = new Argument<string>("nodeId") { Description = "Node id" };
         var cordonCmd = new Command("cordon", "Cordon a node (no new work; drain to peers)") { cordonArg };
-        cordonCmd.SetHandler(async ctx =>
+        Handle(cordonCmd, async ctx =>
         {
-            var id = ctx.ParseResult.GetValueForArgument(cordonArg);
+            var id = ctx.ParseResult.GetValue(cordonArg);
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var result = await client.CordonNodeAsync(id, ctx.GetCancellationToken());
+            var result = await client.CordonNodeAsync(id, ctx.CancellationToken);
             r.Success($"Node '{result.NodeId}' cordoned — it will drain and take no new work.");
         });
 
         // tsak cluster uncordon <nodeId>
-        var uncordonArg = new Argument<string>("nodeId", "Node id");
+        var uncordonArg = new Argument<string>("nodeId") { Description = "Node id" };
         var uncordonCmd = new Command("uncordon", "Uncordon a node (resume taking work)") { uncordonArg };
-        uncordonCmd.SetHandler(async ctx =>
+        Handle(uncordonCmd, async ctx =>
         {
-            var id = ctx.ParseResult.GetValueForArgument(uncordonArg);
+            var id = ctx.ParseResult.GetValue(uncordonArg);
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var result = await client.UncordonNodeAsync(id, ctx.GetCancellationToken());
+            var result = await client.UncordonNodeAsync(id, ctx.CancellationToken);
             r.Success($"Node '{result.NodeId}' uncordoned.");
         });
 
-        cmd.AddCommand(statusCmd);
-        cmd.AddCommand(nodesCmd);
-        cmd.AddCommand(rebalanceCmd);
-        cmd.AddCommand(cordonCmd);
-        cmd.AddCommand(uncordonCmd);
+        cmd.Add(statusCmd);
+        cmd.Add(nodesCmd);
+        cmd.Add(rebalanceCmd);
+        cmd.Add(cordonCmd);
+        cmd.Add(uncordonCmd);
         return cmd;
     }
 
@@ -813,18 +863,18 @@ public static class Program
     {
         var cmd = new Command("log", "View runtime logs");
 
-        var limitOption = new Option<int?>("--limit", "Maximum number of entries");
-        var levelOption = new Option<string?>("--level", "Minimum log level (Trace, Debug, Information, Warning, Error, Critical)");
+        var limitOption = new Option<int?>("--limit") { Description = "Maximum number of entries" };
+        var levelOption = new Option<string?>("--level") { Description = "Minimum log level (Trace, Debug, Information, Warning, Error, Critical)" };
 
         // tsak log get [--limit N] [--level LEVEL]
         var getCmd = new Command("get", "Get buffered log entries") { limitOption, levelOption };
-        getCmd.SetHandler(async ctx =>
+        Handle(getCmd, async ctx =>
         {
-            var limit = ctx.ParseResult.GetValueForOption(limitOption);
-            var level = ctx.ParseResult.GetValueForOption(levelOption);
+            var limit = ctx.ParseResult.GetValue(limitOption);
+            var level = ctx.ParseResult.GetValue(levelOption);
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var logs = await client.GetLogsAsync(limit: limit, level: level, ct: ctx.GetCancellationToken());
+            var logs = await client.GetLogsAsync(limit: limit, level: level, ct: ctx.CancellationToken);
             if (!logs.Available)
             {
                 r.Error("Log buffering is not available.");
@@ -838,7 +888,7 @@ public static class Program
                 ("Message", e => e.Message));
         });
 
-        cmd.AddCommand(getCmd);
+        cmd.Add(getCmd);
         return cmd;
     }
 
@@ -851,24 +901,24 @@ public static class Program
         var cmd = new Command("dlq", "Dead-letter queue: browse, replay, discard failed exchanges");
 
         // tsak dlq list [--context] [--route] [--status] [--limit] [--offset]
-        var ctxOpt = new Option<string?>("--context", "Filter by context");
-        var routeOpt = new Option<string?>("--route", "Filter by route id");
-        var statusOpt = new Option<string?>("--status", "Filter by status (pending/replayed/discarded)");
-        var limitOpt = new Option<int?>("--limit", () => 50, "Page size (1..1000)");
-        var offsetOpt = new Option<int?>("--offset", () => 0, "Rows to skip");
+        var ctxOpt = new Option<string?>("--context") { Description = "Filter by context" };
+        var routeOpt = new Option<string?>("--route") { Description = "Filter by route id" };
+        var statusOpt = new Option<string?>("--status") { Description = "Filter by status (pending/replayed/discarded)" };
+        var limitOpt = new Option<int?>("--limit") { DefaultValueFactory = _ => 50, Description = "Page size (1..1000)" };
+        var offsetOpt = new Option<int?>("--offset") { DefaultValueFactory = _ => 0, Description = "Rows to skip" };
         var listCmd = new Command("list", "List dead-lettered exchanges")
         { ctxOpt, routeOpt, statusOpt, limitOpt, offsetOpt };
-        listCmd.SetHandler(async ctx =>
+        Handle(listCmd, async ctx =>
         {
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
             var result = await client.GetFailedExchangesAsync(
-                context: ctx.ParseResult.GetValueForOption(ctxOpt),
-                route: ctx.ParseResult.GetValueForOption(routeOpt),
-                status: ctx.ParseResult.GetValueForOption(statusOpt),
-                limit: ctx.ParseResult.GetValueForOption(limitOpt),
-                offset: ctx.ParseResult.GetValueForOption(offsetOpt),
-                ct: ctx.GetCancellationToken());
+                context: ctx.ParseResult.GetValue(ctxOpt),
+                route: ctx.ParseResult.GetValue(routeOpt),
+                status: ctx.ParseResult.GetValue(statusOpt),
+                limit: ctx.ParseResult.GetValue(limitOpt),
+                offset: ctx.ParseResult.GetValue(offsetOpt),
+                ct: ctx.CancellationToken);
             if (!result.Available)
             {
                 r.Error(result.Error ?? "DLQ not available (no database on this node).");
@@ -886,35 +936,35 @@ public static class Program
         });
 
         // tsak dlq replay <id>
-        var replayArg = new Argument<string>("id", "Entry id (full)");
+        var replayArg = new Argument<string>("id") { Description = "Entry id (full)" };
         var replayCmd = new Command("replay", "Replay a dead-lettered exchange") { replayArg };
-        replayCmd.SetHandler(async ctx =>
+        Handle(replayCmd, async ctx =>
         {
-            var id = ctx.ParseResult.GetValueForArgument(replayArg);
+            var id = ctx.ParseResult.GetValue(replayArg);
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var result = await client.ReplayExchangeAsync(id, ctx.GetCancellationToken());
+            var result = await client.ReplayExchangeAsync(id, ctx.CancellationToken);
             if (result.Success) r.Success(result.Message);
             else { r.Error(result.Message); ctx.ExitCode = 1; }
         });
 
         // tsak dlq discard <id>
-        var discardArg = new Argument<string>("id", "Entry id (full)");
+        var discardArg = new Argument<string>("id") { Description = "Entry id (full)" };
         var discardCmd = new Command("discard", "Discard a dead-lettered exchange") { discardArg };
-        discardCmd.SetHandler(async ctx =>
+        Handle(discardCmd, async ctx =>
         {
-            var id = ctx.ParseResult.GetValueForArgument(discardArg);
+            var id = ctx.ParseResult.GetValue(discardArg);
             ConfirmOrAbort(ctx, $"Discard DLQ entry '{id}'?");
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var result = await client.DiscardExchangeAsync(id, ctx.GetCancellationToken());
+            var result = await client.DiscardExchangeAsync(id, ctx.CancellationToken);
             if (result.Success) r.Success(result.Message);
             else { r.Error(result.Message); ctx.ExitCode = 1; }
         });
 
-        cmd.AddCommand(listCmd);
-        cmd.AddCommand(replayCmd);
-        cmd.AddCommand(discardCmd);
+        cmd.Add(listCmd);
+        cmd.Add(replayCmd);
+        cmd.Add(discardCmd);
         return cmd;
     }
 
@@ -926,39 +976,39 @@ public static class Program
     {
         var cmd = new Command("audit", "Query the persistent admin-action audit trail");
 
-        var actorOption = new Option<string?>("--actor", "Filter by actor (API key id or principal)");
-        var actionOption = new Option<string?>("--action", "Filter by action name (e.g. RemoveContext)");
-        var targetOption = new Option<string?>("--target", "Filter by target resource");
-        var sinceOption = new Option<DateTime?>("--since", "Only entries at or after this UTC time");
-        var untilOption = new Option<DateTime?>("--until", "Only entries at or before this UTC time");
-        var limitOption = new Option<int?>("--limit", () => 50, "Page size (1..1000)");
-        var offsetOption = new Option<int?>("--offset", () => 0, "Rows to skip (pagination)");
+        var actorOption = new Option<string?>("--actor") { Description = "Filter by actor (API key id or principal)" };
+        var actionOption = new Option<string?>("--action") { Description = "Filter by action name (e.g. RemoveContext)" };
+        var targetOption = new Option<string?>("--target") { Description = "Filter by target resource" };
+        var sinceOption = new Option<DateTime?>("--since") { Description = "Only entries at or after this UTC time" };
+        var untilOption = new Option<DateTime?>("--until") { Description = "Only entries at or before this UTC time" };
+        var limitOption = new Option<int?>("--limit") { DefaultValueFactory = _ => 50, Description = "Page size (1..1000)" };
+        var offsetOption = new Option<int?>("--offset") { DefaultValueFactory = _ => 0, Description = "Rows to skip (pagination)" };
 
         // tsak audit [--actor] [--action] [--target] [--since] [--until] [--limit] [--offset]
-        cmd.AddOption(actorOption);
-        cmd.AddOption(actionOption);
-        cmd.AddOption(targetOption);
-        cmd.AddOption(sinceOption);
-        cmd.AddOption(untilOption);
-        cmd.AddOption(limitOption);
-        cmd.AddOption(offsetOption);
+        cmd.Add(actorOption);
+        cmd.Add(actionOption);
+        cmd.Add(targetOption);
+        cmd.Add(sinceOption);
+        cmd.Add(untilOption);
+        cmd.Add(limitOption);
+        cmd.Add(offsetOption);
 
-        cmd.SetHandler(async ctx =>
+        Handle(cmd, async ctx =>
         {
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
 
-            var since = ctx.ParseResult.GetValueForOption(sinceOption);
-            var until = ctx.ParseResult.GetValueForOption(untilOption);
+            var since = ctx.ParseResult.GetValue(sinceOption);
+            var until = ctx.ParseResult.GetValue(untilOption);
             var result = await client.GetAuditAsync(
-                actor: ctx.ParseResult.GetValueForOption(actorOption),
-                action: ctx.ParseResult.GetValueForOption(actionOption),
-                target: ctx.ParseResult.GetValueForOption(targetOption),
+                actor: ctx.ParseResult.GetValue(actorOption),
+                action: ctx.ParseResult.GetValue(actionOption),
+                target: ctx.ParseResult.GetValue(targetOption),
                 since: since is { } s ? new DateTimeOffset(s.ToUniversalTime(), TimeSpan.Zero) : null,
                 until: until is { } u ? new DateTimeOffset(u.ToUniversalTime(), TimeSpan.Zero) : null,
-                limit: ctx.ParseResult.GetValueForOption(limitOption),
-                offset: ctx.ParseResult.GetValueForOption(offsetOption),
-                ct: ctx.GetCancellationToken());
+                limit: ctx.ParseResult.GetValue(limitOption),
+                offset: ctx.ParseResult.GetValue(offsetOption),
+                ct: ctx.CancellationToken);
 
             if (!result.Available)
             {
@@ -975,7 +1025,7 @@ public static class Program
                 ("Status", e => e.StatusCode.ToString()),
                 ("IP", e => e.RemoteIp ?? "—"));
 
-            var offset = ctx.ParseResult.GetValueForOption(offsetOption) ?? 0;
+            var offset = ctx.ParseResult.GetValue(offsetOption) ?? 0;
             var shown = result.Count ?? result.Entries.Length;
             if (shown == (result.Limit ?? 0))
                 r.Success($"Showing {shown} entries from offset {offset}. Use --offset {offset + shown} for the next page.");
@@ -994,11 +1044,11 @@ public static class Program
 
         // tsak auth list
         var listCmd = new Command("list", "List all API keys");
-        listCmd.SetHandler(async ctx =>
+        Handle(listCmd, async ctx =>
         {
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var keys = await client.ListApiKeysAsync(ctx.GetCancellationToken());
+            var keys = await client.ListApiKeysAsync(ctx.CancellationToken);
             r.RenderTable(keys,
                 ("ID", k => k.Id.ToString()),
                 ("Name", k => k.Name),
@@ -1008,23 +1058,23 @@ public static class Program
         });
 
         // tsak auth create --name <name> [--roles r1,r2] [--user-id id] [--expires-at dt]
-        var createNameOption = new Option<string>("--name", "Key name") { IsRequired = true };
-        var createRolesOption = new Option<string[]?>("--roles", "Comma-separated roles");
-        var createUserIdOption = new Option<string?>("--user-id", "Associated user ID");
-        var createExpiresOption = new Option<DateTime?>("--expires-at", "Expiration date/time");
+        var createNameOption = new Option<string>("--name") { Description = "Key name", Required = true };
+        var createRolesOption = new Option<string[]?>("--roles") { Description = "Comma-separated roles" };
+        var createUserIdOption = new Option<string?>("--user-id") { Description = "Associated user ID" };
+        var createExpiresOption = new Option<DateTime?>("--expires-at") { Description = "Expiration date/time" };
         var createCmd = new Command("create", "Create a new API key")
         {
             createNameOption, createRolesOption, createUserIdOption, createExpiresOption
         };
-        createCmd.SetHandler(async ctx =>
+        Handle(createCmd, async ctx =>
         {
-            var name = ctx.ParseResult.GetValueForOption(createNameOption)!;
-            var roles = ctx.ParseResult.GetValueForOption(createRolesOption);
-            var userId = ctx.ParseResult.GetValueForOption(createUserIdOption);
-            var expiresAt = ctx.ParseResult.GetValueForOption(createExpiresOption);
+            var name = ctx.ParseResult.GetValue(createNameOption)!;
+            var roles = ctx.ParseResult.GetValue(createRolesOption);
+            var userId = ctx.ParseResult.GetValue(createUserIdOption);
+            var expiresAt = ctx.ParseResult.GetValue(createExpiresOption);
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var result = await client.CreateApiKeyAsync(name, roles, userId, expiresAt, ctx.GetCancellationToken());
+            var result = await client.CreateApiKeyAsync(name, roles, userId, expiresAt, ctx.CancellationToken);
             r.RenderDetail(
                 ("ID", result.Id.ToString()),
                 ("Key", result.Key),
@@ -1035,21 +1085,21 @@ public static class Program
         });
 
         // tsak auth revoke <id> [--yes]
-        var revokeArg = new Argument<string>("id", "API key ID");
+        var revokeArg = new Argument<string>("id") { Description = "API key ID" };
         var revokeCmd = new Command("revoke", "Revoke an API key") { revokeArg };
-        revokeCmd.SetHandler(async ctx =>
+        Handle(revokeCmd, async ctx =>
         {
-            var id = ctx.ParseResult.GetValueForArgument(revokeArg);
+            var id = ctx.ParseResult.GetValue(revokeArg);
             ConfirmOrAbort(ctx, $"Revoke API key '{id}'?");
             using var client = CreateClient(ctx);
             var r = CreateRenderer(ctx);
-            var result = await client.RevokeApiKeyAsync(id, ctx.GetCancellationToken());
+            var result = await client.RevokeApiKeyAsync(id, ctx.CancellationToken);
             r.Success($"Key {result.Id} revoked.");
         });
 
-        cmd.AddCommand(listCmd);
-        cmd.AddCommand(createCmd);
-        cmd.AddCommand(revokeCmd);
+        cmd.Add(listCmd);
+        cmd.Add(createCmd);
+        cmd.Add(revokeCmd);
         return cmd;
     }
 
@@ -1064,7 +1114,7 @@ public static class Program
 
         // tsak profile list
         var listCmd = new Command("list", "List saved profiles");
-        listCmd.SetHandler(ctx =>
+        Handle(listCmd, ctx =>
         {
             var r = CreateRenderer(ctx);
             var profiles = pm.List();
@@ -1076,27 +1126,27 @@ public static class Program
         });
 
         // tsak profile add --name <name> --url <url> [--key <key>]
-        var addNameOpt = new Option<string>("--name", "Profile name") { IsRequired = true };
-        var addUrlOpt = new Option<string>("--url", "Runtime URL") { IsRequired = true };
-        var addKeyOpt = new Option<string?>("--key", "API key");
+        var addNameOpt = new Option<string>("--name") { Description = "Profile name", Required = true };
+        var addUrlOpt = new Option<string>("--url") { Description = "Runtime URL", Required = true };
+        var addKeyOpt = new Option<string?>("--key") { Description = "API key" };
         var addCmd = new Command("add", "Add a new profile") { addNameOpt, addUrlOpt, addKeyOpt };
-        addCmd.SetHandler(ctx =>
+        Handle(addCmd, ctx =>
         {
             var r = CreateRenderer(ctx);
-            var name = ctx.ParseResult.GetValueForOption(addNameOpt)!;
-            var url = ctx.ParseResult.GetValueForOption(addUrlOpt)!;
-            var key = ctx.ParseResult.GetValueForOption(addKeyOpt);
+            var name = ctx.ParseResult.GetValue(addNameOpt)!;
+            var url = ctx.ParseResult.GetValue(addUrlOpt)!;
+            var key = ctx.ParseResult.GetValue(addKeyOpt);
             pm.Save(new ConnectionProfile { Name = name, Url = url, ApiKey = key });
             r.Success($"Profile '{name}' saved.");
         });
 
         // tsak profile remove <name>
-        var removeArg = new Argument<string>("name", "Profile name");
+        var removeArg = new Argument<string>("name") { Description = "Profile name" };
         var removeCmd = new Command("remove", "Remove a profile") { removeArg };
-        removeCmd.SetHandler(ctx =>
+        Handle(removeCmd, ctx =>
         {
             var r = CreateRenderer(ctx);
-            var name = ctx.ParseResult.GetValueForArgument(removeArg);
+            var name = ctx.ParseResult.GetValue(removeArg);
             if (pm.Delete(name))
                 r.Success($"Profile '{name}' removed.");
             else
@@ -1104,12 +1154,12 @@ public static class Program
         });
 
         // tsak profile use <name>
-        var useArg = new Argument<string>("name", "Profile name to activate");
+        var useArg = new Argument<string>("name") { Description = "Profile name to activate" };
         var useCmd = new Command("use", "Set the active profile") { useArg };
-        useCmd.SetHandler(ctx =>
+        Handle(useCmd, ctx =>
         {
             var r = CreateRenderer(ctx);
-            var name = ctx.ParseResult.GetValueForArgument(useArg);
+            var name = ctx.ParseResult.GetValue(useArg);
             try
             {
                 pm.SetActive(name);
@@ -1122,10 +1172,10 @@ public static class Program
             }
         });
 
-        cmd.AddCommand(listCmd);
-        cmd.AddCommand(addCmd);
-        cmd.AddCommand(removeCmd);
-        cmd.AddCommand(useCmd);
+        cmd.Add(listCmd);
+        cmd.Add(addCmd);
+        cmd.Add(removeCmd);
+        cmd.Add(useCmd);
         return cmd;
     }
 }

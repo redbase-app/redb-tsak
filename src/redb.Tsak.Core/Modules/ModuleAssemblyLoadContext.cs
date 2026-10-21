@@ -25,6 +25,19 @@ public sealed class ModuleAssemblyLoadContext : AssemblyLoadContext
     }
 
     /// <summary>
+    /// The companion assemblies of the package this context belongs to. They load into the Default context, shared
+    /// by name across packages, yet they are the module's code: its type resolver searches them along with
+    /// <see cref="AssemblyLoadContext.Assemblies"/>.
+    /// </summary>
+    internal IReadOnlyList<Assembly> Companions { get; set; } = [];
+
+    /// <summary>
+    /// The manifest of the package this context belongs to, null for a module loaded from a bare DLL: its
+    /// <see cref="ModuleManifest.Dependencies"/> order the contexts of the package's modules at start.
+    /// </summary>
+    internal ModuleManifest? Manifest { get; set; }
+
+    /// <summary>
     /// Unloads if collectible; no-op otherwise. Safe to call unconditionally.
     /// </summary>
     public void TryUnload()

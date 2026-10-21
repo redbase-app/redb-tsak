@@ -43,6 +43,9 @@ public class TsakContextManager : ITsakContextManager
     // an instance whose creation failed must not appear in a list that offers to query it.
     private readonly ConcurrentDictionary<string, List<RedbInstanceInfo>> _namedRedbInstances = new(StringComparer.OrdinalIgnoreCase);
 
+    // The save interceptors modules subscribed through their context, removed with the context.
+    private readonly ConcurrentDictionary<string, ContextSaveInterceptors> _saveInterceptors = new(StringComparer.OrdinalIgnoreCase);
+
     private const string AutoStartKeyPrefix = "context:autostart:";
 
     public TsakContextManager(
@@ -86,6 +89,14 @@ public class TsakContextManager : ITsakContextManager
         var loggerFactory = serviceProvider.GetService<ILoggerFactory>();
         var context = new RouteContext(serviceProvider, contextName, loggerFactory);
 
+        // A module cannot reach the host's DI, so its save interceptors go through the context and live as long as it.
+        var saveInterceptorRegistry = serviceProvider.GetService<redb.Core.Interception.IRedbSaveInterceptorRegistry>();
+        var saveInterceptors = saveInterceptorRegistry is null
+            ? null
+            : new ContextSaveInterceptors(saveInterceptorRegistry, contextName);
+        if (saveInterceptors is not null)
+            context.AddService(typeof(ITsakSaveInterceptors), saveInterceptors);
+
         // The checkpoint DLQ goes on when the context starts (InstallCheckpointDlq), after the module configured
         // its context: an error handler of the module's own then runs after the capture instead of colliding with it.
         // tsak-dlq: is there from the start, for the OnException bodies that dead-letter a failure they took.
@@ -124,7 +135,7 @@ public class TsakContextManager : ITsakContextManager
         }
 
         // Register named IRedbService instances from "Redb" config section
-        RegisterNamedRedbServices(context, contextName, configuration);
+        RegisterNamedRedbServices(context, contextName, configuration, saveInterceptorRegistry);
 
         // Wire route-level state persistence callback
         context.OnBeforeRoutesStart = async routes =>
@@ -182,9 +193,13 @@ public class TsakContextManager : ITsakContextManager
 
         if (!_contexts.TryAdd(contextName, context))
         {
+            saveInterceptors?.Dispose();
             context.Dispose();
             throw new InvalidOperationException($"Context '{contextName}' already exists.");
         }
+
+        if (saveInterceptors is not null)
+            _saveInterceptors[contextName] = saveInterceptors;
 
         _auditService?.RegisterContext(contextName, context);
         _logger.LogInformation("Created context {Context}", contextName);
@@ -356,6 +371,11 @@ public class TsakContextManager : ITsakContextManager
         if (context.IsStarted)
             await context.Stop(CancellationToken.None);
 
+        // The module's save interceptors go before anything else of the context: the registry must hold no reference
+        // to a type of the module by the time its AssemblyLoadContext unloads.
+        if (_saveInterceptors.TryRemove(contextName, out var saveInterceptors))
+            saveInterceptors.Dispose();
+
         _namedRedbInstances.TryRemove(contextName, out _);
         // Dispose named redb mini-containers before context disposal
         if (_namedRedbContainers.TryRemove(contextName, out var containers))
@@ -447,7 +467,8 @@ public class TsakContextManager : ITsakContextManager
     /// backend is offline.
     /// </para>
     /// </summary>
-    private void RegisterNamedRedbServices(IRouteContext context, string contextName, IDictionary<string, object?> configuration)
+    private void RegisterNamedRedbServices(IRouteContext context, string contextName, IDictionary<string, object?> configuration,
+        redb.Core.Interception.IRedbSaveInterceptorRegistry? saveInterceptorRegistry)
     {
         if (!configuration.TryGetValue("Redb", out var redbSection) || redbSection is not IDictionary<string, object?> redbDict)
             return;
@@ -485,7 +506,8 @@ public class TsakContextManager : ITsakContextManager
 
             try
             {
-                var (service, container) = RedbInstanceFactory.Create(name, effectiveConfig, fallbackLicense, _logger);
+                var (service, container) = RedbInstanceFactory.Create(
+                    name, effectiveConfig, fallbackLicense, _logger, saveInterceptorRegistry);
 
                 // Register the scope factory so that named services can be resolved
                 // per-exchange (thread-safe). The singleton is kept as a fallback for

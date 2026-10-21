@@ -134,7 +134,7 @@ Per-context keys:
 |-----|------|---------|-------------|
 | `AutoStart` | `bool` | `false` | Start context automatically when worker starts. |
 | `Modules` | `string[]` | `[]` | Module names assigned to this context. |
-| `Dependencies` | `string[]` | `[]` | Other contexts that must start first. |
+| `Dependencies` | `string[]` | `[]` | Other contexts that must start first. The worker adds the contexts of the modules and packages the modules depend on (`ITsakModule.Dependencies`, the `Dependencies` of a package manifest). |
 
 Any additional keys become custom context properties accessible by modules at runtime.
 
@@ -241,7 +241,7 @@ The worker integrates [Quartz.NET](https://www.quartz-scheduler.net/) for cron-t
 | `Quartz:quartz.threadPool.threadCount` | `10` | Scheduler thread pool size. |
 | `Quartz:quartz.jobStore.type` | `JobStoreTX` | ADO.NET job store for persistence. |
 | `Quartz:quartz.jobStore.clustered` | `true` | Enable Quartz clustering (requires shared database). |
-| `Quartz:quartz.scheduler.instanceId` | `AUTO` | Unique scheduler instance ID (auto-generated). |
+| `Quartz:quartz.scheduler.instanceId` | `NODE` | Scheduler instance ID of every context: `NODE` takes the node id (`Tsak:Cluster:NodeId`, or the host name), `AUTO` lets Quartz draw one per start, any other value is used as written. See the README, "Node identity and Quartz instance". |
 | `Quartz:quartz.scheduler.instanceName` | `TsakScheduler` | Scheduler name. With AdoJobStore, `TsakScheduler` or an empty name becomes `TsakScheduler-{Tsak:Cluster:ClusterName}`, so each Tsak cluster on a shared database is its own Quartz cluster; any other name is kept. |
 
 Quartz tables are auto-created from embedded SQL scripts (`tables_postgres.sql` / `tables_sqlServer.sql`).

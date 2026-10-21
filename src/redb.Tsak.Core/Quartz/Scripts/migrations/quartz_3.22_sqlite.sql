@@ -1,0 +1,101 @@
+-- Quartz.NET 3.22 schema migration for redb.Tsak (sqlite), for the administrator.
+--
+-- The Tsak worker adds the columns below itself at start (QuartzSchemaInitializer), under a lock, when its
+-- database role may ALTER the Quartz tables. Run this script when it may not (the worker then logs a warning
+-- naming this file), or to apply the index alignment, which the worker never does on its own.
+--
+--   3.17 MISFIRE_ORIG_FIRE_TIME: ScheduledFireTimeUtc keeps the time a misfired trigger was due.
+--   3.18 EXECUTION_GROUP: the per-node limit of execution groups is applied in the acquire query.
+--   3.19 PREFERRED_NODE, PREFERRED_NODE_AUTO: node affinity in a cluster (both or neither).
+--   3.20 index alignment: performance only; drops and creates indexes, so run it in a quiet window.
+--
+-- RUN ONCE. SQLite has no conditional ADD COLUMN: the column part fails with a duplicate-column error when run again. Check PRAGMA table_info(QRTZ_TRIGGERS) and PRAGMA table_info(QRTZ_FIRED_TRIGGERS) first and skip the columns that are there. The index part checks first.
+-- Tables carry the QRTZ_ prefix Tsak configures. Taken from the Quartz.NET 3.x migrations (Apache License 2.0),
+-- database/migrations/3.17 to 3.20 of github.com/quartznet/quartznet.
+--
+-- !! FIRST RUN IN A TEST ENVIRONMENT AGAINST A COPY OF YOUR PRODUCTION DATABASE !!
+
+-- ==== 3.17 add misfire orig fire time ====
+
+ALTER TABLE QRTZ_TRIGGERS ADD COLUMN MISFIRE_ORIG_FIRE_TIME INTEGER NULL;
+
+-- ==== 3.18 add execution group ====
+
+ALTER TABLE QRTZ_TRIGGERS ADD COLUMN EXECUTION_GROUP NVARCHAR(200) NULL;
+
+ALTER TABLE QRTZ_FIRED_TRIGGERS ADD COLUMN EXECUTION_GROUP NVARCHAR(200) NULL;
+
+-- ==== 3.19 add preferred node ====
+
+ALTER TABLE QRTZ_TRIGGERS ADD COLUMN PREFERRED_NODE NVARCHAR(200) NULL;
+
+ALTER TABLE QRTZ_TRIGGERS ADD COLUMN PREFERRED_NODE_AUTO BIT NOT NULL DEFAULT 0;
+
+-- ==== 3.20 index alignment ====
+
+-- === Create the indexes this version expects ===================================
+
+CREATE INDEX IF NOT EXISTS IDX_QRTZ_J_REQ_RECOVERY ON QRTZ_JOB_DETAILS(SCHED_NAME,REQUESTS_RECOVERY);
+
+CREATE INDEX IF NOT EXISTS IDX_QRTZ_J_G_N ON QRTZ_JOB_DETAILS(SCHED_NAME,JOB_GROUP,JOB_NAME);
+
+CREATE INDEX IF NOT EXISTS IDX_QRTZ_T_J ON QRTZ_TRIGGERS(SCHED_NAME,JOB_NAME,JOB_GROUP);
+
+CREATE INDEX IF NOT EXISTS IDX_QRTZ_T_C ON QRTZ_TRIGGERS(SCHED_NAME,CALENDAR_NAME);
+
+CREATE INDEX IF NOT EXISTS IDX_QRTZ_T_G_N ON QRTZ_TRIGGERS(SCHED_NAME,TRIGGER_GROUP,TRIGGER_NAME);
+
+CREATE INDEX IF NOT EXISTS IDX_QRTZ_T_NEXT_FIRE_TIME ON QRTZ_TRIGGERS(SCHED_NAME,NEXT_FIRE_TIME);
+
+CREATE INDEX IF NOT EXISTS IDX_QRTZ_T_NFT_ST ON QRTZ_TRIGGERS(SCHED_NAME,TRIGGER_STATE,NEXT_FIRE_TIME);
+
+CREATE INDEX IF NOT EXISTS IDX_QRTZ_FT_INST_JOB_REQ_RCVRY ON QRTZ_FIRED_TRIGGERS(SCHED_NAME,INSTANCE_NAME,REQUESTS_RECOVERY);
+
+CREATE INDEX IF NOT EXISTS IDX_QRTZ_FT_J_G ON QRTZ_FIRED_TRIGGERS(SCHED_NAME,JOB_NAME,JOB_GROUP);
+
+CREATE INDEX IF NOT EXISTS IDX_QRTZ_FT_T_G ON QRTZ_FIRED_TRIGGERS(SCHED_NAME,TRIGGER_NAME,TRIGGER_GROUP);
+
+-- === Drop the ones it no longer uses ==========================================
+-- Guarded, so each is a no-op when that index is not present.
+
+DROP INDEX IF EXISTS IDX_QRTZ_J_GRP;
+
+DROP INDEX IF EXISTS IDX_QRTZ_T_G_J;
+
+DROP INDEX IF EXISTS IDX_QRTZ_T_JG;
+
+DROP INDEX IF EXISTS IDX_QRTZ_T_G;
+
+DROP INDEX IF EXISTS IDX_QRTZ_T_STATE;
+
+DROP INDEX IF EXISTS IDX_QRTZ_T_N_STATE;
+
+DROP INDEX IF EXISTS IDX_QRTZ_T_N_G_STATE;
+
+DROP INDEX IF EXISTS IDX_QRTZ_T_NFT_MISFIRE;
+
+DROP INDEX IF EXISTS IDX_QRTZ_T_NFT_ST_MISFIRE_GRP;
+
+DROP INDEX IF EXISTS IDX_QRTZ_T_NFT_ST_MISFIRE;
+
+DROP INDEX IF EXISTS IDX_QRTZ_FT_G_J;
+
+DROP INDEX IF EXISTS IDX_QRTZ_FT_G_T;
+
+DROP INDEX IF EXISTS IDX_QRTZ_FT_JG;
+
+DROP INDEX IF EXISTS IDX_QRTZ_FT_TG;
+
+DROP INDEX IF EXISTS IDX_QRTZ_FT_TRIG_INST_NAME;
+
+DROP INDEX IF EXISTS IDX_QRTZ_FT_TRIG_NM_GP;
+
+DROP INDEX IF EXISTS IDX_QRTZ_FT_TRIG_NAME;
+
+DROP INDEX IF EXISTS IDX_QRTZ_FT_TRIG_GROUP;
+
+DROP INDEX IF EXISTS IDX_QRTZ_FT_JOB_NAME;
+
+DROP INDEX IF EXISTS IDX_QRTZ_FT_JOB_GROUP;
+
+DROP INDEX IF EXISTS IDX_QRTZ_FT_JOB_REQ_RECOVERY;

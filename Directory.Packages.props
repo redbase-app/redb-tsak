@@ -1,0 +1,105 @@
+<Project>
+  <!--
+    Central package versions for every redb.Tsak project and for the public redb-tsak mirror, which carries this file
+    next to Directory.Build.props (RELEASE_ARTIFACTS.md, E28). Projects name a package without a version; the version
+    lives here.
+
+    Versions shared with other redb modules (Microsoft.Extensions.*, Microsoft.AspNetCore.*, Microsoft.IdentityModel.*,
+    Serilog, the test stack) are written in each module's own Directory.Packages.props and must stay equal across
+    them: redb.Identity modules load into the Tsak worker next to the worker's own copies.
+
+    The packages that guard security (System.Security.Cryptography.Xml / .Pkcs, MailKit / MimeKit, MessagePack, the
+    SignalR client and protocols) get their PackageVersion from the redb security baseline (Directory.Build.targets at
+    the repository root) and nowhere else: this file must not list them (NU1506 is an error).
+
+    Not under central management: the tsak-worker template (templates/), which keeps its versions in its own file.
+  -->
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally Condition="'$(ManagePackageVersionsCentrally)' == ''">true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+
+  <!-- Microsoft.Extensions.* and Microsoft.AspNetCore.* (the .NET 10 servicing line shared by all modules). -->
+  <ItemGroup>
+    <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.Json" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.13" />
+  </ItemGroup>
+
+  <!--
+    Microsoft.IdentityModel.* and System.IdentityModel.Tokens.Jwt: one version, the one redb.Identity builds its
+    modules with (see the pin in redb.Tsak.Worker.csproj).
+  -->
+  <ItemGroup>
+    <PackageVersion Include="Microsoft.IdentityModel.Abstractions" Version="8.23.0" />
+    <PackageVersion Include="Microsoft.IdentityModel.JsonWebTokens" Version="8.23.0" />
+    <PackageVersion Include="Microsoft.IdentityModel.Logging" Version="8.23.0" />
+    <PackageVersion Include="Microsoft.IdentityModel.Protocols" Version="8.23.0" />
+    <PackageVersion Include="Microsoft.IdentityModel.Protocols.OpenIdConnect" Version="8.23.0" />
+    <PackageVersion Include="Microsoft.IdentityModel.Tokens" Version="8.23.0" />
+    <PackageVersion Include="System.IdentityModel.Tokens.Jwt" Version="8.23.0" />
+  </ItemGroup>
+
+  <!--
+    OpenTelemetry. The Prometheus exporter and the process instrumentation have no stable release: each is on the
+    latest preview of its own channel that takes OpenTelemetry 1.20.
+  -->
+  <ItemGroup>
+    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.20.0" />
+    <PackageVersion Include="OpenTelemetry.Exporter.Prometheus.HttpListener" Version="1.20.0-beta.1" />
+    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.20.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.Process" Version="1.20.0-rc.1" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.Runtime" Version="1.20.0" />
+  </ItemGroup>
+
+  <!-- Scheduler: 3.x, Quartz 4 targets .NET 10 only. Logging. The CLI. -->
+  <ItemGroup>
+    <PackageVersion Include="Quartz.Extensions.DependencyInjection" Version="3.22.6" />
+    <PackageVersion Include="Quartz.Extensions.Hosting" Version="3.22.6" />
+    <PackageVersion Include="Quartz.Serialization.Json" Version="3.22.6" />
+    <PackageVersion Include="Serilog" Version="4.4.0" />
+    <PackageVersion Include="Serilog.AspNetCore" Version="10.0.0" />
+    <PackageVersion Include="Serilog.Enrichers.Environment" Version="3.0.1" />
+    <PackageVersion Include="Serilog.Enrichers.Process" Version="3.0.0" />
+    <PackageVersion Include="Serilog.Enrichers.Thread" Version="4.0.0" />
+    <PackageVersion Include="Serilog.Sinks.Console" Version="6.1.1" />
+    <PackageVersion Include="Serilog.Sinks.File" Version="7.0.0" />
+    <PackageVersion Include="Spectre.Console" Version="0.57.2" />
+    <PackageVersion Include="System.CommandLine" Version="2.0.13" />
+    <PackageVersion Include="YamlDotNet" Version="18.1.0" />
+  </ItemGroup>
+
+  <!--
+    Tests. AwesomeAssertions (Apache 2.0) replaces FluentAssertions, which is under a commercial licence from 8.0.
+    xunit.runner.visualstudio 4.x still runs xunit v2 tests.
+  -->
+  <ItemGroup>
+    <PackageVersion Include="AwesomeAssertions" Version="9.6.0" />
+    <PackageVersion Include="coverlet.collector" Version="10.1.0" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
+    <PackageVersion Include="NSubstitute" Version="6.2.0" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.1" />
+  </ItemGroup>
+
+  <!-- redb packages: the monorepo ProjectReferences, rewritten for the public repository. -->
+  <ItemGroup>
+    <PackageVersion Include="redb.Core" Version="4.4.0" />
+    <PackageVersion Include="redb.Core.Pro" Version="4.4.0" />
+    <PackageVersion Include="redb.MSSql" Version="4.4.0" />
+    <PackageVersion Include="redb.MSSql.Pro" Version="4.4.0" />
+    <PackageVersion Include="redb.Postgres" Version="4.4.0" />
+    <PackageVersion Include="redb.Postgres.Pro" Version="4.4.0" />
+    <PackageVersion Include="redb.Route.Core" Version="4.4.0" />
+    <PackageVersion Include="redb.Route.Http" Version="4.4.0" />
+    <PackageVersion Include="redb.Route.Quartz" Version="4.4.0" />
+    <PackageVersion Include="redb.Route.Sql" Version="4.4.0" />
+    <PackageVersion Include="redb.Route.Xml" Version="4.4.0" />
+    <PackageVersion Include="redb.SQLite" Version="4.4.0" />
+    <PackageVersion Include="redb.SQLite.Pro" Version="4.4.0" />
+    <PackageVersion Include="redb.Tsak.Core.Pro" Version="4.4.0" />
+    <PackageVersion Include="redb.Tsak.Web.Pro" Version="4.4.0" />
+  </ItemGroup>
+</Project>
+

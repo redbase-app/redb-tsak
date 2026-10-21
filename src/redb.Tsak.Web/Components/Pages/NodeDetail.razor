@@ -833,12 +833,14 @@ else
         _ => "warning"
     };
 
+    // Blocked is a job that does not run concurrently while it executes (Quartz 3.17+ reports it so instead of
+    // Complete): nothing is wrong. Error is the state of a trigger Quartz gave up on.
     private static string GetTriggerBadge(string state) => state switch
     {
         "Normal" => "online",
         "Paused" => "warning",
-        "Complete" => "info",
-        "Blocked" => "error",
+        "Complete" or "Blocked" => "info",
+        "Error" => "error",
         _ => "offline"
     };
 

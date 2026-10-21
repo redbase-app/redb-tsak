@@ -26,21 +26,27 @@
     <EmbeddedResource Include="Dlq\Scripts\dlq_sqlite.sql" LogicalName="DlqSchema.Sqlite" />
   </ItemGroup>
 
+  <!-- The administrator's Quartz migration scripts ship beside the worker, in sql/quartz/: the image and the archive
+       carry them, and the worker names the file in its warning when its role may not alter the Quartz tables. -->
   <ItemGroup>
-    <PackageReference Include="Serilog" Version="4.2.0" />
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.3" />
-    <PackageReference Include="Quartz.Extensions.DependencyInjection" Version="3.16.0" />
-    <PackageReference Include="Quartz.Extensions.Hosting" Version="3.16.0" />
-    <PackageReference Include="Quartz.Serialization.Json" Version="3.16.0" />
+    <None Include="Quartz\Scripts\migrations\*.sql" Link="sql\quartz\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Serilog" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="Quartz.Extensions.DependencyInjection" />
+    <PackageReference Include="Quartz.Extensions.Hosting" />
+    <PackageReference Include="Quartz.Serialization.Json" />
     <!-- OpenTelemetry stable line 1.15 → 1.16 fixes the OTLP exporter CVEs:
          GHSA-4625-4j76-fww9 + GHSA-mr8r-92fq-pj8p + GHSA-q834-8qmm-v933 (NU1902).
          The two -beta packages don't ship a 1.16.0-beta yet (latest is 1.15.1-beta.1);
          keep them on the newest available beta. -->
-    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.16.0" />
-    <PackageReference Include="OpenTelemetry.Exporter.Prometheus.HttpListener" Version="1.15.1-beta.1" />
-    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.16.0" />
-    <PackageReference Include="OpenTelemetry.Instrumentation.Process" Version="1.15.1-beta.1" />
-    <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.15.1" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" />
+    <PackageReference Include="OpenTelemetry.Exporter.Prometheus.HttpListener" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Process" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" />
   </ItemGroup>
 
   <!--
@@ -55,21 +61,20 @@
   -->
   <ItemGroup>
     <ProjectReference Include="..\redb.Tsak.Contracts\redb.Tsak.Contracts.csproj" />
-    <PackageReference Include="redb.Core" Version="4.3.0" />
-    <PackageReference Include="redb.Core.Pro" Version="4.3.0" />
-    <PackageReference Include="redb.Route.Core" Version="4.3.0" />
-    <PackageReference Include="redb.Route.Xml" Version="4.3.0" />
-    <PackageReference Include="redb.Route.Http" Version="4.3.0" />
-    <PackageReference Include="redb.Route.Quartz" Version="4.3.0" />
-    <PackageReference Include="redb.Route.Sql" Version="4.3.0" />
-    <PackageReference Include="redb.Postgres" Version="4.3.0" />
-    <PackageReference Include="redb.Postgres.Pro" Version="4.3.0" />
-    <PackageReference Include="redb.MSSql" Version="4.3.0" />
-    <PackageReference Include="redb.MSSql.Pro" Version="4.3.0" />
-    <PackageReference Include="redb.SQLite" Version="4.3.0" />
-    <PackageReference Include="redb.SQLite.Pro" Version="4.3.0" />
+    <PackageReference Include="redb.Core" />
+    <PackageReference Include="redb.Core.Pro" />
+    <PackageReference Include="redb.Route.Core" />
+    <PackageReference Include="redb.Route.Xml" />
+    <PackageReference Include="redb.Route.Http" />
+    <PackageReference Include="redb.Route.Quartz" />
+    <PackageReference Include="redb.Route.Sql" />
+    <PackageReference Include="redb.Postgres" />
+    <PackageReference Include="redb.Postgres.Pro" />
+    <PackageReference Include="redb.MSSql" />
+    <PackageReference Include="redb.MSSql.Pro" />
+    <PackageReference Include="redb.SQLite" />
+    <PackageReference Include="redb.SQLite.Pro" />
   </ItemGroup>
 
 </Project>
-
 

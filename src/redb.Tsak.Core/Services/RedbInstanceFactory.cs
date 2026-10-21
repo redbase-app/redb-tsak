@@ -22,12 +22,17 @@ internal static class RedbInstanceFactory
     /// <param name="config">Config dictionary (Provider, ConnectionString, UsePro, License, etc.).</param>
     /// <param name="fallbackLicense">Fallback license from Tsak:Redb:License if not specified per instance.</param>
     /// <param name="logger">Optional logger for diagnostics.</param>
+    /// <param name="saveInterceptorRegistry">
+    /// The host's registry of save interceptors: given, the instance runs the interceptors modules subscribed through
+    /// their contexts, as the host's redb service does.
+    /// </param>
     /// <returns>Tuple of the service and its mini-container (caller must dispose container).</returns>
     public static (IRedbService Service, ServiceProvider Container) Create(
         string name,
         IDictionary<string, object?> config,
         string? fallbackLicense,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        redb.Core.Interception.IRedbSaveInterceptorRegistry? saveInterceptorRegistry = null)
     {
         var provider = GetString(config, "Provider");
         var connectionString = GetString(config, "ConnectionString");
@@ -41,6 +46,10 @@ internal static class RedbInstanceFactory
         var license = GetString(config, "License") ?? fallbackLicense;
 
         var services = new ServiceCollection();
+
+        // AddRedb keeps a registry already in the container (TryAdd), so the instance shares the host's.
+        if (saveInterceptorRegistry is not null)
+            services.AddSingleton(saveInterceptorRegistry);
 
         if (usePro)
         {

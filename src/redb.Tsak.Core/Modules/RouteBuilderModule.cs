@@ -23,6 +23,10 @@ public class RouteBuilderModule : ITsakModule
 
     public string ModuleName { get; }
     public string Version { get; }
+
+    /// <summary>The assembly the module's route builder comes from.</summary>
+    internal System.Reflection.Assembly ModuleAssembly => _builder.GetType().Assembly;
+
     public string Description => $"RouteBuilder module: {_builder.GetType().FullName}";
     public IReadOnlyList<string> Dependencies => [];
     public bool CanInitialize => true;

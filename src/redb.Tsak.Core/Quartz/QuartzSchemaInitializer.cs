@@ -54,11 +54,30 @@ internal sealed class QuartzSchemaInitializer : IHostedService
 
         await using var conn = AuditStorage.CreateConnection(dialect.Provider, connStr);
         await conn.OpenAsync(cancellationToken);
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-        await cmd.ExecuteNonQueryAsync(cancellationToken);
+        await ApplyAsync(conn, QuartzSchemaMigration.For(dialect.Provider), sql, _logger, cancellationToken);
 
         _logger.LogInformation("Quartz schema applied successfully");
+    }
+
+    /// <summary>
+    /// Runs the create script and adds the columns newer Quartz releases probe for, both under one lock, so nodes
+    /// starting together neither race on CREATE nor add a column twice.
+    /// </summary>
+    internal static async Task ApplyAsync(System.Data.Common.DbConnection connection, QuartzSchemaMigration migration,
+        string createScript, ILogger logger, CancellationToken ct)
+    {
+        var transaction = await migration.LockAsync(connection, ct);
+        var succeeded = false;
+        try
+        {
+            await QuartzSchemaMigration.ExecuteAsync(connection, transaction, createScript, ct);
+            await migration.AddMissingColumnsAsync(connection, transaction, logger, ct);
+            succeeded = true;
+        }
+        finally
+        {
+            await migration.UnlockAsync(connection, transaction, succeeded);
+        }
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;

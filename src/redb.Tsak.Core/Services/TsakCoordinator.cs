@@ -388,6 +388,16 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
         var contextConfig = GetContextConfig(contextName, modules);
         var context = _contextManager.CreateContext(contextName, _serviceProvider, contextConfig);
 
+        // Type names in the modules' routes (bean:, <bean class>, outputClass) resolve to the modules' own classes
+        // first. Registered before the modules initialize, so one of them may still put a resolver of its own.
+        context.AddService(typeof(redb.Route.Abstractions.IBeanTypeResolver), Modules.ModuleTypeResolver.For(modules));
+
+        // The redb schemes the modules read go into the cache before they start (only read, nothing synced). The
+        // service is the one a module gets from context.GetRedbService().
+        if ((context.GetService<redb.Core.IRedbService>()
+             ?? context.GetServiceProvider()?.GetService(typeof(redb.Core.IRedbService))) is redb.Core.IRedbService redb)
+            await Modules.ModuleSchemeWarmup.WarmAsync(redb, modules, _logger).ConfigureAwait(false);
+
         // Initialize all modules in this context. A module's exception is logged and swallowed — one bad
         // module must not crash the node or keep the rest of its context down — but it is REPORTED, so a
         // hot swap, a package reload or a cluster assignment can react (roll back, mark Failed).
@@ -934,6 +944,14 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
         return [];
     }
 
+    /// <summary>The package manifest of a module, null for a module of no package (a bare DLL, a static module).</summary>
+    internal static Modules.ModuleManifest? PackageOf(ITsakModule module) => module switch
+    {
+        Modules.XmlRouteModule xml => xml.Manifest,
+        _ => System.Runtime.Loader.AssemblyLoadContext.GetLoadContext(module.GetType().Assembly)
+            is Modules.ModuleAssemblyLoadContext { Manifest: { } manifest } ? manifest : null,
+    };
+
     /// <summary>
     /// Topologically sorts context entries by their declared Dependencies.
     /// Contexts with no dependencies come first. Cyclic dependencies are detected and logged.
@@ -952,6 +970,34 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
         {
             entryMap[entry.Name] = entry;
             depMap[entry.Name] = GetContextDependencies(entry.Name, entry.Modules);
+        }
+
+        // Dependencies the modules declare themselves name modules or packages, not contexts: ITsakModule.Dependencies
+        // and the package manifest's Dependencies (the rule the hot reload orders packages by). Each name stands
+        // for the contexts of this batch that run a module of that name or of that package.
+        var contextsByName = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        void Provide(string? name, string context)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return;
+            if (!contextsByName.TryGetValue(name, out var contexts))
+                contextsByName[name] = contexts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            contexts.Add(context);
+        }
+        foreach (var entry in entries)
+            foreach (var module in entry.Modules)
+            {
+                Provide(module.ModuleName, entry.Name);
+                Provide(PackageOf(module)?.Name, entry.Name);
+            }
+
+        foreach (var entry in entries)
+        {
+            var deps = new HashSet<string>(depMap[entry.Name], StringComparer.OrdinalIgnoreCase);
+            foreach (var module in entry.Modules)
+                foreach (var name in module.Dependencies.Concat(PackageOf(module)?.Dependencies ?? []))
+                    if (contextsByName.TryGetValue(name, out var contexts))
+                        deps.UnionWith(contexts.Where(c => !string.Equals(c, entry.Name, StringComparison.OrdinalIgnoreCase)));
+            depMap[entry.Name] = [.. deps];
         }
 
         // Kahn's algorithm

@@ -47,11 +47,13 @@ public class HotReloadOptions
 
     /// <summary>
     /// Use collectible AssemblyLoadContext for module isolation. Default: false.
-    /// When true, old module versions are fully unloaded from memory on hot-swap.
-    /// When false (default), old versions stay in memory but there are no compatibility
-    /// issues with XmlSerializer, compiled Regex, System.Text.Json source generators,
-    /// or other Reflection.Emit-based tools.
-    /// Set to true only if your modules do not use any Emit-based APIs.
+    /// When true, old module versions are unloaded from memory on hot-swap, once nothing of the host refers to them:
+    /// the caches of redb.Route keyed by type hold their key weakly, a module's type resolver and prefix resolvers
+    /// live in its context, its save interceptors go with its context, and on unload redb and redb.Route empty the
+    /// caches the .NET libraries keep over the types they handled (System.Text.Json among them,
+    /// https://github.com/dotnet/runtime/issues/65323). A library of the module's own with a static cache of its
+    /// types, or Emit-generated code kept outside the module's context, can still hold it.
+    /// When false (default), old versions stay in memory until the process restarts.
     /// </summary>
     public bool Collectible { get; set; } = false;
 

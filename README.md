@@ -476,7 +476,7 @@ Orders.tpkg                          (ZIP archive, flat structure)
 | `Name` | Logical package name. Must be unique across all packages loaded in the process. |
 | `Version` | Informational version string used in logs and diagnostics. |
 | `EntryPoints` | List of DLL filenames inside the archive that contain `ITsakModule` or `InitRoute.main`. Each entry is loaded into the **package's isolated ALC** and scanned for modules. |
-| `Dependencies` | Informational list of other packages this one logically depends on (used in diagnostics; not enforced by the loader). |
+| `Dependencies` | Other packages this one depends on, by their `Name`. The contexts that run modules of those packages start first, both when the worker starts and on a hot reload. A name no package of the batch carries changes nothing: that package is already running or not deployed. Not a loading constraint. |
 
 A single `.tpkg` may declare **multiple entry points** — for example a `Core` module and an `Api` module that ship together and share a private dependency tree:
 
@@ -553,7 +553,7 @@ The debounce (`HotReload:RemovalDebounceScans`, default `2` scans) protects agai
 | `HotReload:KeepVersions` | `2` | Old versions kept in memory for one-command rollback (bare-DLL flow). |
 | `HotReload:StartupTimeoutSeconds` | `60` | Wait time for the new version to settle before retiring the old one. |
 | `HotReload:RollingUpdate` | `false` | RESERVED — not implemented; nodes reload independently. |
-| `HotReload:Collectible` | `false` | Enable `AssemblyLoadContext.Unload()` for full GC reclamation. **Do not enable** if your modules use `Reflection.Emit` (XmlSerializer, source-gen serializers, compiled regex) — set to `false` (default) and accept that old ALCs stay in memory until process restart. The number of accumulated non-collectible ALCs is exposed as `LeakedAlcCount` for monitoring. |
+| `HotReload:Collectible` | `false` | Enable `AssemblyLoadContext.Unload()` for full GC reclamation: an old module version is collected once nothing of the host refers to it (see "What does an unload release?" below). With `false` (default) old ALCs stay in memory until process restart. The number of accumulated non-collectible ALCs is exposed as `LeakedAlcCount` for monitoring. |
 | `HotReload:RemovalDebounceScans` | `2` | Number of consecutive scan cycles a missing file must persist before its module is unloaded — protects against false positives during atomic file replacement. |
 
 ### Building a `.tpkg`
@@ -806,6 +806,28 @@ ConnectionStrings__MSSql="Server=sql;Database=Orders;User Id=sa;Password=...;Tru
 
 Full reference: [CONFIG_GUIDE.md](CONFIG_GUIDE.md).
 
+### A module's save interceptors
+
+A module cannot reach the worker's DI, so it subscribes a redb `IRedbSaveInterceptor` through its context, in `InitializeAsync` or `main`:
+
+```csharp
+public override async Task<IRouteContext> InitializeAsync(IRouteContext context)
+{
+    context.GetService<ITsakSaveInterceptors>()?.Add(new NotifyFrontInterceptor());
+    // routes...
+    return context;
+}
+```
+
+The subscription lives as long as the context. When Tsak removes the context (the module is unloaded, or reloaded and its context built anew) it removes every interceptor the context added, before the module's load context unloads; the module needs no cleanup. Stopping the context keeps them, as it keeps the routes. `Add` returns a handle that removes one interceptor earlier. Without a worker database (`Tsak:Redb:Provider` unset) the service is absent and `GetService` returns null.
+
+What such an interceptor sees and can do:
+
+- **Every save and delete of the worker**, not only the module's own: those of other modules, made through the worker's redb service or through the named instances of any context. Filter by scheme or object type inside the interceptor when only some objects matter.
+- **Veto over all of them.** An exception thrown from `SavingAsync` or `DeletingAsync` cancels the save or delete it was called for, whichever module made it. Throw only to stop a save that must not happen.
+- The semantics of `IRedbSaveInterceptor`: `SavedAsync` runs after the commit, or inside the transaction within `ExecuteAtomicAsync`; under `PropsSaveStrategy=ChangeTracking` `RedbSavedContext.Changes` lists the changed values.
+- A subscription reaches the next save or delete, scopes already open included; a save already running finishes with the interceptors it started with.
+
 ---
 
 ## REST API
@@ -1026,6 +1048,33 @@ Coordination records (nodes, locks, module assignments) are keyed and looked up 
   }
 }
 ```
+
+### Node identity and Quartz instance
+
+`NodeId` names the node: its record, its locks, and, with `Quartz:quartz.scheduler.instanceId = NODE` (the shipped
+value), the Quartz instance of every context scheduler of the worker. Left empty it is the host name.
+
+- **`NODE`**: the schedulers take the node id. It stays across restarts, so a node that crashed takes its own fired
+  triggers back at its first Quartz check-in instead of waiting until the cluster counts its old record as failed
+  (about 15 s by default), and a preferred-node pin names a node that comes back. Every context's scheduler of the
+  node carries the same id; each context is a Quartz cluster of its own (one scheduler name), so that is correct.
+- **`AUTO`**: Quartz draws a new id at every start. Nothing to configure; after a crash the old record waits out the
+  check-in timeout.
+- **An explicit id** is used as written, for every context scheduler; give each worker its own.
+
+Every worker needs a node id of its own. A worker that finds its node id held by a record that is still alive watches
+it until its heartbeat would expire (`DeadNodeTimeoutSeconds`): a previous process of the node, killed and restarted
+at once, goes quiet and the start goes on; a second process with the same node id keeps beating and the start is
+refused with the host and the last heartbeat of the other. A record left by a clean stop is no conflict.
+
+Replicas:
+
+- **Kubernetes StatefulSet**: leave `NodeId` empty; the pod name (`tsak-0`, `tsak-1`) is the host name and stays
+  across restarts.
+- **Docker Compose `deploy.replicas`**: leave `NodeId` empty; each container has a host name of its own, unique, but a
+  re-created container gets a new one, which then behaves as `AUTO`. For a stable id run the workers as separate
+  services with `hostname:` set, or set `Tsak__Cluster__NodeId` per service.
+- Never set one `NodeId` (or one explicit Quartz `instanceId`) in a configuration all replicas share.
 
 ### Pluggable cluster backends
 
@@ -1537,7 +1586,16 @@ Tsak loads class libraries that follow its module convention: a static `InitRout
 No. It is a dependency isolation boundary (separate `AssemblyLoadContext` per module). A malicious module runs with the same OS privileges as the Tsak process. Restrict write access to `Libs/` accordingly. See [SECURITY.md](SECURITY.md).
 
 **Why is `Collectible: false` the default for hot-reload?**
-Because `Reflection.Emit`-based code (XmlSerializer, source-gen serializers, compiled regex, MEF) crashes inside collectible `AssemblyLoadContext`s. The .NET runtime forbids non-collectible dynamic assemblies (generated by Emit) from referencing types in a collectible ALC. Default is the safe choice; opt in only when you know your modules are Emit-free.
+Because a collectible `AssemblyLoadContext` unloads only when nothing outside it refers to the module any more, and code the host does not control can: a library with a static cache of the types it handled, Emit-generated code kept outside the module's context. Default is the safe choice; with `true` check that the old versions really go (`LeakedAlcCount`, memory).
+
+**What does an unload release?** (with `Collectible: true`) Everything the host and the framework hold of the module:
+
+- the context's routes, services, registry, the module's type resolver (`bean:`, `<bean type>`, `outputClass`), its `${prefix.}` resolvers (`context.RegisterPrefixResolver`) and its save interceptors (`ITsakSaveInterceptors`): they are removed with the context;
+- the caches of redb.Route keyed by type (XML and SOAP serializers, Protobuf parsers, batch POCO properties, endpoint options): they hold the module's types weakly;
+- the caches the .NET libraries keep over the types they handled, System.Text.Json above all: redb and redb.Route empty them when a collectible context unloads (System.Text.Json does not let such a context go otherwise, [dotnet/runtime#65323](https://github.com/dotnet/runtime/issues/65323)), at the cost of cold caches in those libraries once per unload;
+- XmlSerializer generates its serializer into the module's own context, so it goes with it.
+
+What stays is what a module puts beyond the host's reach: a static of a library it ships, a thread or timer it starts and does not stop, a handler it subscribes to a process-wide event.
 
 **What happens to in-flight messages during hot-swap?**
 The old context drains (existing exchanges complete). The new context starts in parallel. Once the new context is healthy and `StartupTimeoutSeconds` elapses, the old context is retired. Zero message loss for transports that support graceful shutdown.

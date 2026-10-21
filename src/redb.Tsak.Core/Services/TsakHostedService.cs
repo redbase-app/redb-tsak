@@ -277,6 +277,9 @@ public class TsakHostedService : BackgroundService
             clustered = false;
         }
         var instanceId = _configuration["Quartz:quartz.scheduler.instanceId"] ?? "NON_CLUSTERED";
+        // NODE stands for the node id (TsakNodeIdentity): report what the schedulers get.
+        if (string.Equals(instanceId.Trim(), TsakNodeIdentity.QuartzInstanceIdOfNode, StringComparison.OrdinalIgnoreCase))
+            instanceId = $"{TsakNodeIdentity.Resolve(_configuration)} (NODE)";
 
         _logger.LogInformation(
             "Quartz: store={JobStore}, persistence={Persistence}, clustered={Clustered}, instanceId={InstanceId}",

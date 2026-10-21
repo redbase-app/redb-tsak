@@ -29,6 +29,10 @@ public class StaticMethodModule : ITsakModule, IEmbeddedConfigModule
 
     public string ModuleName { get; }
     public string Version { get; }
+
+    /// <summary>The assembly the module's <c>InitRoute</c> class comes from.</summary>
+    internal Assembly ModuleAssembly => _mainMethod.DeclaringType?.Assembly ?? _mainMethod.Module.Assembly;
+
     public string Description => $"Static method module from {_mainMethod.DeclaringType?.FullName}";
     public IReadOnlyList<string> Dependencies => [];
     public bool CanInitialize => true;

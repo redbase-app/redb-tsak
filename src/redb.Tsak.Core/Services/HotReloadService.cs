@@ -383,8 +383,9 @@ public sealed class HotReloadService : IDisposable
     /// then reloads, carrier before dependent. The package scan reads the directory in filesystem order
     /// (<c>Directory.GetFiles</c> does not sort), so a carrier and its dependent replaced together were
     /// reloaded in whatever order the file system returned — the dependent could come up on the old
-    /// types. Ordering by the manifest is the same rule <c>TsakCoordinator</c> applies to contexts at
-    /// startup, applied to packages.
+    /// types. At start <c>TsakCoordinator</c> orders the contexts by the same manifest Dependencies (a
+    /// package name stands for the contexts of its modules), together with the Dependencies configured
+    /// for the contexts.
     /// </summary>
     private async Task<int> ReloadPackagesInDependencyOrderAsync(IReadOnlyList<string> paths, CancellationToken ct)
     {

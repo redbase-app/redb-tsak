@@ -358,7 +358,12 @@ public static class ServiceCollectionExtensions
                         }
                         m.AddRuntimeInstrumentation()
                          .AddProcessInstrumentation()
-                         .AddPrometheusHttpListener(o => o.UriPrefixes = [prefix]);
+                         .AddPrometheusHttpListener(o =>
+                         {
+                             // The listener binds http://{Host}:{Port}/ — the same loopback prefix checked above.
+                             o.Host = "localhost";
+                             o.Port = port;
+                         });
                     });
                 }
             }
@@ -527,20 +532,33 @@ public static class ServiceCollectionExtensions
         // own job namespace — two modules that both say cron://nightly do not collide — and, clustered, a Quartz
         // cluster of exactly the nodes that run that context. TsakContextManager and SystemContextBuilder hand the
         // options to every context; the dashboard reads the scheduler of each.
+        // The node id of the same configuration the Quartz section came from: quartz.scheduler.instanceId = NODE.
+        var nodeId = Services.TsakNodeIdentity.Resolve(configuration);
         services.AddSingleton(provider =>
-            SchedulerOptionsOf(provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<QuartzOptions>>().Value));
+            SchedulerOptionsOf(provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<QuartzOptions>>().Value, nodeId));
     }
 
     /// <summary>
     /// The per-context scheduler options from the resolved Quartz properties: the configured name (scoped to the Tsak
     /// cluster above) becomes the prefix the context name follows. A scheduler per context keeps a small pool unless
     /// configured otherwise.
+    /// <para>
+    /// <c>quartz.scheduler.instanceId = NODE</c> (the shipped value) becomes <paramref name="nodeId"/>: the instance
+    /// stays the same across restarts, so after a crash the node takes its own fired triggers back at its first
+    /// check-in instead of waiting until the cluster counts its old record as failed, and a preferred-node pin names
+    /// a node that comes back. Every context's scheduler of the node carries it; they are distinct Quartz clusters
+    /// (one scheduler name each), so the id is unique where Quartz needs it. <c>AUTO</c> and an explicit id are
+    /// Quartz's and stay as configured.
+    /// </para>
     /// </summary>
-    internal static redb.Route.Quartz.QuartzSchedulerOptions SchedulerOptionsOf(QuartzOptions quartz)
+    internal static redb.Route.Quartz.QuartzSchedulerOptions SchedulerOptionsOf(QuartzOptions quartz, string nodeId)
     {
         var properties = quartz
             .Where(p => p.Value is not null && p.Key != "quartz.scheduler.instanceName")
             .ToDictionary(p => p.Key, p => p.Value!, StringComparer.Ordinal);
+        if (properties.TryGetValue("quartz.scheduler.instanceId", out var instanceId)
+            && string.Equals(instanceId.Trim(), Services.TsakNodeIdentity.QuartzInstanceIdOfNode, StringComparison.OrdinalIgnoreCase))
+            properties["quartz.scheduler.instanceId"] = nodeId;
         // threadCount is Quartz's older name of maxConcurrency (the shipped appsettings use it): either one is a
         // configured pool, and adding the other would leave the pool size to the order Quartz applies them in.
         if (!properties.ContainsKey("quartz.threadPool.maxConcurrency") && !properties.ContainsKey("quartz.threadPool.threadCount"))

@@ -14,36 +14,36 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Serilog.AspNetCore" Version="8.0.2" />
-    <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
-    <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />
-    <PackageReference Include="Serilog.Enrichers.Environment" Version="3.0.1" />
-    <PackageReference Include="Serilog.Enrichers.Process" Version="3.0.0" />
-    <PackageReference Include="Serilog.Enrichers.Thread" Version="4.0.0" />
+    <PackageReference Include="Serilog.AspNetCore" />
+    <PackageReference Include="Serilog.Sinks.Console" />
+    <PackageReference Include="Serilog.Sinks.File" />
+    <PackageReference Include="Serilog.Enrichers.Environment" />
+    <PackageReference Include="Serilog.Enrichers.Process" />
+    <PackageReference Include="Serilog.Enrichers.Thread" />
 
     <!--
-      Pin every Microsoft.IdentityModel.* package to one version (8.16.0) so the host ALC ships
-      the same version that loaded module .tpkg packages (e.g. redb.Identity.Core.Module with
-      OpenIddict 6.3.0) were built with. 8.16.0 is the floor Microsoft.Data.SqlClient 7.0.3
-      (via redb.MSSql) requires; a lower pin here is a NU1605 downgrade. Without these pins
+      Pin every Microsoft.IdentityModel.* package to one version (8.23.0, the one redb.Identity
+      builds its modules with) so the host ALC ships the same version that loaded module .tpkg
+      packages (e.g. redb.Identity.Core.Module with OpenIddict) were built with. Microsoft.Data.SqlClient
+      7.0.3 (via redb.MSSql) requires 8.16.0 or later; a lower pin here is a NU1605 downgrade. Without these pins
       the host transitively brings in a mix of versions, and Default-ALC standard probing
       finds those copies in the host bin BEFORE LoadedAssemblyTracker's Resolving handler
       fires for the .tpkg's bundled DLLs, yielding MissingMethodException at runtime
       (e.g. OpenIddictServerOptions.get_SigningCredentials returns List of an MIT 8.4 type
       while the loaded MIT was 8.0).
     -->
-    <PackageReference Include="Microsoft.IdentityModel.Abstractions" Version="8.16.0" />
-    <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" Version="8.16.0" />
-    <PackageReference Include="Microsoft.IdentityModel.Logging" Version="8.16.0" />
-    <PackageReference Include="Microsoft.IdentityModel.Protocols" Version="8.16.0" />
-    <PackageReference Include="Microsoft.IdentityModel.Protocols.OpenIdConnect" Version="8.16.0" />
-    <PackageReference Include="Microsoft.IdentityModel.Tokens" Version="8.16.0" />
-    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.16.0" />
+    <PackageReference Include="Microsoft.IdentityModel.Abstractions" />
+    <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" />
+    <PackageReference Include="Microsoft.IdentityModel.Logging" />
+    <PackageReference Include="Microsoft.IdentityModel.Protocols" />
+    <PackageReference Include="Microsoft.IdentityModel.Protocols.OpenIdConnect" />
+    <PackageReference Include="Microsoft.IdentityModel.Tokens" />
+    <PackageReference Include="System.IdentityModel.Tokens.Jwt" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\redb.Tsak.Core\redb.Tsak.Core.csproj" />
-    <PackageReference Include="redb.Tsak.Core.Pro" Version="4.3.0" />    <!-- Connector transports moved to Libs/shared/ — loaded at runtime by SharedAssemblyLoader.
+    <PackageReference Include="redb.Tsak.Core.Pro" />    <!-- Connector transports moved to Libs/shared/ — loaded at runtime by SharedAssemblyLoader.
          Use scripts/build-shared.ps1 to build and copy connectors. -->
   </ItemGroup>
 
@@ -88,15 +88,13 @@
   -->
   <Target Name="PruneRedbFromBuild" AfterTargets="Build">
     <ItemGroup>
-      <_RedbToPrune Include="$(OutDir)redb.*.dll;$(OutDir)redb.*.pdb"
-                    Exclude="$(OutDir)redb.Tsak.*;$(OutDir)redb.Licensing.*" />
+      <_RedbToPrune Include="$(OutDir)redb.*.dll;$(OutDir)redb.*.pdb" Exclude="$(OutDir)redb.Tsak.*;$(OutDir)redb.Licensing.*" />
     </ItemGroup>
     <Delete Files="@(_RedbToPrune)" />
   </Target>
   <Target Name="PruneRedbFromPublish" AfterTargets="Publish">
     <ItemGroup>
-      <_RedbToPrunePub Include="$(PublishDir)redb.*.dll;$(PublishDir)redb.*.pdb"
-                       Exclude="$(PublishDir)redb.Tsak.*;$(PublishDir)redb.Licensing.*" />
+      <_RedbToPrunePub Include="$(PublishDir)redb.*.dll;$(PublishDir)redb.*.pdb" Exclude="$(PublishDir)redb.Tsak.*;$(PublishDir)redb.Licensing.*" />
     </ItemGroup>
     <Delete Files="@(_RedbToPrunePub)" />
   </Target>

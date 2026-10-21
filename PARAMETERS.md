@@ -208,7 +208,7 @@ Layers 1, 2 and 5 of the model in [CONFIG_GUIDE.md](CONFIG_GUIDE.md):
 | `Tsak:Contexts:default:*` | Base settings inherited by every context. |
 | `Tsak:Contexts:{name}:*` | Overrides for one context. |
 | `Tsak:Contexts:{name}:AutoStart` | Start the context with the worker. |
-| `Tsak:Contexts:{name}:Dependencies` | Contexts that must start first. |
+| `Tsak:Contexts:{name}:Dependencies` | Contexts that must start first. Added to what the modules declare: `ITsakModule.Dependencies` and the `Dependencies` of the package manifest, which name modules and packages. |
 | `Tsak:Contexts:{name}:Override:*` | Wins over everything, including `context.json`. Intended for deployment-time secrets. |
 
 ---

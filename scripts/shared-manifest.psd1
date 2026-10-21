@@ -53,6 +53,7 @@
         'redb.Route.Redis'
         'redb.Route.S3'
         'redb.Route.SignalR'
+        'redb.Route.SignalR.StackExchangeRedis'
         'redb.Route.Tcp'
         'redb.Route.Validation.Adapters'
         'redb.Route.WebSocket'
