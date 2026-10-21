@@ -36,7 +36,7 @@ Pending changes live in `changelog/unreleased/` until the release; `pwsh scripts
 
 ### Fixed
 
-- **A context with a `seda:` hop works again after a restart.** From 4.2.2 to 4.4.0, after `/stop` then `/start`,
+- **A context with a `seda:` hop works again after a restart** (redb-route issue #12). From 4.2.2 to 4.4.0, after `/stop` then `/start`,
   `/restart` or the watchdog's automatic restart, the context reported its routes Started, but nothing behind a seda hop
   was processed (`ChannelClosedException` on every send). The fix is in redb.Route 4.4.1, which this release uses. On an
   older version, recreate the context instead of restarting it: stop it and touch its `.tpkg`. Packages: `redb.Tsak.Core`.
