@@ -85,21 +85,21 @@
 
   <!-- redb packages: the monorepo ProjectReferences, rewritten for the public repository. -->
   <ItemGroup>
-    <PackageVersion Include="redb.Core" Version="4.4.0" />
-    <PackageVersion Include="redb.Core.Pro" Version="4.4.0" />
-    <PackageVersion Include="redb.MSSql" Version="4.4.0" />
-    <PackageVersion Include="redb.MSSql.Pro" Version="4.4.0" />
-    <PackageVersion Include="redb.Postgres" Version="4.4.0" />
-    <PackageVersion Include="redb.Postgres.Pro" Version="4.4.0" />
-    <PackageVersion Include="redb.Route.Core" Version="4.4.0" />
-    <PackageVersion Include="redb.Route.Http" Version="4.4.0" />
-    <PackageVersion Include="redb.Route.Quartz" Version="4.4.0" />
-    <PackageVersion Include="redb.Route.Sql" Version="4.4.0" />
-    <PackageVersion Include="redb.Route.Xml" Version="4.4.0" />
-    <PackageVersion Include="redb.SQLite" Version="4.4.0" />
-    <PackageVersion Include="redb.SQLite.Pro" Version="4.4.0" />
-    <PackageVersion Include="redb.Tsak.Core.Pro" Version="4.4.0" />
-    <PackageVersion Include="redb.Tsak.Web.Pro" Version="4.4.0" />
+    <PackageVersion Include="redb.Core" Version="4.4.1" />
+    <PackageVersion Include="redb.Core.Pro" Version="4.4.1" />
+    <PackageVersion Include="redb.MSSql" Version="4.4.1" />
+    <PackageVersion Include="redb.MSSql.Pro" Version="4.4.1" />
+    <PackageVersion Include="redb.Postgres" Version="4.4.1" />
+    <PackageVersion Include="redb.Postgres.Pro" Version="4.4.1" />
+    <PackageVersion Include="redb.Route.Core" Version="4.4.1" />
+    <PackageVersion Include="redb.Route.Http" Version="4.4.1" />
+    <PackageVersion Include="redb.Route.Quartz" Version="4.4.1" />
+    <PackageVersion Include="redb.Route.Sql" Version="4.4.1" />
+    <PackageVersion Include="redb.Route.Xml" Version="4.4.1" />
+    <PackageVersion Include="redb.SQLite" Version="4.4.1" />
+    <PackageVersion Include="redb.SQLite.Pro" Version="4.4.1" />
+    <PackageVersion Include="redb.Tsak.Core.Pro" Version="4.4.1" />
+    <PackageVersion Include="redb.Tsak.Web.Pro" Version="4.4.1" />
   </ItemGroup>
 </Project>
 
