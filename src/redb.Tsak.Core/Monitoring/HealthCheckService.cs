@@ -11,6 +11,13 @@ public class HealthEvaluation
     public HealthStatus Status { get; set; }
     public string Description { get; set; } = "";
     public Dictionary<string, HealthStatus> Checks { get; set; } = new();
+
+    /// <summary>
+    /// What a check found, by the key it reports under in <see cref="Checks"/>: set by a check that is not healthy and
+    /// can say why (the schema problems of a redb database, say). A check with nothing to explain leaves no entry.
+    /// </summary>
+    public Dictionary<string, string> Details { get; set; } = new();
+
     public DateTime Timestamp { get; set; } = DateTime.UtcNow;
 }
 
@@ -72,10 +79,19 @@ public class HealthCheckService
         if (_watchdog is not null)
             CheckWatchdog(result);
 
-        // Aggregate: worst status wins
+        Aggregate(result);
+        return result;
+    }
+
+    /// <summary>
+    /// Worst status wins. The description names the result and, for each check that is not healthy and explains
+    /// itself, what it found, so a readiness failure (<c>Tsak:Health:DegradedNotReady</c>) says why.
+    /// </summary>
+    private static void Aggregate(HealthEvaluation result)
+    {
         result.Status = result.Checks.Values.DefaultIfEmpty(HealthStatus.Healthy).Max();
 
-        result.Description = result.Status switch
+        var summary = result.Status switch
         {
             HealthStatus.Healthy => "All checks passed",
             HealthStatus.Degraded => "Some checks degraded",
@@ -83,7 +99,11 @@ public class HealthCheckService
             _ => "Unknown"
         };
 
-        return result;
+        var explained = result.Checks
+            .Where(c => c.Value != HealthStatus.Healthy && result.Details.ContainsKey(c.Key))
+            .Select(c => $"{c.Key}: {result.Details[c.Key]}")
+            .ToList();
+        result.Description = explained.Count == 0 ? summary : summary + ". " + string.Join(" ", explained);
     }
 
     /// <summary>
@@ -98,14 +118,7 @@ public class HealthCheckService
         await RunModuleContributorsAsync(result, ct).ConfigureAwait(false);
 
         // Re-aggregate after module checks may have added entries.
-        result.Status = result.Checks.Values.DefaultIfEmpty(HealthStatus.Healthy).Max();
-        result.Description = result.Status switch
-        {
-            HealthStatus.Healthy => "All checks passed",
-            HealthStatus.Degraded => "Some checks degraded",
-            HealthStatus.Unhealthy => "One or more checks failed",
-            _ => "Unknown"
-        };
+        Aggregate(result);
         return result;
     }
 

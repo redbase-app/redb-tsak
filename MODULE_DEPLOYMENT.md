@@ -90,6 +90,10 @@ tsak module keygen --out tsak-module
 #   tsak-module.pub  → PUBLIC key. Configure it on every node.
 ```
 
+`--out` is required: the command creates a secret, so where it goes is always your choice, and it prints the full
+paths of both files. It never replaces an existing key pair with that prefix; pass `--force` to do so on purpose, and
+remember that packages signed with the old key no longer verify once the nodes carry the new public key.
+
 (ECDSA P-256 by default. RSA keys work too — the verifier accepts either.)
 
 ### Sign a package (in CI, after building the .tpkg)

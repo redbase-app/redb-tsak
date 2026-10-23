@@ -39,6 +39,7 @@ public class SystemController : RedbController
             Status = eval.Status,
             Description = eval.Description,
             Checks = eval.Checks,
+            Details = eval.Details,
             Timestamp = eval.Timestamp
         };
     }

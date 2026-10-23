@@ -32,6 +32,28 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Pending changes live in `changelog/unreleased/` until the release; `pwsh scripts/changelog.ps1 -Preview` shows them.
 
+## [4.4.2] — 2026-10-23
+
+### Added
+
+- **The `redb` health check**: `/api/system/health` reports `Degraded` while a redb database of the worker (the host's
+  own or a named instance of a context) has schema problems that need a person, with the problem and a link to redb's
+  UPGRADING.md in the new `details` field; the dashboard's node page and `tsak system health` show it. Readiness stays
+  `200` on Degraded unless `Tsak:Health:DegradedNotReady=true`. Packages: `redb.Tsak.Core`, `redb.Tsak.Contracts`, `redb.Tsak.CLI`, `redb.Tsak.Web`.
+
+### Changed
+
+- **`tsak module keygen` needs `--out` and never replaces a key by itself.** Without `--out` it wrote a new private key
+  as `tsak-module.key` into the current directory, over one already there. It now refuses without `--out`, refuses to
+  overwrite an existing pair unless `--force` is given, and prints the full paths it wrote. A script that called it
+  without `--out` passes `--out tsak-module` to keep the old file names. Packages: `redb.Tsak.CLI`.
+
+### Fixed
+
+- **The CLI names the arguments left out.** A command with two required arguments (`route get <context> <routeId>` and
+  the like) printed "Required argument missing for command: 'get'." twice; it now prints one line per missing argument
+  with its name, then the help of the command as before. Other parse errors keep their "Did you mean" suggestions. Packages: `redb.Tsak.CLI`.
+
 ## [4.4.1] — 2026-10-21
 
 ### Fixed

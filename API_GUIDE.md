@@ -385,9 +385,28 @@ additionally ships stopped (`AutoStart(false)`), so it answers only after somebo
 | Body | `{"status":"ok"}` or `503` + reason | full `HealthCheckResult` with per-check statuses |
 | Cost | minimal | runs every contributor |
 
-`HealthCheckService` aggregates the built-in `contexts` / `metrics` / `watchdog` checks with
-two extension points, and **never throws** — an exception inside a probe becomes `Unhealthy`,
-not a `500`. Worst status wins: `Unhealthy` > `Degraded` > `Healthy`.
+`HealthCheckService` aggregates the built-in `contexts` / `metrics` / `watchdog` / `control-plane` /
+`redb` checks with two extension points, and **never throws**: an exception inside a probe becomes
+`Unhealthy`, not a `500`. Worst status wins: `Unhealthy` > `Degraded` > `Healthy`.
+
+A check that is not healthy can say why in `details` (keyed like `checks`), and the `description` repeats it:
+
+```json
+{
+  "status": "Degraded",
+  "description": "Some checks degraded. redb: 1 schema problem(s) need a person. [host] REDB schema problem: root field 'Total' of scheme 'Order' (id 7) exists 2 times ... See https://github.com/redbase-app/redb/blob/main/UPGRADING.md#duplicate-root-structures",
+  "checks": { "contexts": "Healthy", "metrics": "Healthy", "control-plane": "Healthy", "redb": "Degraded" },
+  "details": { "redb": "1 schema problem(s) need a person. [host] REDB schema problem: ..." },
+  "timestamp": "2026-10-22T09:00:00Z"
+}
+```
+
+`redb` is `Degraded` while a redb database of the worker, the host's own or a named instance a context declares
+(`[context/name]` in the text), has schema problems that need a person: a root field of a scheme written twice by
+nodes of an older redb, for example. The service keeps working, and redb logs the problem as an error at every start
+until it is resolved by hand (redb UPGRADING.md, "Duplicate root structures"); the check makes it visible to
+monitoring. It reads the list the last start or scheme synchronization left (`IRedbService.SchemaProblems`), so a
+health poll queries no database. A worker without redb storage has no `redb` check.
 
 - `IHealthContributor` — sees the whole evaluation bag. Pro's `ClusterHealthContributor`
   uses it to report leader and member health.
@@ -395,7 +414,8 @@ not a `500`. Worst status wins: `Unhealthy` > `Degraded` > `Healthy`.
   Implement it in your module to surface "my downstream is unreachable" to
   `/api/health/ready`, which is what makes Kubernetes take the pod out of rotation.
 
-Note that `Degraded` still returns `200` on readiness — only `Unhealthy` is a `503`.
+Note that `Degraded` still returns `200` on readiness; only `Unhealthy` is a `503`. A deployment that wants a degraded
+node out of rotation sets `Tsak:Health:DegradedNotReady=true`, and the `503` then carries the description.
 
 ---
 

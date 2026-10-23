@@ -34,6 +34,10 @@ public sealed record HealthCheckResult
     public HealthStatus Status { get; init; }
     public string Description { get; init; } = "";
     public Dictionary<string, HealthStatus> Checks { get; init; } = new();
+
+    /// <summary>What a check that is not healthy found, by its key in <see cref="Checks"/>; empty when none explains itself.</summary>
+    public Dictionary<string, string> Details { get; init; } = new();
+
     public DateTime Timestamp { get; init; } = DateTime.UtcNow;
 }
 

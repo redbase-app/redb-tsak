@@ -106,8 +106,10 @@ foreach ($case in $cases) {
         else {
             $stdout = Join-Path $out 'smoke.out.log'
             $stderr = Join-Path $out 'smoke.err.log'
+            # -NoNewWindow: without it Windows gives the host a console window of its own, which pops up on the
+            # desktop of whoever runs the smoke. The output goes to the two logs either way.
             $process = Start-Process dotnet -ArgumentList @('run', '-c', 'Release', '--no-build', '--project', $out) -PassThru `
-                -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+                -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr
             try {
                 $answer = Wait-Api
                 if ($answer.StatusCode -ne 200 -or $answer.Content -notmatch '_system') {

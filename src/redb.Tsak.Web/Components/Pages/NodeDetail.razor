@@ -98,6 +98,23 @@ else
         }
     </div>
 
+    @* What the checks that are not healthy found (schema problems of a redb database, say) *@
+    @if (_health is { Details.Count: > 0 } health)
+    {
+        @foreach (var (check, detail) in health.Details.Where(d => health.Checks.GetValueOrDefault(d.Key) != HealthStatus.Healthy))
+        {
+            <div class="card" style="margin-bottom: var(--space-4); border-left: 3px solid var(--status-warning);">
+                <div class="card-header">
+                    <span class="card-title" style="color: var(--status-warning);">
+                        <TsakIcon Name="alert-triangle" Size="16" /> Health: @check
+                    </span>
+                    <span class="text-xs text-secondary">@health.Checks.GetValueOrDefault(check)</span>
+                </div>
+                <p class="text-sm" style="padding: 0 var(--space-4) var(--space-4); word-break: break-word;">@detail</p>
+            </div>
+        }
+    }
+
     @* Tabs *@
     <div class="tabs">
         @foreach (var tab in _tabs)

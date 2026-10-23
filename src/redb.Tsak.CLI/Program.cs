@@ -108,8 +108,12 @@ public static class Program
         root.Add(Commands.DiagnosticsCommands.Create());
 
         // Help, version, parse errors and Ctrl+C are the library's defaults; a command's exception is handled by
-        // Handle, which sets the exit code the way the CLI always has.
-        return await root.Parse(args).InvokeAsync();
+        // Handle, which sets the exit code the way the CLI always has. Required arguments left out are reported by
+        // name (MissingArguments): the library's text names only the command.
+        var parseResult = root.Parse(args);
+        if (MissingArguments.Of(parseResult) is { Count: > 0 } missing)
+            return MissingArguments.Report(parseResult, missing);
+        return await parseResult.InvokeAsync();
     }
 
     // ── Helpers ─────────────────────────────────────────────────────
@@ -234,6 +238,17 @@ public static class Program
     /// <summary>
     /// Global exception handler for the CLI.
     /// </summary>
+    /// <summary>
+    /// Writes a PEM key. <see cref="FileMode.CreateNew"/> fails rather than replace a file that appeared after the
+    /// check for existing keys; <see cref="FileMode.Create"/> replaces it (<c>--force</c>).
+    /// </summary>
+    private static void WriteKey(string path, string pem, FileMode mode)
+    {
+        using var stream = new FileStream(path, mode, FileAccess.Write);
+        using var writer = new StreamWriter(stream);
+        writer.Write(pem);
+    }
+
     private static void HandleException(Exception ex, CliInvocation ctx)
     {
         if (ex is OperationCanceledException)
@@ -277,7 +292,8 @@ public static class Program
                 {
                     r.RenderTable(health.Checks,
                         ("Check", kv => kv.Key),
-                        ("Status", kv => kv.Value.ToString()));
+                        ("Status", kv => kv.Value.ToString()),
+                        ("Detail", kv => health.Details.GetValueOrDefault(kv.Key) ?? ""));
                 }
             });
         });
@@ -498,20 +514,41 @@ public static class Program
             r.Success($"Module '{result.ModuleName}' removed.");
         });
 
-        // tsak module keygen --out <prefix>  → writes <prefix>.key (private) + <prefix>.pub (public)
-        var keygenOut = new Option<string>("--out") { DefaultValueFactory = _ => "tsak-module", Description = "Output file prefix" };
+        // tsak module keygen --out <prefix> [--force]  → writes <prefix>.key (private) + <prefix>.pub (public)
+        // The command creates a secret, so where it goes is always the caller's choice (no default prefix), and an
+        // existing key is never replaced unless asked to: losing a signing key strands every package signed with it.
+        var keygenOut = new Option<string>("--out")
+        {
+            Description = "Output file prefix: writes <prefix>.key (private) and <prefix>.pub (public)",
+            Required = true,
+        };
+        var keygenForce = new Option<bool>("--force") { Description = "Overwrite an existing key pair with that prefix" };
         var keygenCmd = new Command("keygen", "Generate an ECDSA signing key pair for module packages")
-        { keygenOut };
+        { keygenOut, keygenForce };
         Handle(keygenCmd, ctx =>
         {
             var prefix = ctx.ParseResult.GetValue(keygenOut)!;
+            var force = ctx.ParseResult.GetValue(keygenForce);
             var r = CreateRenderer(ctx);
+            var keyPath = Path.GetFullPath(prefix + ".key");
+            var pubPath = Path.GetFullPath(prefix + ".pub");
+
+            var existing = new[] { keyPath, pubPath }.Where(File.Exists).ToList();
+            if (existing.Count > 0 && !force)
+            {
+                r.Error($"Not overwriting {string.Join(" and ", existing)}. Choose another --out, or pass --force to " +
+                        "replace the key pair (packages signed with the old key then no longer verify).");
+                ctx.ExitCode = 1;
+                return;
+            }
+
             using var ecdsa = System.Security.Cryptography.ECDsa.Create(
                 System.Security.Cryptography.ECCurve.NamedCurves.nistP256);
-            File.WriteAllText(prefix + ".key", ecdsa.ExportPkcs8PrivateKeyPem());
-            File.WriteAllText(prefix + ".pub", ecdsa.ExportSubjectPublicKeyInfoPem());
-            r.Success($"Wrote {prefix}.key (PRIVATE — keep secret, use to sign) and {prefix}.pub " +
-                      $"(public — configure on the node as Tsak:Modules:Signature:PublicKeyPath).");
+            var mode = force ? FileMode.Create : FileMode.CreateNew;
+            WriteKey(keyPath, ecdsa.ExportPkcs8PrivateKeyPem(), mode);
+            WriteKey(pubPath, ecdsa.ExportSubjectPublicKeyInfoPem(), mode);
+            r.Success($"Wrote {keyPath} (PRIVATE: keep secret, use to sign) and {pubPath} " +
+                      $"(public: configure on the node as Tsak:Modules:Signature:PublicKeyPath).");
         });
 
         // tsak module sign <file.tpkg> --key <private.pem>  → writes <file.tpkg.sig> (base64)

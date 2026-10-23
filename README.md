@@ -1,18 +1,35 @@
 # redb.Tsak
 
 > **The runtime container for [redb.Route](https://github.com/redbase-app/redb-route) integration pipelines.**
-> Deploy DLLs into a folder. Start, stop, reload them at runtime. Scale across nodes with leader election. Watch every message, every error, every restart — from a built-in REST API, a 30-command CLI, or a Blazor dashboard. Zero downtime. Production-tested.
+> Deploy DLLs into a folder. Start, stop, reload them at runtime. Scale across nodes with leader election. Watch every message, every error, every restart — from a built-in REST API, the `tsak` CLI, or a Blazor dashboard. Zero downtime. Production-tested.
 
 > **LLMs / coding agents:** canonical training contract for the whole redb ecosystem → <https://redbase.app/llms.txt>
 
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue)](LICENSE)
 [![.NET](https://img.shields.io/badge/.NET-8%20%7C%209%20%7C%2010-purple)](https://dotnet.microsoft.com)
-[![Tests](https://img.shields.io/badge/tests-351%20passing-brightgreen)](#testing)
 [![Status](https://img.shields.io/badge/status-production-green)](#)
-[![REST API](https://img.shields.io/badge/REST_API-32_endpoints-blue)](#rest-api)
-[![CLI](https://img.shields.io/badge/CLI-30_commands-blue)](#cli)
+[![REST API](https://img.shields.io/badge/REST_API-JSON-blue)](#rest-api)
+[![CLI](https://img.shields.io/badge/CLI-tsak-blue)](#cli)
 [![Web UI](https://img.shields.io/badge/Web_UI-Blazor_Server-512BD4)](#web-dashboard)
 [![Cluster](https://img.shields.io/badge/cluster-leader_election-orange)](#cluster-mode)
+
+---
+
+## Table of Contents
+
+- [What you get out of the box](#what-you-get-out-of-the-box) · [Why redb.Tsak exists](#why-redbtsak-exists) · [For redb.Route users](#for-redbroute-users)
+- [Architecture](#architecture) · [Project structure](#project-structure)
+- [Quick start](#quick-start): Docker images, standalone archive, build from source
+- [Module workflow](#module-workflow) · [5-layer configuration](#5-layer-configuration)
+- [REST API](#rest-api) · [CLI](#cli) · [Web dashboard](#web-dashboard)
+- [Cluster mode](#cluster-mode) · [Watchdog](#watchdog) · [Lifecycle & graceful shutdown](#lifecycle--graceful-shutdown) · [Storage modes](#storage-modes)
+- [Security](#security) · [Observability](#observability) (health probes, logs, tracing) · [Quartz scheduler](#quartz-scheduler)
+- [Three deployment recipes](#three-deployment-recipes) · [Docker](#docker) · [Kubernetes deployment](#kubernetes-deployment)
+- [Testing](#testing) · [Frequently asked questions](#frequently-asked-questions) · [Roadmap](#roadmap)
+- [Upgrading](#upgrading): [UPGRADING.md](UPGRADING.md), [CHANGELOG.md](CHANGELOG.md)
+
+Guides: [DEPLOYMENT.md](DEPLOYMENT.md) · [MODULE_DEPLOYMENT.md](MODULE_DEPLOYMENT.md) · [CONFIG_GUIDE.md](CONFIG_GUIDE.md) ·
+[PARAMETERS.md](PARAMETERS.md) · [API_GUIDE.md](API_GUIDE.md)
 
 ---
 
@@ -20,7 +37,7 @@
 
 | | |
 |---|---|
-| **Module-based deployment** | Drop a `.dll` into `Libs/` — Tsak loads it, builds an `IRouteContext`, starts the routes. Update the DLL — Tsak hot-swaps it without dropping a single in-flight message in other contexts. |
+| **Module-based deployment** | Drop a package or a `.dll` into `modules/` — Tsak loads it, builds an `IRouteContext`, starts the routes. Update the DLL — Tsak hot-swaps it without dropping a single in-flight message in other contexts. |
 | **Three deployment modes** | `Standalone` (in-memory, no DB) · `Single-node + redb` (durable RTTI-storage state) · `Cluster` (leader election + automatic context redistribution across nodes). |
 | **Three API modes** | `Full` (REST API + management) · `Headless` (zero ports, embedded use) · `Readonly` (only `GET` endpoints — perfect for monitoring sidecars). |
 | **5-layer configuration** | Module ships defaults. DevOps overrides. Config hot-reloads. No code changes, no restarts. |
@@ -29,7 +46,7 @@
 | **Quartz scheduler** | A scheduler per context, as Apache Camel has one per CamelContext — modules never collide on job names. `RAMJobStore` standalone, `AdoJobStore` cluster-safe — schema auto-created on first start. |
 | **Security** | API Key + HMAC-SHA256 + roles + expiry + revocation. Constant-time comparison. redb-backed key store. Optional user binding (disabled user → key dies). |
 | **Module isolation** | Per-module `AssemblyLoadContext` — dependencies don't conflict between modules. |
-| **Clients ready to ship** | Typed C# `ITsakApiClient`, 30-command `tsak` CLI with profiles and JSON output, Blazor Server dashboard. |
+| **Clients ready to ship** | Typed C# `ITsakApiClient`, the `tsak` CLI with profiles and JSON output, Blazor Server dashboard. |
 
 ---
 "redb.Tsak — .NET analogue of Apache Camel K".
@@ -46,12 +63,12 @@ Tsak is the missing piece between "a Worker Service" and "an enterprise ESB":
 
 | | Hand-rolled Worker | Tsak | Heavy ESB |
 |---|---|---|---|
-| Deploy a new pipeline | Redeploy whole process | `cp module.dll Libs/` (hot-reload) | Vendor wizard, hours |
+| Deploy a new pipeline | Redeploy whole process | `cp module.tpkg modules/` (hot-reload) | Vendor wizard, hours |
 | Stop one pipeline without affecting others | Custom code | `tsak context stop orders` | Vendor UI |
 | Distribute pipelines across nodes | Custom coordinator | Built-in leader election + auto-rebalance | Vendor cluster |
 | REST API for ops/CI | Build it yourself | 69 endpoints, typed client | Yes, vendor-locked |
-| CLI for CI/CD | Build it yourself | 30 commands, profiles, JSON output | Maybe |
-| Web dashboard | Build it yourself | Blazor Server, 11 pages | Yes, vendor-locked |
+| CLI for CI/CD | Build it yourself | `tsak` CLI, profiles, JSON output | Maybe |
+| Web dashboard | Build it yourself | Blazor Server dashboard | Yes, vendor-locked |
 | Cost | Engineering time | Apache 2.0, free | $$$$ + lock-in |
 | Routing engine | DIY or MassTransit | **redb.Route** — 22 transports, 24 EIP processors, fluent DSL | Vendor's DSL |
 
@@ -72,7 +89,7 @@ What Tsak adds **on top** of a plain `redb.Route` worker:
 
 | Pure `redb.Route` worker (`Host.CreateApplicationBuilder`) | `redb.Route` inside Tsak |
 |---|---|
-| One `Program.cs` wires every `RouteBuilder` at compile time. | Drop the DLL into `Libs/` — Tsak loads it. |
+| One `Program.cs` wires every `RouteBuilder` at compile time. | Drop the package into `modules/`, Tsak loads it. |
 | Add a route → redeploy the whole process. | Hot-reload one module without touching the others. |
 | One process = one bag of routes. | Multiple **named contexts**, each with its own properties, lifecycle and assembly load context. |
 | Stop one route = stop the process. | `tsak route stop <ctx> <id>` or `POST /api/routes/{id}/stop`. |
@@ -201,7 +218,7 @@ redb.Tsak/
 │   ├── redb.Tsak.Contracts/     Wire DTOs (System.Text.Json only) shared
 │   │                            between Core, Client, Web, CLI
 │   ├── redb.Tsak.Client/        ITsakApiClient + TsakApiClient (HTTP)
-│   ├── redb.Tsak.CLI/           tsak — 30 commands, profiles, JSON output
+│   ├── redb.Tsak.CLI/           tsak CLI, profiles, JSON output
 │   ├── redb.Tsak.Web/           Blazor Server dashboard, custom design system
 │   └── redb.Tsak.Web.Pro/       Pro web extensions (auth, node providers)
 ├── tests/
@@ -237,16 +254,20 @@ Pre-built images are published to GitHub Container Registry — no build step, n
 # Worker only (REST API + cluster, no UI)
 docker run -d --name tsak \
   -p 9090:9090 \
-  -v $PWD/Libs:/app/Libs \
+  -v $PWD/modules:/app/modules \
   ghcr.io/redbase-app/redb-tsak-worker:latest
 
 # Stack (Worker + Web UI in one container, like rabbitmq:management)
 docker run -d --name tsak \
   -p 9090:9090 -p 8085:8085 \
-  -v $PWD/Libs:/app/worker/Libs \
+  -e Tsak__Modules__AssemblyPaths__0=/app/worker/modules \
+  -v $PWD/modules:/app/worker/modules \
   ghcr.io/redbase-app/redb-tsak-stack:latest
 # UI: http://localhost:8085  ·  REST: http://localhost:9090
 ```
+
+Mount your modules into the dedicated `modules/` directory, never over `Libs/`: `Libs/shared` holds the image's own
+redb and connector libraries, and a mount over it hides them.
 
 | Image | Contains | Size | Ports |
 |---|---|---|---|
@@ -254,19 +275,21 @@ docker run -d --name tsak \
 | `ghcr.io/redbase-app/redb-tsak-web`    | Standalone Web UI       | ~250 MB | `8085` |
 | `ghcr.io/redbase-app/redb-tsak-stack`  | Worker + Web (supervisord) | ~430 MB | `9090`, `8085` |
 
-Tags: `latest`, `<version>` (e.g. `2.0.0`), `<version>-net10`.
+Tags: `latest`, `<version>`, `<version>-net10`.
 
 **With PostgreSQL (durable RTTI-storage state, multi-node, cluster):**
 
 ```bash
 docker run -d --name tsak \
   -p 9090:9090 -p 8085:8085 \
-  -v $PWD/Libs:/app/worker/Libs \
+  -e Tsak__Modules__AssemblyPaths__0=/app/worker/modules \
+  -v $PWD/modules:/app/worker/modules \
   -e ConnectionStrings__Postgres="Host=pg;Port=5432;Database=redb;Username=postgres;Password=postgres" \
   ghcr.io/redbase-app/redb-tsak-stack:latest
 ```
 
-Ready-to-use compose files (worker / web / stack / full-with-postgres) live in `publish/docker/`.
+A compose file for the stack image is in [Docker → docker compose](#docker-compose); the full deployment guide is
+[DEPLOYMENT.md](DEPLOYMENT.md).
 
 ### Option B — Standalone archive (no Docker)
 
@@ -288,51 +311,46 @@ The Tsak binary is deliberately thin: only `redb.Tsak.*` (+ `redb.Licensing`) li
 - **What's loaded, really.** `GET /api/system/assemblies` (admin) reports every loaded assembly with its version and origin (shared / bin / runtime).
 
 ```bash
-curl -LO https://github.com/redbase-app/redb-tsak/releases/latest/download/redb-tsak-2.0.2-linux-x64.tar.gz
-tar xzf redb-tsak-2.0.2-linux-x64.tar.gz
-cd redb-tsak-2.0.2-linux-x64
+VERSION=<version>   # the release to install, as on the releases page
+curl -LO https://github.com/redbase-app/redb-tsak/releases/download/v$VERSION/redb-tsak-$VERSION-linux-x64.tar.gz
+tar xzf redb-tsak-$VERSION-linux-x64.tar.gz
+cd redb-tsak-$VERSION-linux-x64
 ./scripts/start-stack.sh   # worker on :9090, web on :8085
 ```
 
 ### Verifying signatures (recommended)
 
-All images and archives are signed with [cosign](https://docs.sigstore.dev/cosign/installation/). Public key: `publish/keys/cosign.pub`.
+All images and archives are signed with [cosign](https://docs.sigstore.dev/cosign/installation/). The public key,
+`cosign.pub`, is attached to every [release](https://github.com/redbase-app/redb-tsak/releases).
 
 ```bash
 # Image
-cosign verify --key cosign.pub ghcr.io/redbase-app/redb-tsak-worker:2.0.2
+cosign verify --key cosign.pub ghcr.io/redbase-app/redb-tsak-worker:$VERSION
 
 # Archive
 cosign verify-blob --key cosign.pub \
-  --bundle redb-tsak-2.0.2-linux-x64.tar.gz.bundle \
-  redb-tsak-2.0.2-linux-x64.tar.gz
+  --bundle redb-tsak-$VERSION-linux-x64.tar.gz.bundle \
+  redb-tsak-$VERSION-linux-x64.tar.gz
 ```
 
 SHA256 sums for every artifact are in `checksums.txt` on the release page.
 
 ### Option C — Build from source
 
-### 1. Run a Tsak worker (no database, in-memory)
-
 ```bash
-cd redb.Tsak/src/redb.Tsak.Worker
+git clone https://github.com/redbase-app/redb-tsak
+cd redb-tsak/src/redb.Tsak.Worker
 dotnet run
 ```
 
-```
-[INF] redb.Tsak.Worker starting…
-[INF] Storage: InMemory
-[INF] Cluster: disabled
-[INF] HotReload: enabled (scan every 10s)
-[INF] HTTP API listening on http://0.0.0.0:9090
-[INF] _system context started
-[INF] Discovered 0 modules in Libs/
-[INF] Ready
-```
+### 1. Run a Tsak worker (no database, in-memory)
+
+Any option above starts a worker with in-memory storage and no cluster. Its REST API answers on port 9090, and it scans
+the `modules/` directory for module packages (`Tsak:Modules:AssemblyPaths`):
 
 ```bash
-curl http://localhost:9090/api/system/health
-# { "status": "Healthy", "checks": [...] }
+curl http://localhost:9090/api/health/live
+# {"status":"ok"}
 ```
 
 ### 2. Deploy your first module
@@ -356,7 +374,7 @@ public class OrderRoutes : RouteBuilder
     protected override void Configure()
     {
         From("kafka://orders?brokers=localhost:9092&groupId=svc")
-            .Filter(e => e.Message.GetHeader<string>("type") == "new")
+            .Filter(e => e.In.GetHeader<string>("type") == "new")
             .Process(async (e, ct) => await ProcessAsync(e, ct))
             .To("rabbitmq://processed?host=localhost");
     }
@@ -365,8 +383,7 @@ public class OrderRoutes : RouteBuilder
 
 ```bash
 # Build and deploy
-dotnet publish MyRoutes -c Release -o publish/
-cp -r publish/* /opt/tsak/Libs/MyRoutes/
+dotnet publish MyRoutes -c Release -o /opt/tsak/modules/   # straight into the module directory
 
 # Tsak picks it up within HotReload:ScanIntervalSeconds (default 10s)
 ```
@@ -381,28 +398,29 @@ tsak context list
 ### 3. Manage from the CLI
 
 ```bash
-tsak login http://localhost:9090 --key $TSAK_KEY
-tsak health
+tsak profile add --name local --url http://localhost:9090 --key $TSAK_KEY
+tsak profile use local
+tsak system health
 tsak context restart MyRoutes
-tsak logs --level Error --limit 50
-tsak metrics
+tsak log get --level Error --limit 50
+tsak system metrics
 tsak scheduler jobs
-tsak cluster overview
+tsak cluster status
 ```
 
 ### 4. Open the dashboard
 
 ```bash
-cd redb.Tsak/src/redb.Tsak.Web
+cd redb-tsak/src/redb.Tsak.Web
 dotnet run
-# Browse to http://localhost:5100
+# Browse to http://localhost:5180 (the stack image serves it on 8085)
 ```
 
 ---
 
 ## Module workflow
 
-Tsak supports **two equivalent deployment formats** under `Libs/`. Both are scanned by `HotReloadService`, hot-reloaded on file change, gracefully unloaded on file removal — pick whichever fits your workflow.
+Tsak supports **two equivalent deployment formats** in its module directory (`modules/`, set by `Tsak:Modules:AssemblyPaths`). Both are scanned by `HotReloadService`, hot-reloaded on file change, gracefully unloaded on file removal — pick whichever fits your workflow.
 
 | Format | What it is | When to pick it |
 |---|---|---|
@@ -421,19 +439,21 @@ If neither shape is found, the assembly is **classified as a dependency, not a m
 - It is registered in `LoadedAssemblyTracker` so that other modules in the process can resolve it as a transitive dependency (same `Assembly` instance everywhere — no type-identity drift across ALCs).
 - Its file timestamp is recorded in an internal "ignored" set; subsequent scans skip it unless the file is replaced with a newer version (which triggers a re-scan in case the new bits *do* contain a module).
 
-So the rule is: **random DLLs are not loaded as modules — but DLLs that other modules depend on are loaded and made available, just not started as routes.** This keeps the runtime predictable and prevents random vendor SDKs sitting in `Libs/` from being treated as deployable units.
+So the rule is: **random DLLs are not loaded as modules — but DLLs that other modules depend on are loaded and made available, just not started as routes.** This keeps the runtime predictable and prevents random vendor SDKs sitting in `modules/` from being treated as deployable units.
 
 ### Format 1 — Bare directory layout
 
+A directory of `Tsak:Modules:AssemblyPaths` is scanned at its top level, so a bare module's files sit right in it. To
+keep one folder per module, list each folder in `AssemblyPaths`.
+
 ```
-Libs/
-└── Orders/
-    ├── Orders.dll                  ← module entry point (contains ITsakModule or InitRoute.main)
-    ├── Orders.deps.json            ← dependency graph (from dotnet publish)
-    ├── Orders.Domain.dll           ← companion dependency (no module → loaded as dep only)
-    ├── Newtonsoft.Json.dll         ← any third-party dep that isn't already in the host
-    ├── context.json                ← infrastructure defaults (Layer 3)  — optional
-    └── Orders.config.json          ← module business settings (Layer 4) — optional
+modules/
+├── Orders.dll                  ← module entry point (contains ITsakModule or InitRoute.main)
+├── Orders.deps.json            ← dependency graph (from dotnet publish)
+├── Orders.Domain.dll           ← companion dependency (no module → loaded as dep only)
+├── Newtonsoft.Json.dll         ← any third-party dep that isn't already in the host
+├── context.json                ← infrastructure defaults (Layer 3) — optional, for the modules of this directory
+└── Orders.config.json          ← module business settings (Layer 4) — optional
 ```
 
 How the loader treats each file:
@@ -448,7 +468,7 @@ How the loader treats each file:
 
 ### Format 2 — `.tpkg` package (atomic, immutable, isolated)
 
-A `.tpkg` is a plain ZIP archive bundling everything a module needs into a single file. Drop one file into `Libs/`, Tsak picks it up and loads it as one atomic unit. Replace or delete that one file, the whole bundle reloads or shuts down together — no half-state in the middle.
+A `.tpkg` is a plain ZIP archive bundling everything a module needs into a single file. Drop one file into `modules/`, Tsak picks it up and loads it as one atomic unit. Replace or delete that one file, the whole bundle reloads or shuts down together — no half-state in the middle.
 
 ```
 Orders.tpkg                          (ZIP archive, flat structure)
@@ -524,23 +544,22 @@ Replace the artifact on disk — that is the whole API.
 
 ```bash
 # Bare directory: atomic rsync over existing files
-rsync -a ./publish/ /opt/tsak/Libs/Orders/
+rsync -a ./publish/ /opt/tsak/modules/
 
 # .tpkg: replace the single file
-cp ./output/Orders.tpkg /opt/tsak/Libs/
+cp ./output/Orders.tpkg /opt/tsak/modules/
 ```
 
 `HotReloadService` detects the timestamp change, performs a **graceful swap** (start new ALC → wait for it to settle → drain old context's in-flight exchanges → stop old context → optionally unload old ALC). In a cluster each node performs this swap independently on its own scan schedule — to stagger an update, deploy the package to nodes sequentially yourself. (`HotReload:RollingUpdate` is reserved and not implemented yet.)
 
 ### Graceful shutdown when an artifact is removed
 
-Deleting a file from `Libs/` is a first-class deployment operation, not an error condition. The runtime treats it as an explicit "stop and unload" command:
+Deleting a file from `modules/` is a first-class deployment operation, not an error condition. The runtime treats it as an explicit "stop and unload" command:
 
 | You do this | Tsak does this |
 |---|---|
-| `rm Libs/Orders.tpkg` | After `RemovalDebounceScans` confirm the file is gone, **all modules from that package are unloaded atomically**: each context stops gracefully (drain in-flight, close transports, close DB connections), the package's isolated ALC is disposed. Other packages keep running. |
-| `rm Libs/Orders/Orders.dll` | Same flow scoped to one bare-DLL module: graceful context stop → unregister module → dispose its ALC. |
-| `rm -rf Libs/Orders/` | Same as above for every module file in the directory. |
+| `rm modules/Orders.tpkg` | After `RemovalDebounceScans` confirm the file is gone, **all modules from that package are unloaded atomically**: each context stops gracefully (drain in-flight, close transports, close DB connections), the package's isolated ALC is disposed. Other packages keep running. |
+| `rm modules/Orders.dll` | Same flow scoped to one bare-DLL module: graceful context stop → unregister module → dispose its ALC. |
 
 The debounce (`HotReload:RemovalDebounceScans`, default `2` scans) protects against false positives during atomic file replacements where a deployment briefly removes the file before writing the new one.
 
@@ -548,7 +567,7 @@ The debounce (`HotReload:RemovalDebounceScans`, default `2` scans) protects agai
 
 | Key | Default | Behavior |
 |---|---|---|
-| `Tsak:Modules:AssemblyPaths` | `["Libs"]` | Directories to scan for `*.dll` and `*.tpkg` files. |
+| `Tsak:Modules:AssemblyPaths` | `["modules"]` | Directories to scan for `*.dll` and `*.tpkg` files, at their top level. Never point it at `Libs/`, which holds the shared layer. |
 | `HotReload:ScanIntervalSeconds` | `10` | How often to scan the configured paths. |
 | `HotReload:KeepVersions` | `2` | Old versions kept in memory for one-command rollback (bare-DLL flow). |
 | `HotReload:StartupTimeoutSeconds` | `60` | Wait time for the new version to settle before retiring the old one. |
@@ -562,7 +581,7 @@ Two production-tested approaches ship with the repo. Pick whichever matches your
 
 #### Option A — MSBuild target inside the `.csproj`
 
-Put packing inside the build itself. After every `dotnet build` the module is repackaged and dropped into the local Tsak `Libs/` for instant hot-reload. This is the pattern used by [redb.Route.Demo](https://github.com/redbase-app/redb-route/tree/main/redb.Route.Demo):
+Put packing inside the build itself. After every `dotnet build` the module is repackaged and dropped into the local Tsak `modules/` for instant hot-reload. This is the pattern used by [redb.Route.Demo](https://github.com/redbase-app/redb-route/tree/main/demo/redb.Route.Demo):
 
 ```xml
 <PropertyGroup>
@@ -570,7 +589,7 @@ Put packing inside the build itself. After every `dotnet build` the module is re
   <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
 
   <TsakModuleName>Orders</TsakModuleName>
-  <TsakLibsDir>$(MSBuildThisFileDirectory)..\redb.Tsak\src\redb.Tsak.Worker\Libs</TsakLibsDir>
+  <TsakModulesDir>$(MSBuildThisFileDirectory)..\redb.Tsak\src\redb.Tsak.Worker\modules</TsakModulesDir>
 </PropertyGroup>
 
 <Target Name="PackTpkg" AfterTargets="Build">
@@ -593,9 +612,9 @@ Put packing inside the build itself. After every `dotnet build` the module is re
   <ZipDirectory SourceDirectory="$(_TpkgStaging)"
                 DestinationFile="$(_TpkgFile)" Overwrite="true" />
 
-  <MakeDir Directories="$(TsakLibsDir)" Condition="!Exists('$(TsakLibsDir)')" />
-  <Copy SourceFiles="$(_TpkgFile)" DestinationFolder="$(TsakLibsDir)" SkipUnchangedFiles="false" />
-  <Touch Files="$(TsakLibsDir)\$(TsakModuleName).tpkg" />
+  <MakeDir Directories="$(TsakModulesDir)" Condition="!Exists('$(TsakModulesDir)')" />
+  <Copy SourceFiles="$(_TpkgFile)" DestinationFolder="$(TsakModulesDir)" SkipUnchangedFiles="false" />
+  <Touch Files="$(TsakModulesDir)\$(TsakModuleName).tpkg" />
 
   <Message Importance="high" Text="Packed $(TsakModuleName) → $(_TpkgFile)" />
 </Target>
@@ -619,7 +638,7 @@ $tfm     = "net10.0"
 $pkgName = "tsum"
 $staging = Join-Path $env:TEMP "${pkgName}_tpkg_staging"
 $tpkg    = Join-Path $PSScriptRoot "output\$pkgName.tpkg"
-$libs    = "..\redb.Tsak\src\redb.Tsak.Worker\Libs"
+$modules = "..\redb.Tsak\src\redb.Tsak.Worker\modules"
 
 # 1. Build every project that contributes to the package
 dotnet build .\tsum.Core\tsum.Core.csproj -c $Configuration --nologo
@@ -642,8 +661,8 @@ if (Test-Path $tpkg) { Remove-Item $tpkg -Force }
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 [IO.Compression.ZipFile]::CreateFromDirectory($staging, $tpkg)
 
-Copy-Item $tpkg $libs -Force
-(Get-Item (Join-Path $libs "$pkgName.tpkg")).LastWriteTime = Get-Date  # trigger hot-reload
+Copy-Item $tpkg $modules -Force
+(Get-Item (Join-Path $modules "$pkgName.tpkg")).LastWriteTime = Get-Date  # trigger hot-reload
 Remove-Item -Recurse -Force $staging
 ```
 
@@ -705,8 +724,8 @@ The most powerful feature in Tsak's configuration model: deep merge across five 
 ```
 Layer 1: Tsak:Contexts:default              ← base for all contexts (lowest priority)
 Layer 2: Tsak:Contexts:{name}               ← named context overrides
-Layer 3: Libs/{Module}/context.json         ← module infrastructure defaults
-Layer 4: Libs/{Module}/{Module}.config.json ← module business settings
+Layer 3: modules/context.json              ← module infrastructure defaults, next to the package or DLL
+Layer 4: modules/{Module}.config.json      ← module business settings (or inside the .tpkg)
 Layer 5: Tsak:Contexts:{name}:Override      ← DevOps final word (highest priority)
 ```
 
@@ -736,12 +755,12 @@ Later layers **deep-merge** over earlier layers. Nested objects merge recursivel
 ```
 
 ```json
-// Libs/Orders/context.json
+// modules/context.json
 { "RabbitMQ": { "Vhost": "/orders", "Username": "orders-svc" } }
 ```
 
 ```json
-// Libs/Orders/Orders.config.json
+// modules/Orders.config.json
 { "MaxRetries": 10 }
 ```
 
@@ -832,7 +851,7 @@ What such an interceptor sees and can do:
 
 ## REST API
 
-69 endpoints organized into 16 controllers. Every endpoint speaks JSON. Auth is opt-in (`Tsak:Auth:Enabled`) — when enabled, all endpoints require an API key except the auth-exempt health probes under `/api/health/*` (configurable via `Tsak:Api:AuthExempt`) and the [echo probe](#echo-probe).
+Every endpoint speaks JSON. Auth is opt-in (`Tsak:Auth:Enabled`) — when enabled, all endpoints require an API key except the auth-exempt health probes under `/api/health/*` (configurable via `Tsak:Api:AuthExempt`) and the [echo probe](#echo-probe).
 
 The API is itself a route context (`_system`): one catch-all HTTP listener whose pipeline is
 *header bridge → auth → controller dispatch*, with controllers discovered by assembly scan.
@@ -870,11 +889,10 @@ KEY="$(tsak auth create --name ci --roles admin --output json | jq -r .rawKey)"
 curl -s http://localhost:9090/api/system/health | jq
 # {
 #   "status": "Healthy",
-#   "checks": [
-#     { "name": "Contexts", "status": "Healthy", "data": { "running": 4, "failed": 0 } },
-#     { "name": "Memory", "status": "Healthy", "data": { "workingSetMB": 184 } },
-#     { "name": "Cluster", "status": "Healthy", "data": { "leader": "node-1", "epoch": 7 } }
-#   ]
+#   "description": "All checks passed",
+#   "checks": { "contexts": "Healthy", "metrics": "Healthy", "control-plane": "Healthy", "redb": "Healthy", "cluster": "Healthy" },
+#   "details": {},
+#   "timestamp": "2026-10-22T09:00:00Z"
 # }
 
 # Start a context
@@ -937,35 +955,41 @@ public class MyService(ITsakApiClient tsak)
 
 ```bash
 # Profile management
-tsak login http://prod-1:9090 --key $PROD_KEY --profile prod
-tsak login http://stg-1:9090 --key $STG_KEY  --profile staging
+tsak profile add --name prod    --url http://prod-1:9090 --key $PROD_KEY
+tsak profile add --name staging --url http://stg-1:9090  --key $STG_KEY
 tsak profile use prod
 tsak profile list
 
 # Per-call override
-tsak --server http://other:9090 --key $OTHER_KEY  context list
+tsak --url http://other:9090 --key $OTHER_KEY context list
 
 # Output format
-tsak context list                  # tabular (default)
-tsak context list --output json    # JSON
-tsak context list --output plain   # raw lines (grep-friendly)
+tsak context list                  # table (default)
+tsak context list --output json    # JSON, for scripts and CI
+tsak context list --output quiet   # nothing but the exit code
 ```
 
-### Command groups (43 commands)
+### Command groups
 
 | Group | Commands |
 |---|---|
-| **profile** | `login`, `logout`, `use`, `list` |
+| **system** | `system health`, `system metrics`, `system info`, `system config` |
+| **profile** | `profile list`, `profile add`, `profile remove`, `profile use` |
 | **auth** | `auth list`, `auth create`, `auth revoke` |
-| **context** | `context list`, `context get`, `context start`, `context stop`, `context restart`, `context reset-routes`, `context delete` |
-| **route** | `route list`, `route get`, `route start`, `route stop`, `route force-stop`, `route inflight` |
+| **context** | `context list`, `context get`, `context start`, `context stop`, `context restart`, `context remove` |
+| **route** | `route list`, `route get`, `route start`, `route stop`, `route inflight`, `route force-stop` |
 | **module** | `module list`, `module get`, `module remove`, `module keygen`, `module sign`, `module deploy`, `module validate`, `module rollback` |
 | **scheduler** | `scheduler status`, `scheduler jobs`, `scheduler running`, `scheduler start`, `scheduler standby`, `scheduler pause`, `scheduler resume`, `scheduler fire` |
 | **cluster** | `cluster status`, `cluster nodes`, `cluster rebalance`, `cluster cordon`, `cluster uncordon` |
-| **monitoring** | `health`, `metrics`, `metrics history`, `info`, `system config`, `logs`, `logs files`, `logs download`, `lifecycle`, `diagnostics`, `route-diagnostics`, `audit` |
+| **watchdog** | `watchdog status`, `watchdog alerts`, `watchdog enable`, `watchdog disable` |
+| **diagnostics** | `diagnostics lifecycle`, `diagnostics dump`, `diagnostics route`, `diagnostics dashboard` |
 | **dlq** | `dlq list`, `dlq replay`, `dlq discard` |
-| **watchdog** | `watchdog status`, `watchdog alerts` |
-| **users** | `users list`, `users get`, `users create`, `users update`, `users delete` |
+| **log**, **audit** | `log get`, `audit` |
+
+`tsak <command> --help` shows the arguments and options of a command. A required argument left out is named in the
+error (`Required argument '<routeId>' is missing for command 'route get'.`), followed by the command's help.
+`module keygen` writes a signing key pair: `--out` is required, an existing pair is never replaced without `--force`,
+and the full paths of both files are printed ([MODULE_DEPLOYMENT.md](MODULE_DEPLOYMENT.md)).
 
 ---
 
@@ -1276,7 +1300,9 @@ Distinct probes for the three K8s lifecycle phases. All three are **auth-exempt*
 > The probe endpoints live under **`/api/health/*`** (the auth-exempt prefix). The rich
 > aggregate at `GET /api/system/health` is a separate, auth-gated endpoint for CLI/Web.
 
-`HealthCheckService` aggregates probes (worst status wins: Unhealthy > Degraded > Healthy) and never throws — exceptions inside a probe become Unhealthy, never a 500. Modules can contribute custom probes by implementing `IModuleHealthContributor`. Pro ships `ClusterHealthContributor` reporting leader / member health. Full breakdown of both health endpoints and the contributor SPI: [API_GUIDE.md](API_GUIDE.md#6-health-two-endpoints-two-audiences).
+`HealthCheckService` aggregates probes (worst status wins: Unhealthy > Degraded > Healthy) and never throws — exceptions inside a probe become Unhealthy, never a 500. Modules can contribute custom probes by implementing `IModuleHealthContributor`. Pro ships `ClusterHealthContributor` reporting leader / member health.
+
+The `redb` check is **Degraded** while a redb database of the worker (the host's own or a named instance of a context) has schema problems that need a person, such as a root field of a scheme written twice by nodes of an older redb. The worker keeps serving and redb logs the problem as an error at every start; the check puts it where monitoring looks, with the problem and a link to redb's UPGRADING.md in `details`, the dashboard's node page and `tsak system health`. It reads what the last start found and queries no database on a poll. Readiness stays `200` on Degraded unless `Tsak:Health:DegradedNotReady=true`. Full breakdown of both health endpoints and the contributor SPI: [API_GUIDE.md](API_GUIDE.md#6-health-two-endpoints-two-audiences).
 
 ### Logs
 
@@ -1413,35 +1439,39 @@ Available tags:
 ```bash
 docker run -d --name tsak \
   -p 9090:9090 \
-  -v /opt/tsak/Libs:/app/Libs \
+  -v /opt/tsak/modules:/app/modules \
   -e ConnectionStrings__Postgres="$PG_CONN" \
   -e Tsak__Auth__Secret="$TSAK_SECRET" \
   -e Tsak__Metrics__Prometheus__Enabled=true \
-  ghcr.io/redbase-app/redb-tsak-worker:2.0.2
+  ghcr.io/redbase-app/redb-tsak-worker:<version>
 ```
 
-Mount `Libs/` from the host (or a shared volume) so module updates can be deployed without rebuilding the image. `appsettings.json` overrides flow through environment variables in the standard ASP.NET pattern (`__` for nesting).
+Mount `modules/` from the host (or a shared volume) so module updates can be deployed without rebuilding the image; never mount over `Libs/`, which holds the image's `Libs/shared` layer. `appsettings.json` overrides flow through environment variables in the standard ASP.NET pattern (`__` for nesting).
 
-### docker compose templates
+### docker compose
 
-Ready-to-use compose files are shipped in `publish/docker/` — copy and edit, no monorepo paths:
+```yaml
+services:
+  tsak:
+    image: ghcr.io/redbase-app/redb-tsak-stack:latest
+    ports: ["9090:9090", "8085:8085"]
+    environment:
+      - Tsak__Modules__AssemblyPaths__0=/app/worker/modules
+      - ConnectionStrings__Postgres=Host=pg;Database=redb;Username=redb;Password=${PG_PASSWORD}
+    volumes:
+      - ./modules:/app/worker/modules:ro   # your .tpkg packages (+ context.json)
+```
 
-| File | What it stands up |
-|---|---|
-| `compose.worker.yml` | Worker only |
-| `compose.web.yml`    | Web only (talks to an existing worker) |
-| `compose.stack.yml`  | Worker + Web in one container |
-| `compose.full.yml`   | Stack + PostgreSQL (durable RTTI storage, single-node) |
-
-Each has a matching `compose.*.env.example` — copy to `.env` and fill in.
+Settings, secrets, a PostgreSQL service next to it and the cluster setup: [DEPLOYMENT.md](DEPLOYMENT.md). The module
+templates (`dotnet new redb-app`, `redb-worker`, ...) ship a `deploy/docker-compose.tsak.yml` of their own.
 
 ### Verifying images
 
 ```bash
-cosign verify --key cosign.pub ghcr.io/redbase-app/redb-tsak-worker:2.0.2
+cosign verify --key cosign.pub ghcr.io/redbase-app/redb-tsak-worker:<version>
 ```
 
-Public key: `publish/keys/cosign.pub` in the repo, or downloadable from any [release](https://github.com/redbase-app/redb-tsak/releases).
+The public key `cosign.pub` is attached to every [release](https://github.com/redbase-app/redb-tsak/releases).
 
 ### Building images yourself
 
@@ -1539,38 +1569,14 @@ All coordination interfaces (`ILeaderElection`, `IDistributedLock`, `INodeRegist
 
 ## Testing
 
-| Suite | Count | What's covered |
-|---|---:|---|
-| `redb.Tsak.Tests` | **287** | Module loading, context lifecycle, config merge, security, controllers, monitoring, scheduler, cluster (leader election, heartbeat, rebalance, epoch fencing), hot-reload (ALC isolation, rolling update, rollback, removal debounce), in-memory and Redb stores, host startup, full API integration |
-| `redb.Tsak.CLI.Tests` | **64** | All 30 CLI commands — output format (table/JSON/plain), error handling, auth failure, profile resolution |
-| **Total** | **351** | All passing on net8.0, net9.0, net10.0 |
+Every release runs these suites (they live in the development repository, not in this one):
 
-```bash
-dotnet test redb.Tsak/tests/redb.Tsak.Tests
-dotnet test redb.Tsak/tests/redb.Tsak.CLI.Tests
-```
-
----
-
-## Implementation status
-
-All 9 phases are complete and merged. The per-phase breakdown is the table below; each release is
-itemised in [CHANGELOG.md](CHANGELOG.md).
-
-| # | Phase | Status | Tests |
-|---|---|---|---|
-| 0 | Infrastructure | Done | 1 |
-| 1 | Controller Dispatcher (transport-agnostic) | Done | 20 |
-| 2 | Container Core (modules, contexts, coordinator) | Done | 32 |
-| 3 | Cluster (leader election, registry, assignment) | Done | 9 |
-| 4 | Hot Reload (collectible ALC, rolling update, rollback) | Done | 25 |
-| 5 | Monitoring (metrics, health, logs, watchdog) | Done | 50 |
-| 6 | REST API & Auth (12 controllers, redb key store) | Done | 42 |
-| 7 | Quartz Scheduler (DI, schema initializer, controller) | Done | 30 |
-| 8A | CLI (30 commands, profiles, JSON) | Done | 64 |
-| 8B | Web UI (Blazor Server, 11 pages, design system) | Done | — |
-
-**Total: 351 tests passing.**
+| Suite | What's covered |
+|---|---|
+| `redb.Tsak.Tests` | Module loading, context lifecycle, config merge, security, controllers, monitoring and health, scheduler, cluster (leader election, heartbeat, rebalance, epoch fencing), hot-reload (ALC isolation, rolling update, rollback, removal debounce), in-memory and redb stores, host startup, full API integration |
+| `redb.Tsak.CLI.Tests` | CLI commands: output format (table/JSON/quiet), parse errors, error handling, auth failure, profile resolution, module signing keys |
+| `redb.Tsak.Web.Tests` | Dashboard sign-in and throttling, page authorization, node views, cluster client selection |
+| `redb.Tsak.Tests.Integration` | The worker against a real redb database (PostgreSQL) |
 
 ---
 
@@ -1583,7 +1589,7 @@ No. Routing is [redb.Route](https://github.com/redbase-app/redb-route). Tsak is 
 Tsak loads class libraries that follow its module convention: a static `InitRoute.main(IRouteContext)` method, or one or more public `RouteBuilder` subclasses. Random DLLs are ignored.
 
 **Is module isolation a sandbox?**
-No. It is a dependency isolation boundary (separate `AssemblyLoadContext` per module). A malicious module runs with the same OS privileges as the Tsak process. Restrict write access to `Libs/` accordingly. See [SECURITY.md](SECURITY.md).
+No. It is a dependency isolation boundary (separate `AssemblyLoadContext` per module). A malicious module runs with the same OS privileges as the Tsak process. Restrict write access to `modules/` and `Libs/` accordingly. See [SECURITY.md](SECURITY.md).
 
 **Why is `Collectible: false` the default for hot-reload?**
 Because a collectible `AssemblyLoadContext` unloads only when nothing outside it refers to the module any more, and code the host does not control can: a library with a static cache of the types it handled, Emit-generated code kept outside the module's context. Default is the safe choice; with `true` check that the old versions really go (`LeakedAlcCount`, memory).
@@ -1610,7 +1616,7 @@ Out of the box, no. The cluster coordination assumes low-latency access to the s
 The dashboard is small and focused. Custom CSS keeps the bundle tiny, eliminates a major source of UI churn (vendor breaking changes), and gives full control over theming. CSS variables enable dark/light themes with no JS.
 
 **Is there an OpenAPI spec?**
-Not yet. All 16 controllers are documented in [API_GUIDE.md](API_GUIDE.md) and exposed via the typed `ITsakApiClient`. OpenAPI / Swagger generation is on the roadmap.
+Not yet. The API is documented in [API_GUIDE.md](API_GUIDE.md) and exposed via the typed `ITsakApiClient`. OpenAPI / Swagger generation is on the roadmap.
 
 ---
 
@@ -1623,7 +1629,12 @@ Not yet. All 16 controllers are documented in [API_GUIDE.md](API_GUIDE.md) and e
 - Live config editor in the dashboard
 - Multi-region federation primitives
 
-See docs/ for design notes on each.
+---
+
+## Upgrading
+
+What changes from one version to the next, and what to do about it: [UPGRADING.md](UPGRADING.md) for the steps a
+breaking change needs, [CHANGELOG.md](CHANGELOG.md) for every release.
 
 ---
 

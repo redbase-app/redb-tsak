@@ -286,6 +286,8 @@ public static class ServiceCollectionExtensions
         // report the node as unhealthy instead of silently serving as if fully operational.
         services.AddSingleton<ControlPlaneHealth>();
         services.AddSingleton<IHealthContributor, ControlPlaneHealthContributor>();
+        // Schema problems of the redb databases (host and named instances): Degraded while one needs a person.
+        services.AddSingleton<IHealthContributor, RedbSchemaHealthContributor>();
         services.AddHostedService<MetricsCollectionService>();
 
         // Log ring buffer — in-memory circular buffer for live log viewing
