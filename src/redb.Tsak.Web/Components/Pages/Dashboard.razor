@@ -158,6 +158,7 @@ else if (_topology is not null)
                                 <th>Throughput</th>
                                 <th>Inflight</th>
                                 <th>Rejected</th>
+                                <th>Refused</th>
                             </HeaderContent>
                             <RowContent>
                                 <td class="mono text-sm">@context.RouteId</td>
@@ -166,6 +167,7 @@ else if (_topology is not null)
                                 <td class="mono text-sm">@($"{context.ThroughputPerSecond:F1}/s")</td>
                                 <td class="mono text-sm">@context.InflightCount</td>
                                 <td class="mono text-sm" style="@(context.Rejected > 0 ? "color: var(--status-warning)" : "")">@context.Rejected</td>
+                                <td class="mono text-sm" style="@(context.Refused > 0 ? "color: var(--status-warning)" : "")" title="@(context.LastRefusal)">@context.Refused</td>
                             </RowContent>
                         </TsakGrid>
                     </div>

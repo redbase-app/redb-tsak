@@ -120,7 +120,7 @@ are the ones to use inside `Cache`:
 | `Tsak:Web:StandaloneUrl` | `http://localhost:9090` | |
 | `Tsak:Web:Nodes` | — | Node list in cluster mode. |
 | `Tsak:Web:AdminLogin` | — | |
-| `Tsak:Web:AdminPasswordHash` | — | **Prefer this over `AdminPassword`.** A BCrypt hash, verified in constant time. |
+| `Tsak:Web:AdminPasswordHash` | — | **Prefer this over `AdminPassword`.** A BCrypt hash (`$2a$`, `$2b$`, `$2y$`), verified in constant time. In cluster mode it is stored as the admin's password when the admin has none; wins over `AdminPassword`. |
 | `Tsak:Web:AdminPassword` | — | Plaintext. Accepted, but it ends up in whatever holds your config. |
 | `Tsak:Web:ServiceApiKey` | — | |
 | `Tsak:Web:Lockout:MaxAttempts` | `5` | |

@@ -90,10 +90,10 @@ public sealed class XmlRouteModule : ITsakModule, IEmbeddedConfigModule
         // packages share one context, and each keeps its own package-first view.
         routeContext.AddService(typeof(IBeanTypeResolver),
             new PackageFirstTypeResolver(_package, routeContext.GetService<IBeanTypeResolver>()));
-        if (_package.ResourcesRoot is { } resourcesRoot)
+        if (_package is { ResourcesRoot: { } resourcesRoot, PackageRoot: { } packageRoot })
         {
             routeContext.AddService(typeof(IRouteResourceResolver),
-                new PackageFirstResourceResolver(resourcesRoot, routeContext.GetService<IRouteResourceResolver>()));
+                new PackageFirstResourceResolver(resourcesRoot, packageRoot, routeContext.GetService<IRouteResourceResolver>()));
         }
 
         // Every markup contribution reachable in this worker (Р21): the package's own
@@ -186,20 +186,29 @@ public sealed class XmlRouteModule : ITsakModule, IEmbeddedConfigModule
         }
     }
 
-    /// <summary>The package's extracted resources first, then whatever the context had.</summary>
-    private sealed class PackageFirstResourceResolver(string resourcesRoot, IRouteResourceResolver? next) : IRouteResourceResolver
+    /// <summary>
+    /// The package's extracted resources first, then whatever the context had. A reference is read as the project reads it
+    /// and as the packaging checks accept it: from the resources directory (<c>order.xsd</c>), else from the package root
+    /// (<c>resources/order.xsd</c>); neither may leave the package.
+    /// </summary>
+    private sealed class PackageFirstResourceResolver(string resourcesRoot, string packageRoot, IRouteResourceResolver? next)
+        : IRouteResourceResolver
     {
         public string? Resolve(string reference)
         {
             if (Path.IsPathRooted(reference))
                 return File.Exists(reference) ? reference : next?.Resolve(reference);
-            var candidate = Path.GetFullPath(Path.Combine(resourcesRoot, reference));
-            if (candidate.StartsWith(resourcesRoot, StringComparison.OrdinalIgnoreCase) && File.Exists(candidate))
-                return candidate;
-            return next?.Resolve(reference);
+            return Inside(resourcesRoot, reference) ?? Inside(packageRoot, reference) ?? next?.Resolve(reference);
+        }
+
+        private static string? Inside(string root, string reference)
+        {
+            var candidate = Path.GetFullPath(Path.Combine(root, reference));
+            return candidate.StartsWith(root, StringComparison.OrdinalIgnoreCase) && File.Exists(candidate) ? candidate : null;
         }
 
         public string DescribeSearch(string reference)
-            => $"{Path.Combine(resourcesRoot, reference)}; {next?.DescribeSearch(reference) ?? reference}";
+            => $"{Path.Combine(resourcesRoot, reference)}; {Path.Combine(packageRoot, reference)}; "
+               + (next?.DescribeSearch(reference) ?? reference);
     }
 }

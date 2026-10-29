@@ -3,6 +3,18 @@
 What to check and change when moving to a new version. Each section lists the changes that need action;
 [CHANGELOG.md](CHANGELOG.md) has the full list of what changed.
 
+## 4.5.0
+
+### Package config beside a .tpkg
+
+**A `{Module}.config.json` on disk beside a `.tpkg` now overrides the one inside the package** (it was the other way
+round). Layer 4 is read as: the package's own `{Module}.config.json` first, then the file beside the package, so a
+deployment can change a value of a package without repacking it. The module's context name is looked up in the same
+order. Whom it concerns: only a folder that holds both a `.tpkg` and a `{Module}.config.json` of the same module with
+different values for one key (or a different `ContextName`): the file on disk now wins. Projects made from the
+redb.Templates templates keep only `ContextName` and `AutoStart` inside the package and `context.json` beside it, and
+work as before. To keep the package's value, remove the key from the file beside it, or the file itself.
+
 ## 4.4
 
 ### Node id and Quartz instance id

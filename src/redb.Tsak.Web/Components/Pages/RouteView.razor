@@ -166,6 +166,7 @@ else if (_detail is not null)
                     <th>In / Out</th>
                     <th>Errors</th>
                     <th>Rejected</th>
+                    <th>Refused</th>
                     <th>Throughput</th>
                     <th>Health</th>
                 </HeaderContent>
@@ -174,6 +175,7 @@ else if (_detail is not null)
                     <td class="mono text-sm">@FormatNumber(context.MessagesIn) / @FormatNumber(context.MessagesOut)</td>
                     <td class="mono text-sm" style="@(context.Errors > 0 ? "color: var(--status-error)" : "")">@context.Errors</td>
                     <td class="mono text-sm" style="@(context.Rejected > 0 ? "color: var(--status-warning)" : "")">@context.Rejected</td>
+                    <td class="mono text-sm" style="@(context.Refused > 0 ? "color: var(--status-warning)" : "")" title="@(context.LastRefusalMessage)">@context.Refused</td>
                     <td class="mono text-sm">@($"{context.ThroughputPerSecond:F1}/s")</td>
                     <td><TsakBadge Text="@context.HealthStatus" Variant="@GetHealthBadge(context.HealthStatus)" /> @if (!string.IsNullOrEmpty(context.HealthReason) && context.HealthStatus != "Healthy") { <span class="text-xs text-secondary">@context.HealthReason</span> }</td>
                 </RowContent>

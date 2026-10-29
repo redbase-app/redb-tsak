@@ -81,6 +81,7 @@
         'redb.Route.DataFormats.Yaml'
         'redb.Route.DataFormats.Avro'
         'redb.Route.DataFormats.Protobuf'
+        'redb.Route.DataFormats.Mime'
         # XML DSL element contributions (Route-XML). XmlRouteModule.DiscoverContributions scans
         # loaded 'redb.*' assemblies for IXmlElementContribution, so without these lines an XML
         # route in a worker silently has no <cache>, <transformJson> or <payload> element at all.

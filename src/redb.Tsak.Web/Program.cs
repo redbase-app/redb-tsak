@@ -111,9 +111,6 @@ var pathBase = app.Configuration["ASPNETCORE_PATHBASE"]
 if (!string.IsNullOrEmpty(pathBase))
     app.UsePathBase(pathBase);
 
-// Seed admin user (no-op in standalone mode)
-await TsakWebProExtensions.SeedAdminUserAsync(app.Services, app.Configuration);
-
 if (!app.Environment.IsDevelopment())
 {
     app.UseExceptionHandler("/Error");

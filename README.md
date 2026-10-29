@@ -825,6 +825,11 @@ ConnectionStrings__MSSql="Server=sql;Database=Orders;User Id=sa;Password=...;Tru
 
 Full reference: [CONFIG_GUIDE.md](CONFIG_GUIDE.md).
 
+**Plain SQL through redb.Route.Sql.** The worker registers the ADO providers it ships under their invariant names, so a
+module, including one written in XML only, names the provider and does not register it: `Npgsql` (PostgreSQL),
+`Microsoft.Data.SqlClient` (SQL Server), `Microsoft.Data.Sqlite` (SQLite), as `ProviderName` of a `SqlConnectionFactory`
+bean or `provider=` of a `sql:` endpoint.
+
 ### A module's save interceptors
 
 A module cannot reach the worker's DI, so it subscribes a redb `IRedbSaveInterceptor` through its context, in `InitializeAsync` or `main`:

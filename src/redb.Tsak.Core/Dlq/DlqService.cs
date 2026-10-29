@@ -82,6 +82,7 @@ public sealed class DlqService
             AddParam(cmd, "body_data", s.BodyData);
             AddParam(cmd, "headers_json", s.HeadersJson);
             AddParam(cmd, "properties_json", s.PropertiesJson);
+            AddParam(cmd, "attachments_json", s.AttachmentsJson);
             // Bind a real bool: PostgreSQL BOOLEAN has NO implicit cast from integer, so an int 1/0
             // makes the whole INSERT throw (silently, via the catch) — the DLQ then captures nothing
             // on Postgres. bool maps cleanly to PG boolean / SQL Server bit / SQLite 0/1.
@@ -226,7 +227,8 @@ public sealed class DlqService
         try
         {
             var snapshot = ExchangeSnapshotCodec.Rehydrate(new SerializedSnapshot(
-                row.BodyKind, row.BodyType, row.BodyData, row.HeadersJson, row.PropertiesJson, row.Replayable));
+                row.BodyKind, row.BodyType, row.BodyData, row.HeadersJson, row.PropertiesJson, row.AttachmentsJson,
+                row.Replayable));
 
             await context.ReplayAsync(row.RouteId, row.MarkerName, snapshot, ct);
             await UpdateStatusAsync(entryId, "replayed", DateTimeOffset.UtcNow, ct);
@@ -330,8 +332,8 @@ public sealed class DlqService
 
     private sealed record DlqRow(
         string EntryId, string ContextName, string RouteId, string MarkerName,
-        string BodyKind, string? BodyType, string? BodyData, string HeadersJson, string PropertiesJson, bool Replayable,
-        string Status, string? ClusterName);
+        string BodyKind, string? BodyType, string? BodyData, string HeadersJson, string PropertiesJson,
+        string? AttachmentsJson, bool Replayable, string Status, string? ClusterName);
 
     private static FailedExchangeEntry MapSummary(DbDataReader r) => new()
     {
@@ -353,7 +355,7 @@ public sealed class DlqService
         GetString(r, "entry_id") ?? "", GetString(r, "context_name") ?? "", GetString(r, "route_id") ?? "",
         GetString(r, "marker_name") ?? "", GetString(r, "body_kind") ?? "none", GetString(r, "body_type"),
         GetString(r, "body_data"), GetString(r, "headers_json") ?? "{}", GetString(r, "properties_json") ?? "{}",
-        GetBool(r, "replayable"), GetString(r, "status") ?? "pending", GetString(r, "cluster_name"));
+        GetString(r, "attachments_json"), GetBool(r, "replayable"), GetString(r, "status") ?? "pending", GetString(r, "cluster_name"));
 
     /// <summary>
     /// Binds the filter and paging parameters of <see cref="DlqStorage.SelectSql"/> with explicit types

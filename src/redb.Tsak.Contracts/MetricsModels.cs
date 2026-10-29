@@ -26,6 +26,18 @@ public sealed record RouteMetricsSummary
     /// </summary>
     public long Rejected { get; init; }
 
+    /// <summary>
+    /// Requests the route's consumer refused as the caller's fault (a bad signature, a broken envelope, an unknown
+    /// agreement), counted apart from <see cref="Errors"/>: the route is fine, the sender is not.
+    /// </summary>
+    public long Refused { get; init; }
+
+    /// <summary>When the last request was refused; null when none was.</summary>
+    public DateTime? LastRefusalTime { get; init; }
+
+    /// <summary>Why the last request was refused; null when none was.</summary>
+    public string? LastRefusal { get; init; }
+
     public long Warnings { get; init; }
     public double AvgProcessingMs { get; init; }
     public double ThroughputPerSecond { get; init; }
@@ -56,6 +68,12 @@ public sealed record DashboardSnapshot
     /// response (raise the limit, add nodes) differs from bug-hunting.
     /// </summary>
     public IReadOnlyList<RouteMetricsSummary> SheddingRoutes { get; init; } = [];
+
+    /// <summary>
+    /// Routes whose consumer refused requests as the caller's fault: <see cref="RouteMetricsSummary.Refused"/> &gt; 0.
+    /// Apart from <see cref="ErrorProneRoutes"/> as well: the answer is a word with the sender, not a fix here.
+    /// </summary>
+    public IReadOnlyList<RouteMetricsSummary> RefusingRoutes { get; init; } = [];
     public IReadOnlyList<WatchdogAlert> ActiveAlerts { get; init; } = [];
     public SystemMetricsSnapshot? SystemMetrics { get; init; }
 }

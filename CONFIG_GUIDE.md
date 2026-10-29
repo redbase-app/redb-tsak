@@ -24,8 +24,13 @@ Layer 5: Tsak:Contexts:{name}:Override  ← DevOps last word (always wins)
 | 1 | `appsettings.json` → `Tsak:Contexts:default` | Operator | Base defaults for all contexts |
 | 2 | `appsettings.json` → `Tsak:Contexts:{name}` | Operator | Per-context settings |
 | 3 | `modules/{Module}/context.json` | Module developer | Module infrastructure defaults |
-| 4 | `modules/{Module}/{Module}.config.json` | Module developer | Module builder/business settings |
+| 4 | `{Module}.config.json` inside the `.tpkg` | Module developer | The package's own config, module identity (`ContextName`, `AutoStart`) above all |
+| 4 | `modules/{Module}/{Module}.config.json` | Module developer / operator | Module builder/business settings; beside a `.tpkg` it overrides the package's own, without repacking |
 | 5 | `appsettings.json` → `Tsak:Contexts:{name}:Override` | DevOps | Final override (always wins) |
+
+Whether a context starts on its own: a start or stop an operator made through the API (kept by the worker) first, then
+`Tsak:Contexts:{name}:AutoStart` in appsettings, then `AutoStart` from the merged layers above (a package's
+`"AutoStart": false` is honoured), and `true` when nothing says otherwise.
 
 ## Configuration Examples
 

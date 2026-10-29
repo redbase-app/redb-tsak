@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS tsak_dlq (
     body_data         TEXT,                          -- base64 (bytes) / literal (string) / json
     headers_json      TEXT,
     properties_json   TEXT,
+    attachments_json  TEXT,                          -- message attachments: metadata and base64 content
     replayable        BOOLEAN NOT NULL,
     replayed_at       TIMESTAMPTZ,
     cluster_name      VARCHAR(200),                  -- NULL on entries captured before cluster isolation

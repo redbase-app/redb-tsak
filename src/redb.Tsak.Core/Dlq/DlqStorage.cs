@@ -18,6 +18,9 @@ public static class DlqStorage
     /// <summary>Index on the cluster column, created by the schema initializer.</summary>
     public const string ClusterIndexName = "ix_tsak_dlq_cluster";
 
+    /// <summary>Message attachments of the entry (see <see cref="ExchangeSnapshotCodec"/>); null on entries without any.</summary>
+    public const string AttachmentsColumn = "attachments_json";
+
     /// <summary>Reuse the audit provider enum — the DLQ lives on the same database.</summary>
     public static AuditProvider ResolveProvider(IConfiguration configuration) =>
         AuditStorage.ResolveProvider(configuration);
@@ -43,11 +46,11 @@ public static class DlqStorage
             INSERT INTO {TableName}
                 (entry_id, occurred_at, context_name, route_id, marker_name, status,
                  exception_type, exception_message, correlation_id,
-                 body_kind, body_type, body_data, headers_json, properties_json, replayable, cluster_name)
+                 body_kind, body_type, body_data, headers_json, properties_json, attachments_json, replayable, cluster_name)
             VALUES
                 ({entryId}, @occurred_at, @context_name, @route_id, @marker_name, @status,
                  @exception_type, @exception_message, @correlation_id,
-                 @body_kind, @body_type, @body_data, @headers_json, @properties_json, @replayable, @cluster_name)
+                 @body_kind, @body_type, @body_data, @headers_json, @properties_json, @attachments_json, @replayable, @cluster_name)
             """;
     }
 
@@ -76,8 +79,8 @@ public static class DlqStorage
         return $"""
             SELECT entry_id, occurred_at, context_name, route_id, marker_name, status,
                    exception_type, exception_message, correlation_id,
-                   body_kind, body_type, body_data, headers_json, properties_json, replayable, replayed_at,
-                   cluster_name
+                   body_kind, body_type, body_data, headers_json, properties_json, attachments_json, replayable,
+                   replayed_at, cluster_name
             FROM {TableName}
             WHERE entry_id = {entryId} AND {ClusterColumn.ScopeCondition}
             """;

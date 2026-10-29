@@ -75,6 +75,12 @@ public class DashboardController : RedbController
                 .OrderByDescending(r => r.Rejected)
                 .Take(5)
                 .ToList(),
+            // Refused requests are the caller's fault: neither errors of the route nor load it sheds.
+            RefusingRoutes = allRouteMetrics
+                .Where(r => r.Refused > 0)
+                .OrderByDescending(r => r.Refused)
+                .Take(5)
+                .ToList(),
             ActiveAlerts = watchdog?.GetState()?.ActiveAlerts ?? [],
             SystemMetrics = sysMetrics
         };

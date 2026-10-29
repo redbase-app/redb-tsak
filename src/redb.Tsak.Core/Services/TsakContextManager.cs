@@ -62,6 +62,9 @@ public class TsakContextManager : ITsakContextManager
         _contextCustomizers = contextCustomizers;
         _auditService = auditService;
         _sharedLoader = sharedLoader;
+
+        // Before any module context exists: a module in markup names its ADO provider and cannot register one.
+        Audit.TsakSqlDialect.RegisterProviderFactories();
     }
 
     public IRouteContext CreateContext(string contextName, IServiceProvider serviceProvider, IDictionary<string, object?> configuration)
@@ -409,10 +412,16 @@ public class TsakContextManager : ITsakContextManager
         if (persisted != null)
             return string.Equals(persisted, "true", StringComparison.OrdinalIgnoreCase);
 
-        // Then check config
+        // Then the host's own word for this context: appsettings Tsak:Contexts:{name}:AutoStart overrides the module's files
         var configValue = _configuration[$"Tsak:Contexts:{contextName}:AutoStart"];
         if (configValue != null)
             return string.Equals(configValue, "true", StringComparison.OrdinalIgnoreCase);
+
+        // Then the context's merged configuration: the package's {Module}.config.json, the file beside it, context.json,
+        // the default section and the Override, in the layer order. A package that says AutoStart=false is not started.
+        if (GetContext(contextName)?.GetProperty<object>("AutoStart") is { } merged
+            && bool.TryParse(merged.ToString(), out var mergedAutoStart))
+            return mergedAutoStart;
 
         // Default context config
         var defaultAutoStart = _configuration["Tsak:Contexts:default:AutoStart"];

@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS tsak_dlq (
     body_data         TEXT,
     headers_json      TEXT,
     properties_json   TEXT,
+    attachments_json  TEXT,
     replayable        INTEGER NOT NULL,
     replayed_at       TEXT,
     cluster_name      TEXT,

@@ -517,68 +517,13 @@ public sealed class HotReloadService : IDisposable
     /// </summary>
     private List<PackageCandidate> OrderPackagesByDependencies(List<PackageCandidate> candidates)
     {
-        if (candidates.Count <= 1)
-            return candidates;
-
-        var byName = new Dictionary<string, PackageCandidate>(StringComparer.OrdinalIgnoreCase);
-        foreach (var candidate in candidates)
+        var ordered = Modules.PackageDependencyOrder.Sort(candidates, c => c.Path, c => c.Manifest, out var cyclic);
+        if (cyclic.Count > 0)
         {
-            if (!string.IsNullOrWhiteSpace(candidate.Manifest.Name))
-                byName[candidate.Manifest.Name] = candidate;
-        }
-
-        var dependencies = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-        var inDegree = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        foreach (var candidate in candidates)
-        {
-            var deps = new List<string>();
-            foreach (var dep in candidate.Manifest.Dependencies)
-            {
-                if (!byName.TryGetValue(dep, out var dependency)
-                    || string.Equals(dependency.Path, candidate.Path, StringComparison.OrdinalIgnoreCase)
-                    || deps.Contains(dependency.Path, StringComparer.OrdinalIgnoreCase))
-                    continue;
-                deps.Add(dependency.Path);
-            }
-            dependencies[candidate.Path] = deps;
-            inDegree[candidate.Path] = deps.Count;
-        }
-
-        var queue = new Queue<PackageCandidate>();
-        foreach (var candidate in candidates)
-        {
-            if (inDegree[candidate.Path] == 0)
-                queue.Enqueue(candidate);
-        }
-
-        var ordered = new List<PackageCandidate>(candidates.Count);
-        var emitted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        while (queue.Count > 0)
-        {
-            var current = queue.Dequeue();
-            ordered.Add(current);
-            emitted.Add(current.Path);
-
-            foreach (var candidate in candidates)
-            {
-                if (emitted.Contains(candidate.Path))
-                    continue;
-                if (!dependencies[candidate.Path].Any(p => string.Equals(p, current.Path, StringComparison.OrdinalIgnoreCase)))
-                    continue;
-                if (--inDegree[candidate.Path] == 0)
-                    queue.Enqueue(candidate);
-            }
-        }
-
-        if (ordered.Count < candidates.Count)
-        {
-            var cyclic = candidates.Where(c => !emitted.Contains(c.Path)).ToList();
             _logger.LogError(
                 "Cyclic Manifest.Dependencies among hot-reloaded packages: {Packages}. Reloading them in scan order.",
                 string.Join(", ", cyclic.Select(c => c.Manifest.Name)));
-            ordered.AddRange(cyclic);
         }
-
         return ordered;
     }
 

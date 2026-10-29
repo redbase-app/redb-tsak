@@ -29,6 +29,9 @@ public sealed class RouteWatchdogService : BackgroundService
     // scan rebuilds the full snapshot every cycle. The dispatcher also dedups by time window.
     private readonly HashSet<string> _notifiedKeys = [];
 
+    // Planned waits already written to the log (exchange id and the wait's end): one line per wait, not one per scan.
+    private readonly HashSet<string> _announcedWaits = new(StringComparer.Ordinal);
+
     public RouteWatchdogService(
         ITsakContextManager contextManager,
         ILogger<RouteWatchdogService> logger,
@@ -111,7 +114,7 @@ public sealed class RouteWatchdogService : BackgroundService
         _logger.LogInformation("Route watchdog stopped");
     }
 
-    private async Task ScanAllContextsAsync(CancellationToken ct)
+    internal async Task ScanAllContextsAsync(CancellationToken ct)
     {
         var now = DateTime.UtcNow;
         var suspectedThreshold = TimeSpan.FromMinutes(_options.SuspectedThresholdMinutes);
@@ -121,6 +124,7 @@ public sealed class RouteWatchdogService : BackgroundService
         // trigger ten back-to-back stop/start cycles of the same context within a single scan,
         // repeatedly killing freshly arrived in-flight work.
         var restartedThisScan = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seenWaits = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var (contextName, context) in _contextManager.GetAllContexts())
         {
@@ -131,7 +135,19 @@ public sealed class RouteWatchdogService : BackgroundService
 
             foreach (var inflight in inflights)
             {
-                var elapsed = now - inflight.StartedAt;
+                // A planned wait (a redelivery delay, a delay step) is not a hang: the exchange is skipped while it lasts,
+                // and afterwards it is measured from the end of the wait, so a redelivered attempt is judged on its own.
+                if (inflight.WaitingUntil is { } waitingUntil && waitingUntil > now)
+                {
+                    if (_announcedWaits.Add($"{inflight.ExchangeId}|{waitingUntil.Ticks}"))
+                        _logger.LogInformation(
+                            "Exchange {ExchangeId} in route {RouteId} (context: {Context}) waits for a planned redelivery or delay until {Until:O}; the watchdog does not count the wait",
+                            inflight.ExchangeId, inflight.RouteId, contextName, waitingUntil);
+                    seenWaits.Add($"{inflight.ExchangeId}|{waitingUntil.Ticks}");
+                    continue;
+                }
+
+                var elapsed = now - inflight.BusySince;
 
                 if (elapsed >= hungThreshold)
                 {
@@ -174,6 +190,9 @@ public sealed class RouteWatchdogService : BackgroundService
                 }
             }
         }
+
+        // Waits that ended are forgotten, so the set holds only the current ones.
+        _announcedWaits.IntersectWith(seenWaits);
 
         lock (_lock)
         {

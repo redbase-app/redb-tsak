@@ -44,6 +44,21 @@ internal abstract class TsakSqlDialect
         return provider == AuditProvider.None ? Postgres : For(provider);
     }
 
+    /// <summary>
+    /// Registers the ADO providers the worker ships (<c>Npgsql</c>, <c>Microsoft.Data.SqlClient</c>,
+    /// <c>Microsoft.Data.Sqlite</c>) in <see cref="DbProviderFactories"/> under their invariant names, each only if the name
+    /// is not registered yet. A module in markup cannot register a factory, and the redb.Route.Sql connector finds its
+    /// provider by that name (<c>ProviderName</c> of a connection factory, <c>provider=</c> of an endpoint).
+    /// </summary>
+    public static void RegisterProviderFactories()
+    {
+        foreach (var dialect in new[] { Postgres, SqlServer, Sqlite })
+        {
+            if (!DbProviderFactories.TryGetFactory(dialect.InvariantName, out _))
+                DbProviderFactories.RegisterFactory(dialect.InvariantName, dialect.Factory);
+        }
+    }
+
     public abstract AuditProvider Provider { get; }
 
     /// <summary>Name under <c>ConnectionStrings</c> — the same names redb uses.</summary>
@@ -89,6 +104,13 @@ internal abstract class TsakSqlDialect
     public abstract Task EnsureNullableTextColumnAsync(
         DbConnection conn, string table, string column, int maxLength, string indexName, CancellationToken ct);
 
+    /// <summary>
+    /// Adds a nullable text column without a length limit and without an index to an existing table,
+    /// idempotently. The DDL scripts create the column on a fresh database, where this changes nothing.
+    /// </summary>
+    public abstract Task EnsureNullableLongTextColumnAsync(
+        DbConnection conn, string table, string column, CancellationToken ct);
+
     protected static async Task ExecuteAsync(DbConnection conn, string sql, CancellationToken ct)
     {
         await using var cmd = conn.CreateCommand();
@@ -124,6 +146,10 @@ internal abstract class TsakSqlDialect
             await ExecuteAsync(conn, $"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} VARCHAR({maxLength})", ct);
             await ExecuteAsync(conn, $"CREATE INDEX IF NOT EXISTS {indexName} ON {table} ({column})", ct);
         }
+
+        public override Task EnsureNullableLongTextColumnAsync(
+            DbConnection conn, string table, string column, CancellationToken ct) =>
+            ExecuteAsync(conn, $"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} TEXT", ct);
     }
 
     private sealed class SqlServerDialect : TsakSqlDialect
@@ -160,6 +186,12 @@ internal abstract class TsakSqlDialect
                 $"IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'{indexName}' AND object_id = OBJECT_ID(N'[dbo].[{table}]')) "
                 + $"CREATE INDEX [{indexName}] ON [dbo].[{table}] ([{column}]);", ct);
         }
+
+        public override Task EnsureNullableLongTextColumnAsync(
+            DbConnection conn, string table, string column, CancellationToken ct) =>
+            ExecuteAsync(conn,
+                $"IF COL_LENGTH(N'dbo.{table}', N'{column}') IS NULL "
+                + $"ALTER TABLE [dbo].[{table}] ADD [{column}] nvarchar(max) NULL;", ct);
     }
 
     private sealed class SqliteDialect : TsakSqlDialect
@@ -196,6 +228,13 @@ internal abstract class TsakSqlDialect
             if (!await ColumnExistsAsync(conn, table, column, ct))
                 await ExecuteAsync(conn, $"ALTER TABLE {table} ADD COLUMN {column} TEXT", ct);
             await ExecuteAsync(conn, $"CREATE INDEX IF NOT EXISTS {indexName} ON {table} ({column})", ct);
+        }
+
+        public override async Task EnsureNullableLongTextColumnAsync(
+            DbConnection conn, string table, string column, CancellationToken ct)
+        {
+            if (!await ColumnExistsAsync(conn, table, column, ct))
+                await ExecuteAsync(conn, $"ALTER TABLE {table} ADD COLUMN {column} TEXT", ct);
         }
 
         private static async Task<bool> ColumnExistsAsync(DbConnection conn, string table, string column, CancellationToken ct)

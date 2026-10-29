@@ -177,29 +177,16 @@ public class TsakModuleRegistry : ITsakModuleRegistry
                 }
             }
 
-            // Scan .tpkg packages (CAR-style deployment)
-            foreach (var tpkg in Directory.GetFiles(path, "*.tpkg"))
+            // Scan .tpkg packages (CAR-style deployment), in dependency order: a package that uses the companion DLLs of
+            // a carrier (Manifest.Dependencies) is opened after it, as the hot-reload scan does. In directory order a
+            // dependent opened first failed on its missing types and waited for the next hot-reload scan.
+            foreach (var (tpkg, bytes) in ReadPackagesInDependencyOrder(path))
             {
                 try
                 {
-                    // Load-boundary trust gate (review 2026-09-02, К3): startup discovery used to
-                    // open packages WITHOUT the signature check the hot-reload scan enforces, so an
-                    // unsigned package refused by every scan executed on the next process restart.
-                    // The verified bytes are also the loaded bytes — no verify-then-reopen window.
-                    ModulePackage? package;
-                    if (_loadGate is not null)
-                    {
-                        var verified = _loadGate.ReadVerifiedTpkg(tpkg);
-                        if (verified is null)
-                            continue;
-                        package = ModulePackage.Open(verified, tpkg, File.GetLastWriteTimeUtc(tpkg),
-                            probePaths: probePaths, logger: _logger, collectible: collectible);
-                    }
-                    else
-                    {
-                        package = ModulePackage.Open(tpkg, probePaths: probePaths,
-                            logger: _logger, collectible: collectible);
-                    }
+                    // Load-boundary trust gate (review 2026-09-02, К3): the verified bytes are the loaded bytes.
+                    var package = ModulePackage.Open(bytes, tpkg, File.GetLastWriteTimeUtc(tpkg),
+                        probePaths: probePaths, logger: _logger, collectible: collectible);
                     if (package is null)
                         continue;
 
@@ -293,6 +280,37 @@ public class TsakModuleRegistry : ITsakModuleRegistry
         _logger.LogInformation("Discovery scan: {Added} added, {Updated} updated, {Removed} removed",
             added.Count, updated.Count, removed.Count);
         return total;
+    }
+
+    /// <summary>
+    /// The <c>.tpkg</c> files of <paramref name="directory"/> with the bytes to open, in the order to open them: by
+    /// file name, then every package after the ones its <see cref="ModuleManifest.Dependencies"/> names. The bytes are
+    /// the signature-verified ones when a load gate is set; a package the gate refuses is left out.
+    /// </summary>
+    internal IReadOnlyList<(string Path, byte[] Bytes)> ReadPackagesInDependencyOrder(string directory)
+    {
+        var packages = new List<(string Path, byte[] Bytes, ModuleManifest Manifest)>();
+        foreach (var tpkg in Directory.GetFiles(directory, "*.tpkg").OrderBy(f => f, StringComparer.Ordinal))
+        {
+            try
+            {
+                var bytes = _loadGate is not null ? _loadGate.ReadVerifiedTpkg(tpkg) : File.ReadAllBytes(tpkg);
+                if (bytes is null)
+                    continue;
+                packages.Add((tpkg, bytes, ModulePackage.TryReadManifest(bytes) ?? new ModuleManifest()));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to scan package {Path}", tpkg);
+            }
+        }
+
+        var ordered = PackageDependencyOrder.Sort(packages, p => p.Path, p => p.Manifest, out var cyclic);
+        if (cyclic.Count > 0)
+            _logger.LogError(
+                "Cyclic Manifest.Dependencies among packages in {Directory}: {Packages}. Opening them in file-name order.",
+                directory, string.Join(", ", cyclic.Select(p => p.Manifest.Name)));
+        return ordered.Select(p => (p.Path, p.Bytes)).ToList();
     }
 
     /// <summary>

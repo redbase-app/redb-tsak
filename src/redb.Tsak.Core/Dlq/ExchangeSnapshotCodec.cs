@@ -12,7 +12,17 @@ public sealed record SerializedSnapshot(
     string? BodyData,     // base64 (bytes) / literal (string) / json
     string HeadersJson,
     string PropertiesJson,
+    string? AttachmentsJson, // message attachments: metadata and base64 content; null when there are none
     bool Replayable);     // false when the body could not round-trip
+
+/// <summary>One stored message attachment of a <see cref="SerializedSnapshot"/>.</summary>
+public sealed record SerializedAttachment(
+    string Name,
+    string? FileName,
+    string ContentType,
+    string? ContentId,
+    IReadOnlyDictionary<string, string> Headers,
+    string Data);         // base64
 
 /// <summary>
 /// Serializes an <see cref="IExchange"/> snapshot for durable storage and rehydrates it back into a
@@ -25,6 +35,12 @@ public sealed record SerializedSnapshot(
 /// otherwise the body comes back as a <see cref="JsonElement"/>). A body that cannot be serialized at
 /// all is stored with <c>BodyKind=none</c> and <c>Replayable=false</c> — the entry stays visible but
 /// is not durably replayable (§fork-2 limitation).
+/// </para>
+/// <para>
+/// <b>Attachments:</b> the message attachments are stored with their metadata and content (base64, like a
+/// <c>byte[]</c> body) and come back as byte content in their order. Their size is bounded before they get
+/// here: the checkpoint the entry comes from is not taken when the attachments exceed
+/// <c>RedbRoute:Attachments:MaxReplayableBytes</c>, so such an exchange leaves no entry to store.
 /// </para>
 /// </summary>
 public static class ExchangeSnapshotCodec
@@ -40,6 +56,7 @@ public static class ExchangeSnapshotCodec
         return new SerializedSnapshot(kind, type, data,
             JsonSerializer.Serialize(headers, JsonOptions),
             JsonSerializer.Serialize(props, JsonOptions),
+            SerializeAttachments(msg.Attachments),
             replayable);
     }
 
@@ -50,6 +67,8 @@ public static class ExchangeSnapshotCodec
         var message = new Message(body);
         foreach (var (k, v) in Deserialize(s.HeadersJson))
             message.Headers[k] = v;
+        foreach (var attachment in DeserializeAttachments(s.AttachmentsJson))
+            message.Attachments.Add(attachment);
 
         var exchange = new Exchange(message);
         foreach (var (k, v) in Deserialize(s.PropertiesJson))
@@ -106,6 +125,32 @@ public static class ExchangeSnapshotCodec
             catch { /* fall through */ }
         }
         return JsonSerializer.Deserialize<JsonElement>(json, JsonOptions);
+    }
+
+    // ── attachments ──────────────────────────────────────────────────
+
+    private static string? SerializeAttachments(IReadOnlyList<Attachment> attachments)
+    {
+        if (attachments.Count == 0) return null;
+        var stored = attachments.Select(a => new SerializedAttachment(
+            a.Name, a.FileName, a.ContentType, a.ContentId, a.Headers,
+            Convert.ToBase64String(a.Content.ReadAllBytes()))).ToList();
+        return JsonSerializer.Serialize(stored, JsonOptions);
+    }
+
+    private static IEnumerable<Attachment> DeserializeAttachments(string? json)
+    {
+        if (string.IsNullOrEmpty(json)) return [];
+        var stored = JsonSerializer.Deserialize<List<SerializedAttachment>>(json, JsonOptions) ?? [];
+        return stored.Select(a => new Attachment
+        {
+            Name = a.Name,
+            FileName = a.FileName,
+            ContentType = a.ContentType,
+            ContentId = a.ContentId,
+            Headers = a.Headers,
+            Content = AttachmentContent.FromBytes(Convert.FromBase64String(a.Data)),
+        });
     }
 
     // ── headers / properties as scalar maps ──────────────────────────

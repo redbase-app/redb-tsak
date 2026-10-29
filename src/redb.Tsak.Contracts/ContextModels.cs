@@ -135,6 +135,18 @@ public sealed record TsakEndpointInfo
     /// </summary>
     public long Rejected { get; init; }
 
+    /// <summary>
+    /// Requests refused as the caller's fault (a message the endpoint does not accept: a bad signature, a broken
+    /// envelope, an unknown agreement). Counted apart from <see cref="Errors"/>: the endpoint is fine, the sender is not.
+    /// </summary>
+    public long Refused { get; init; }
+
+    /// <summary>When the last request was refused; null when none was.</summary>
+    public DateTimeOffset? LastRefusalTime { get; init; }
+
+    /// <summary>Why the last request was refused; null when none was.</summary>
+    public string? LastRefusalMessage { get; init; }
+
     public double ThroughputPerSecond { get; init; }
     public string HealthStatus { get; init; } = "Healthy";
     public string? HealthReason { get; init; }

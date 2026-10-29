@@ -32,76 +32,62 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Pending changes live in `changelog/unreleased/` until the release; `pwsh scripts/changelog.ps1 -Preview` shows them.
 
-## [4.4.2] — 2026-10-23
+## [4.5.0] — 2026-10-29
 
 ### Added
 
-- **The `redb` health check**: `/api/system/health` reports `Degraded` while a redb database of the worker (the host's
-  own or a named instance of a context) has schema problems that need a person, with the problem and a link to redb's
-  UPGRADING.md in the new `details` field; the dashboard's node page and `tsak system health` show it. Readiness stays
-  `200` on Degraded unless `Tsak:Health:DegradedNotReady=true`. Packages: `redb.Tsak.Core`, `redb.Tsak.Contracts`, `redb.Tsak.CLI`, `redb.Tsak.Web`.
+- **Requests refused as the caller's fault show on the dashboard and in the CLI.** An endpoint's `Refused` counter (an AS4
+  or SOAP message with a bad signature, a broken envelope, an unknown agreement) appears next to `Rejected` on the overview,
+  the endpoint and route pages and in `tsak` diagnostics, with the reason of the last refusal; a route that refuses requests
+  is listed among the things that need attention. These refusals count no error, so before they did not show at all. Packages: `redb.Tsak.Contracts`, `redb.Tsak.Core`, `redb.Tsak.Web`, `redb.Tsak.CLI`.
+- **The dead-letter store keeps the message attachments.** A failed exchange captured at a `.Replayable(...)` checkpoint
+  is replayed with its attachments (names, types and content). The `tsak_dlq` table gets an `attachments_json` column on
+  startup; entries captured before the upgrade are replayed as before. Packages: `redb.Tsak.Core`.
+- **The worker carries the MIME multipart data format.** A module can call `AddMimeMultipartDataFormat()` from
+  `redb.Route.DataFormats.Mime` on a Tsak worker without shipping the package in its own `.tpkg`, like the CSV, YAML, Avro
+  and Protobuf formats.
 
 ### Changed
 
-- **`tsak module keygen` needs `--out` and never replaces a key by itself.** Without `--out` it wrote a new private key
-  as `tsak-module.key` into the current directory, over one already there. It now refuses without `--out`, refuses to
-  overwrite an existing pair unless `--force` is given, and prints the full paths it wrote. A script that called it
-  without `--out` passes `--out tsak-module` to keep the old file names. Packages: `redb.Tsak.CLI`.
+- **A `{Module}.config.json` beside a `.tpkg` overrides the one inside the package.** The package's own config used to win
+  over the file on disk, so a deployment could not change a package's value without repacking it. The context name follows
+  the same order. Only a folder with both files holding different values for one key behaves differently. Packages: `redb.Tsak.Core`. Upgrade: [UPGRADING.md](UPGRADING.md#package-config-beside-a-tpkg).
 
 ### Fixed
 
-- **The CLI names the arguments left out.** A command with two required arguments (`route get <context> <routeId>` and
-  the like) printed "Required argument missing for command: 'get'." twice; it now prints one line per missing argument
-  with its name, then the help of the command as before. Other parse errors keep their "Did you mean" suggestions. Packages: `redb.Tsak.CLI`.
-
-## [4.4.1] — 2026-10-21
-
-### Fixed
-
-- **A context with a `seda:` hop works again after a restart** (redb-route issue #12). From 4.2.2 to 4.4.0, after `/stop` then `/start`,
-  `/restart` or the watchdog's automatic restart, the context reported its routes Started, but nothing behind a seda hop
-  was processed (`ChannelClosedException` on every send). The fix is in redb.Route 4.4.1, which this release uses. On an
-  older version, recreate the context instead of restarting it: stop it and touch its `.tpkg`. Packages: `redb.Tsak.Core`.
-
-## [4.4.0] — 2026-10-21
-
-> **Withdrawn on the day of release because of the seda restart bug in redb.Route; use 4.4.1.**
-
-### Breaking
-
-- **A second live worker with the same node id is refused at start.** A record of the id that keeps its heartbeat
-  stops the start; a previous process of the node is waited out (`DeadNodeTimeoutSeconds`). Give each worker its own id. Packages: `redb.Tsak.Core.Pro`. Upgrade: [UPGRADING.md](UPGRADING.md#node-id-and-quartz-instance-id).
-
-### Added
-
-- **A module subscribes redb save interceptors through its context**:
-  `context.GetService<ITsakSaveInterceptors>()?.Add(interceptor)` in `InitializeAsync`. Removing the context removes
-  them. The README, "A module's save interceptors", has the details. Packages: `redb.Tsak.Core`, `redb.Tsak.Contracts`.
-
-### Changed
-
-- **`tsak` CLI on System.CommandLine 2.0.13.** Commands, options, defaults and exit codes are unchanged; help and
-  errors are in English whatever the language of the operating system. Packages: `redb.Tsak.CLI`.
-- **`HotReload:Collectible=true` releases an unloaded module**: its resolvers and save interceptors go with its
-  context, and the caches of redb and redb.Route let its types go. The option stays `false` by default. Packages: `redb.Tsak.Core`.
-- **Quartz 3.22** for the scheduler of every context, with its corrections to when a job fires; the trigger of a
-  running non-concurrent job reads `Blocked`, not `Complete`. Serilog.AspNetCore 10, Serilog.Sinks.File 7,
-  OpenTelemetry 1.20, and everything else to its latest stable version. Packages: `redb.Tsak.Core`. Upgrade: [UPGRADING.md](UPGRADING.md#quartz-tables).
-- **A module's redb schemes are in the cache before it starts**: the host reads the schemes of the module's
-  `[RedbScheme]` types, so the first query no longer reads them on a blocked thread with a Warning. Nothing is synced. Packages: `redb.Tsak.Core`.
-- **The type names of a module's routes resolve to the module's own classes first** (`bean:Type`, XML `<bean type>`,
-  SQL `outputClass`), then the process as before. It changes only where two loaded classes share a name. Packages: `redb.Tsak.Core`.
-- **The worker adds the Quartz 3.17 to 3.19 columns to a clustered job store at start**, under a lock, so the
-  "column not found" warnings stop. A role that may not alter the tables gets a warning and the administrator's script. Packages: `redb.Tsak.Core`. Upgrade: [UPGRADING.md](UPGRADING.md#quartz-tables).
-- **`quartz.scheduler.instanceId = NODE`, the shipped value, gives every context scheduler the node id.** It stays
-  across restarts, so a crashed node takes its own fired triggers back at its first check-in. `AUTO` and explicit ids
-  keep their meaning. Packages: `redb.Tsak.Core`. Upgrade: [UPGRADING.md](UPGRADING.md#node-id-and-quartz-instance-id).
-- **Contexts start in the order the packages declare.** At start of the worker the `Dependencies` of a `.tpkg` manifest
-  and `ITsakModule.Dependencies` order the contexts, besides `Tsak:Contexts:{name}:Dependencies`: the contexts that run
-  modules of a named package or module start first, as a hot reload already ordered packages. Packages: `redb.Tsak.Core`.
+- **A `Contexts` section in the config inside a `.tpkg` is applied.** The `<Module>.config.json` embedded in a package
+  was read flat: a `Contexts` section became one property, and its values never reached the context. It is now read like
+  `context.json` and the file on disk: `Contexts.default`, then the module's own context. A flat file works as before. Packages: `redb.Tsak.Core`.
+- **`<rest>` and `from http://` in an XML module work on the worker.** A module's context had `https` and `wss` but not
+  `http` and `ws`, and such a module failed to start with "No component registered for scheme 'http'". The fix is in
+  redb.Route.Http and redb.Route.WebSocket, which this release uses. Packages: `redb.Tsak.Core`.
+- **A SQL module in XML works on the worker.** Such a module failed with "provider not registered" unless its provider
+  happened to be the one of the audit log. The worker now registers `Npgsql`, `Microsoft.Data.SqlClient` and
+  `Microsoft.Data.Sqlite` at start; name one of them as `ProviderName` or `provider=`. Packages: `redb.Tsak.Core`.
+- **`"AutoStart": false` in a module's config is honoured.** A context's AutoStart was read only from appsettings, so the
+  value in a package's `{Module}.config.json`, the file beside it or `context.json` had no effect and the context always
+  started. It is now read from the merged layers; `Tsak:Contexts:{name}:AutoStart` in appsettings still overrides them. Packages: `redb.Tsak.Core`.
+- **An XML module that reads a file from `resources/` starts on the worker.** The worker extracted `resources/order.xsd` to
+  the root of the package's folder, so `file="resources/order.xsd"` in `<validateXsd>`, `<validateJsonSchema>`, `<xslt>` or
+  `<payload>` was not found and the module failed to initialize. Resources now keep their path; `file="order.xsd"` works too. Packages: `redb.Tsak.Core`.
+- **At start the worker opens the packages of a folder in dependency order.** A package that uses a carrier's shared DLLs
+  (`Dependencies` in its manifest, as `redb.Identity.Http` uses `redb.Identity.Contracts`) could be opened first, fail with
+  "Failed to scan package" and start only on the next hot-reload scan, seconds later. Now carriers are opened first, as the
+  hot-reload scan already did. Packages: `redb.Tsak.Core`.
+- **The watchdog does not count a planned wait as a hang.** An exchange waiting for an `onException` redelivery longer than
+  `SuspectedThresholdMinutes` was reported as suspected, and past `HungThresholdMinutes` with `AutoRestartHungRoutes` its
+  route was restarted in the middle of the wait. Such an exchange is now skipped while it waits, with one log line saying
+  why, and measured from the end of the wait afterwards. The same holds for `Retry`, the dead letter channel and `delay`. Packages: `redb.Tsak.Core`.
+- **The cluster dashboard seeds its administrator from `Tsak:Web:AdminPasswordHash`.** Cluster mode read only the plaintext
+  `AdminPassword`; with the recommended hash alone the admin had no password and nobody could sign in. The hash now wins over
+  the plaintext, as in standalone mode; a value that is not a BCrypt hash is reported once and the seed stops. Packages: `redb.Tsak.Web.Pro`.
+- **The cluster dashboard no longer crashes on its first start against an empty database.** Started together with the
+  worker (the stack image), it read the user table before the worker had created the redb schema and ended with an
+  unhandled exception, restarted by supervisord. The administrator is now seeded in the background once the schema is
+  there; the dashboard serves meanwhile. Packages: `redb.Tsak.Web.Pro`.
 
 ## Earlier versions
 
-Earlier releases are archived by line in [changelog/](changelog/): [4.3.x](changelog/CHANGELOG-4.3.x.md), [4.2.x](changelog/CHANGELOG-4.2.x.md), [4.1.x](changelog/CHANGELOG-4.1.x.md), [4.0.x](changelog/CHANGELOG-4.0.x.md), [3.x](changelog/CHANGELOG-3.x.md), [2.x](changelog/CHANGELOG-2.x.md), [1.x](changelog/CHANGELOG-1.x.md).
+Earlier releases are archived by line in [changelog/](changelog/): [4.4.x](changelog/CHANGELOG-4.4.x.md), [4.3.x](changelog/CHANGELOG-4.3.x.md), [4.2.x](changelog/CHANGELOG-4.2.x.md), [4.1.x](changelog/CHANGELOG-4.1.x.md), [4.0.x](changelog/CHANGELOG-4.0.x.md), [3.x](changelog/CHANGELOG-3.x.md), [2.x](changelog/CHANGELOG-2.x.md), [1.x](changelog/CHANGELOG-1.x.md).
 The worker's development log of March 2026, before the versioned releases, is
 [changelog/worker-devlog-2026-03.md](changelog/worker-devlog-2026-03.md).

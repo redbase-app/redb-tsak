@@ -45,6 +45,7 @@ public static class NodeAttention
             items.AddRange(snapshot.ActiveAlerts.Select(FromAlert));
             items.AddRange(snapshot.ErrorProneRoutes.Select(FromErrors));
             items.AddRange(snapshot.SheddingRoutes.Select(FromShedding));
+            items.AddRange(snapshot.RefusingRoutes.Select(FromRefusals));
 
             var stopped = snapshot.TotalContexts - snapshot.RunningContexts;
             if (stopped > 0)
@@ -90,6 +91,20 @@ public static class NodeAttention
         "activity",
         $"Route '{route.RouteId}' shed {route.Rejected} request{(route.Rejected == 1 ? "" : "s")}",
         "The route is at its admission limit: raise the limit or add nodes.",
+        route.ContextName,
+        route.RouteId);
+
+    /// <summary>
+    /// A refusal is the sender's fault, not the route's: a warning, with the reason of the last one, so the operator knows
+    /// what to tell the partner (a signature that does not verify, an envelope that is not well formed, an agreement).
+    /// </summary>
+    private static AttentionItem FromRefusals(RouteMetricsSummary route) => new(
+        Warning,
+        "shield",
+        $"Route '{route.RouteId}' refused {route.Refused} request{(route.Refused == 1 ? "" : "s")} from its callers",
+        route.LastRefusal is { Length: > 0 } last
+            ? $"Last: {last}"
+            : "No reason was recorded with the last refusal.",
         route.ContextName,
         route.RouteId);
 

@@ -44,11 +44,18 @@ public sealed class ModulePackage : IDisposable
     private readonly List<(string Name, string Content)> _xmlArtifacts = [];
 
     /// <summary>
-    /// Directory the package's <see cref="ModuleManifest.Resources"/> entries were extracted to
-    /// (the package itself is never unpacked; artifact file-references need real file paths).
-    /// Null when the package carries no XML artifacts. Deleted by <see cref="Dispose"/>.
+    /// The package's <see cref="ModuleManifest.Resources"/> directory on disk (<c>{PackageRoot}/resources</c>): the
+    /// resources are extracted with their paths inside the package, since artifact file-references need real file paths
+    /// (the rest of the package is never unpacked). Null when the package carries no XML artifacts.
     /// </summary>
     public string? ResourcesRoot { get; private set; }
+
+    /// <summary>
+    /// The directory the resources were extracted under, laid out as the package is: a reference written from the package
+    /// root (<c>file="resources/order.xsd"</c>, the project's own layout) resolves here, one written from the resources
+    /// directory (<c>file="order.xsd"</c>) resolves under <see cref="ResourcesRoot"/>. Deleted by <see cref="Dispose"/>.
+    /// </summary>
+    public string? PackageRoot { get; private set; }
 
     /// <summary>The package's context.xml content, when the package carries one (read in Open).</summary>
     public string? ContextXml { get; private set; }
@@ -326,7 +333,8 @@ public sealed class ModulePackage : IDisposable
         Directory.CreateDirectory(root);
         foreach (var entry in resourceEntries)
         {
-            var relative = entry.FullName.Replace('\\', '/')[resourcesPrefix.Length..];
+            // Kept under its path in the package (resources/...), so both forms of a reference resolve, as in the project.
+            var relative = entry.FullName.Replace('\\', '/');
             var target = Path.GetFullPath(Path.Combine(root, relative));
             if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase))
             {
@@ -337,17 +345,20 @@ public sealed class ModulePackage : IDisposable
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
             entry.ExtractToFile(target, overwrite: true);
         }
-        ResourcesRoot = root;
+        PackageRoot = root;
+        ResourcesRoot = Path.Combine(root, resourcesPrefix.TrimEnd('/'));
+        Directory.CreateDirectory(ResourcesRoot);
         logger?.LogInformation("Package {Name}: {Artifacts} XML artifact(s), {Resources} resource file(s) → {Root}",
-            Manifest.Name, _xmlArtifacts.Count, resourceEntries.Count, root);
+            Manifest.Name, _xmlArtifacts.Count, resourceEntries.Count, ResourcesRoot);
     }
 
     public void Dispose()
     {
         Alc?.TryUnload();
         Alc = null;
-        if (ResourcesRoot is { } root)
+        if (PackageRoot is { } root)
         {
+            PackageRoot = null;
             ResourcesRoot = null;
             try
             {

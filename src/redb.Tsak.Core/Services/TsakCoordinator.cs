@@ -456,7 +456,7 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
 
     /// <summary>
     /// Determines the target context for a module based on config.
-    /// Priority: appsettings Contexts section → embedded config from .tpkg → {Module}.config.json from disk → anonymous.
+    /// Priority: appsettings Contexts section → {Module}.config.json beside the module on disk → the one embedded in the .tpkg → anonymous.
     /// </summary>
     private (string ContextName, bool IsNamed) DetermineContextForModule(ITsakModule module)
     {
@@ -478,32 +478,7 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
             }
         }
 
-        // Step 2: Check embedded config from .tpkg package (in-memory)
-        if (module is Contracts.IEmbeddedConfigModule { EmbeddedConfigJson: { Length: > 0 } configJson })
-        {
-            try
-            {
-                using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(configJson));
-                var jsonConfig = new ConfigurationBuilder()
-                    .AddJsonStream(stream)
-                    .Build();
-
-                var contextName = jsonConfig["ContextName"];
-                if (!string.IsNullOrWhiteSpace(contextName))
-                {
-                    _logger.LogInformation(
-                        "Module {Module} has ContextName '{ContextName}' from embedded package config",
-                        moduleName, contextName);
-                    return (contextName, true);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to read ContextName from embedded config for {Module}", moduleName);
-            }
-        }
-
-        // Step 3: Check {Module}.config.json for ContextName
+        // Step 2: {Module}.config.json beside the module on disk, which overrides the package's own (as in the merge)
         if (module.SourceDirectory is { Length: > 0 } sourceDir && Directory.Exists(sourceDir))
         {
             var moduleConfigPath = Path.Combine(sourceDir, $"{moduleName}.config.json");
@@ -528,6 +503,31 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
                 {
                     _logger.LogWarning(ex, "Failed to read ContextName from {Module}.config.json", moduleName);
                 }
+            }
+        }
+
+        // Step 3: the config embedded in the .tpkg
+        if (module is Contracts.IEmbeddedConfigModule { EmbeddedConfigJson: { Length: > 0 } configJson })
+        {
+            try
+            {
+                using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(configJson));
+                var jsonConfig = new ConfigurationBuilder()
+                    .AddJsonStream(stream)
+                    .Build();
+
+                var contextName = jsonConfig["ContextName"];
+                if (!string.IsNullOrWhiteSpace(contextName))
+                {
+                    _logger.LogInformation(
+                        "Module {Module} has ContextName '{ContextName}' from embedded package config",
+                        moduleName, contextName);
+                    return (contextName, true);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to read ContextName from embedded config for {Module}", moduleName);
             }
         }
 
@@ -627,7 +627,7 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
     ///   Layer 1: Tsak:Contexts:default (base)
     ///   Layer 2: Tsak:Contexts:{contextName} (named overrides)
     ///   Layer 3: context.json files from module source directories
-    ///   Layer 4: {Module}.config.json files from module source directories
+    ///   Layer 4: {Module}.config.json, the one embedded in the .tpkg first, then the one beside it on disk
     ///   Layer 5: Tsak:Contexts:{contextName}:Override (DevOps last word)
     /// Each layer deep-merges over the previous; later layers win on conflicts.
     /// </summary>
@@ -652,18 +652,19 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
             }
         }
 
-        // Layers 3+4: module config files (disk or embedded in .tpkg)
+        // Layers 3+4 per module: context.json beside the module, then {Module}.config.json, first the one embedded in the
+        // .tpkg (the package's own defaults), then the one beside the package on disk, which overrides the package without
+        // repacking it.
         if (modules != null)
         {
             foreach (var module in modules)
             {
-                // Prefer disk-based config files when source directory exists
-                if (module.SourceDirectory is { Length: > 0 } sourceDir && Directory.Exists(sourceDir))
-                {
-                    LoadModuleConfigFiles(sourceDir, module.ModuleName, contextName, config);
-                }
+                var sourceDir = module.SourceDirectory is { Length: > 0 } dir && Directory.Exists(dir) ? dir : null;
 
-                // Fallback: load embedded config from .tpkg package (Layer 4)
+                if (sourceDir is not null)
+                    LoadContextJson(sourceDir, contextName, config);
+
+                // Read like the disk files: a Contexts section scopes it per context.
                 if (module is Contracts.IEmbeddedConfigModule { EmbeddedConfigJson: { Length: > 0 } configJson })
                 {
                     try
@@ -673,10 +674,7 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
                             .AddJsonStream(stream)
                             .Build();
 
-                        var layer = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-                        foreach (var section in jsonConfig.GetChildren())
-                            LoadNestedOrLeaf(section, layer);
-
+                        var layer = ExtractLayerForContext(jsonConfig, contextName);
                         ConfigMergeHelper.DeepMerge(config, layer);
                         _logger.LogDebug("Loaded embedded config for module {Module} ({Count} keys)",
                             module.ModuleName, layer.Count);
@@ -687,6 +685,9 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
                             module.ModuleName);
                     }
                 }
+
+                if (sourceDir is not null)
+                    LoadModuleConfigJson(sourceDir, module.ModuleName, contextName, config);
             }
         }
 
@@ -769,7 +770,7 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
     /// When present, only <c>Contexts:default</c> and <c>Contexts:{contextName}</c>
     /// are merged for the target context; sections for OTHER contexts are ignored.
     /// </summary>
-    private void LoadModuleConfigFiles(string sourceDir, string moduleName, string contextName, IDictionary<string, object?> config)
+    private void LoadContextJson(string sourceDir, string contextName, IDictionary<string, object?> config)
     {
         // Layer 3: context.json (module infra defaults)
         var contextJsonPath = Path.Combine(sourceDir, "context.json");
@@ -791,7 +792,11 @@ public class TsakCoordinator : ITsakCoordinator, IDisposable
                 _logger.LogWarning(ex, "Failed to load context.json from {Path}", sourceDir);
             }
         }
+    }
 
+    /// <summary>Layer 4 on disk: <c>{ModuleName}.config.json</c> beside the module, over the one embedded in its package.</summary>
+    private void LoadModuleConfigJson(string sourceDir, string moduleName, string contextName, IDictionary<string, object?> config)
+    {
         // Layer 4: {ModuleName}.config.json (builder settings)
         var moduleConfigPath = Path.Combine(sourceDir, $"{moduleName}.config.json");
         if (File.Exists(moduleConfigPath))

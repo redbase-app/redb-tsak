@@ -81,6 +81,7 @@ else if (_contexts is { Length: > 0 })
                                 <th>In / Out</th>
                                 <th>Errors</th>
                                 <th>Rejected</th>
+                                <th>Refused</th>
                                 <th>Throughput</th>
                                 <th>Health</th>
                                 <th>Last Activity</th>
@@ -93,6 +94,7 @@ else if (_contexts is { Length: > 0 })
                                 <td class="mono text-sm">@FormatNumber(context.MessagesIn) / @FormatNumber(context.MessagesOut)</td>
                                 <td class="mono text-sm" style="@(context.Errors > 0 ? "color: var(--status-error)" : "")">@context.Errors</td>
                                 <td class="mono text-sm" style="@(context.Rejected > 0 ? "color: var(--status-warning)" : "")">@context.Rejected</td>
+                                <td class="mono text-sm" style="@(context.Refused > 0 ? "color: var(--status-warning)" : "")" title="@(context.LastRefusalMessage)">@context.Refused</td>
                                 <td class="mono text-sm">@($"{context.ThroughputPerSecond:F1}/s")</td>
                                 <td><TsakBadge Text="@context.HealthStatus" Variant="@GetHealthBadge(context.HealthStatus)" /></td>
                                 <td class="text-xs">@FormatTimeAgo(context.LastActivity)</td>
@@ -155,6 +157,11 @@ else
                                 <tr><td class="text-secondary">Bytes In</td><td class="mono">@FormatBytes(_selectedEndpoint.BytesIn)</td></tr>
                                 <tr><td class="text-secondary">Bytes Out</td><td class="mono">@FormatBytes(_selectedEndpoint.BytesOut)</td></tr>
                                 <tr><td class="text-secondary">Rejected</td><td class="mono" style="@(_selectedEndpoint.Rejected > 0 ? "color: var(--status-warning)" : "")">@_selectedEndpoint.Rejected.ToString("N0")</td></tr>
+                                <tr><td class="text-secondary">Refused</td><td class="mono" style="@(_selectedEndpoint.Refused > 0 ? "color: var(--status-warning)" : "")">@_selectedEndpoint.Refused.ToString("N0")</td></tr>
+                                @if (_selectedEndpoint.LastRefusalMessage is { Length: > 0 } refusal)
+                                {
+                                    <tr><td class="text-secondary">Last refusal</td><td class="text-sm">@refusal @(_selectedEndpoint.LastRefusalTime is { } at ? $"({at.ToLocalTime():HH:mm:ss})" : "")</td></tr>
+                                }
                                 <tr><td class="text-secondary">Throughput</td><td class="mono">@($"{_selectedEndpoint.ThroughputPerSecond:F2}/s")</td></tr>
                                 <tr><td class="text-secondary">Avg Processing</td><td class="mono">@FormatDuration(_selectedEndpoint.AverageProcessingTime)</td></tr>
                                 <tr><td class="text-secondary">Uptime</td><td class="mono">@FormatUptime(_selectedEndpoint.Uptime)</td></tr>

@@ -135,6 +135,8 @@ public static class DiagnosticsCommands
                     ("Messages", m.MessagesProcessed.ToString()),
                     ("Errors", m.Errors.ToString()),
                     ("Rejected", m.Rejected.ToString()),
+                    ("Refused", m.Refused.ToString()),
+                    ("LastRefusal", m.LastRefusal ?? "—"),
                     ("AvgProcessing(ms)", m.AvgProcessingMs.ToString("F1")),
                     ("Throughput(/s)", m.ThroughputPerSecond.ToString("F2")),
                     ("LastActivity", m.LastActivity?.ToString("HH:mm:ss") ?? "—"));
@@ -206,6 +208,16 @@ public static class DiagnosticsCommands
                         ("Rejected", rt => rt.Rejected.ToString()),
                         ("Throughput", rt => rt.ThroughputPerSecond.ToString("F1")),
                         ("Inflight", rt => rt.InflightCount.ToString()));
+                }
+
+                // Refusals are the callers' fault, neither errors nor shedding — their own table, as on the web panel.
+                if (snap.RefusingRoutes.Count > 0)
+                {
+                    r.RenderTable(snap.RefusingRoutes,
+                        ("RouteId", rt => rt.RouteId),
+                        ("Refused", rt => rt.Refused.ToString()),
+                        ("LastRefusal", rt => rt.LastRefusal ?? "—"),
+                        ("LastRefusalTime", rt => rt.LastRefusalTime?.ToString("HH:mm:ss") ?? "—"));
                 }
             });
         });

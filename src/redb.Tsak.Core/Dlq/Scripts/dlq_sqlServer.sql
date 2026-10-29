@@ -18,6 +18,7 @@ CREATE TABLE [dbo].[tsak_dlq] (
     [body_data]         nvarchar(max) NULL,
     [headers_json]      nvarchar(max) NULL,
     [properties_json]   nvarchar(max) NULL,
+    [attachments_json]  nvarchar(max) NULL,
     [replayable]        bit NOT NULL,
     [replayed_at]       datetimeoffset NULL,
     [cluster_name]      nvarchar(200) NULL,
