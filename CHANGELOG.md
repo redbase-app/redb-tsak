@@ -32,6 +32,14 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Pending changes live in `changelog/unreleased/` until the release; `pwsh scripts/changelog.ps1 -Preview` shows them.
 
+## [4.5.1] — 2026-10-30
+
+### Fixed
+
+- **A C# module (`InitRoute`) that loads XML resolves `<bean type>` from its own package.** After a hot reload the type
+  came from the previous version of the package, and a property the new version added was "not writable". An own
+  `IBeanTypeResolver` registered in `InitRoute` to work around this can be removed. Packages: `redb.Tsak.Core`.
+
 ## [4.5.0] — 2026-10-29
 
 ### Added

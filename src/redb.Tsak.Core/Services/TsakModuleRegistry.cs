@@ -206,7 +206,7 @@ public class TsakModuleRegistry : ITsakModuleRegistry
 
                             // Per-module config from package ({moduleName}.config.json)
                             if (module is Modules.StaticMethodModule smm)
-                                smm.EmbeddedConfigJson = package.ReadModuleConfigJson(module.ModuleName);
+                                smm.AttachPackage(package);
 
                             _moduleFilePaths[module.ModuleName] = tpkg;
                             _modules[module.ModuleName] = module;

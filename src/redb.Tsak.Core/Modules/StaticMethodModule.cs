@@ -45,6 +45,20 @@ public class StaticMethodModule : ITsakModule, IEmbeddedConfigModule
     /// </summary>
     public string? EmbeddedConfigJson { get; internal set; }
 
+    /// <summary>
+    /// The .tpkg package the module comes from; null for a bare DLL module. Its assemblies resolve the bean types of
+    /// the XML the module loads, ahead of any other assembly of the same name (an earlier version of the package
+    /// after a hot reload).
+    /// </summary>
+    internal ModulePackage? Package { get; private set; }
+
+    /// <summary>Binds the module to its package: the package's types for bean resolution and its module config.</summary>
+    internal void AttachPackage(ModulePackage package)
+    {
+        Package = package;
+        EmbeddedConfigJson = package.ReadModuleConfigJson(ModuleName);
+    }
+
     /// <summary>Runs a synchronous <c>main</c>. An async <c>main</c> is refused: it runs only through <see cref="InitializeAsync"/>.</summary>
     public IRouteContext Initialize(IRouteContext context)
     {
@@ -76,6 +90,11 @@ public class StaticMethodModule : ITsakModule, IEmbeddedConfigModule
         return result as IRouteContext ?? context;
     }
 
-    private object? Invoke(IRouteContext context) =>
-        _mainMethod.Invoke(null, BindingFlags.DoNotWrapExceptions, binder: null, parameters: [context], culture: null);
+    private object? Invoke(IRouteContext context)
+    {
+        // Before main: XML that main loads (<bean type="...">) resolves the package's own types, as an XML module does.
+        if (Package is not null)
+            PackageFirstTypeResolver.Install(context, Package);
+        return _mainMethod.Invoke(null, BindingFlags.DoNotWrapExceptions, binder: null, parameters: [context], culture: null);
+    }
 }

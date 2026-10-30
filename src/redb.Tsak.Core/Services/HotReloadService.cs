@@ -576,7 +576,7 @@ public sealed class HotReloadService : IDisposable
         foreach (var module in discovered)
         {
             if (module is Modules.StaticMethodModule smm)
-                smm.EmbeddedConfigJson = package.ReadModuleConfigJson(module.ModuleName);
+                smm.AttachPackage(package);
 
             var existingModule = _registry.GetModule(module.ModuleName);
             if (existingModule is not null)
@@ -1000,7 +1000,7 @@ public sealed class HotReloadService : IDisposable
             foreach (var module in modules)
             {
                 if (module is Modules.StaticMethodModule smm)
-                    smm.EmbeddedConfigJson = package.ReadModuleConfigJson(module.ModuleName);
+                    smm.AttachPackage(package);
 
                 _logger.LogInformation("Loading module {Module} from package {Pkg}",
                     module.ModuleName, package.Manifest.Name);

@@ -88,8 +88,7 @@ public sealed class XmlRouteModule : ITsakModule, IEmbeddedConfigModule
 
         // Package-first resolution, chained over whatever the context already has — several
         // packages share one context, and each keeps its own package-first view.
-        routeContext.AddService(typeof(IBeanTypeResolver),
-            new PackageFirstTypeResolver(_package, routeContext.GetService<IBeanTypeResolver>()));
+        PackageFirstTypeResolver.Install(routeContext, _package);
         if (_package is { ResourcesRoot: { } resourcesRoot, PackageRoot: { } packageRoot })
         {
             routeContext.AddService(typeof(IRouteResourceResolver),
@@ -164,26 +163,6 @@ public sealed class XmlRouteModule : ITsakModule, IEmbeddedConfigModule
         }
 
         return contributions;
-    }
-
-    /// <summary>Entry-point ALC first, companions second, then everything the default resolver sees.</summary>
-    private sealed class PackageFirstTypeResolver(ModulePackage package, IBeanTypeResolver? next) : IBeanTypeResolver
-    {
-        public Type? Resolve(string typeName)
-        {
-            var comma = typeName.IndexOf(',');
-            var fullName = (comma >= 0 ? typeName[..comma] : typeName).Trim();
-            var assemblyName = comma >= 0 ? typeName[(comma + 1)..].Trim() : null;
-
-            foreach (var assembly in package.LoadedAssemblies.Concat(package.CompanionAssemblies))
-            {
-                if (assemblyName is not null && !string.Equals(assembly.GetName().Name, assemblyName, StringComparison.OrdinalIgnoreCase))
-                    continue;
-                if (assembly.GetType(fullName) is { } type)
-                    return type;
-            }
-            return next?.Resolve(typeName) ?? DefaultBeanTypeResolver.Instance.Resolve(typeName);
-        }
     }
 
     /// <summary>
