@@ -16,6 +16,8 @@ namespace redb.Tsak.Core.Controllers;
 /// GET /api/health/startup  — has the process finished initialization?
 /// GET /api/health/live     — is the process alive (not hung)?
 /// GET /api/health/ready    — is the process ready to serve traffic?
+/// GET /api/health/deploy   — hot swap a new package (200) or deploy it cold (409)?
+/// GET /api/health/deploy/cluster — the same for every alive node of the cluster.
 ///
 /// For rich health data (CLI/Web), use GET /api/system/health instead.
 /// </summary>
@@ -31,39 +33,67 @@ public class HealthProbeController : RedbController
     [HttpGet("/startup")]
     public object GetStartup()
     {
-        var ctxMgr = Context.GetService<ITsakContextManager>();
-        if (ctxMgr is null)
+        // No context manager yet, no contexts loaded, or the cluster coordinator still syncing: still starting.
+        if (StartupProbe.Pending(Context.GetService<ITsakContextManager>(), Context.GetService<HealthCheckService>()) is { } pending)
         {
-            ApiResponse.ServiceUnavailable(Exchange, "Initializing");
+            ApiResponse.ServiceUnavailable(Exchange, pending);
             Exchange.Stop();
             return null!;
-        }
-
-        var contexts = ctxMgr.GetAllContexts();
-
-        // No contexts loaded yet — still starting
-        if (contexts.Count == 0)
-        {
-            ApiResponse.ServiceUnavailable(Exchange, "No contexts loaded");
-            Exchange.Stop();
-            return null!;
-        }
-
-        // If any health contributor reports degraded/unhealthy, the system is still starting
-        var healthSvc = Context.GetService<HealthCheckService>();
-        if (healthSvc is not null)
-        {
-            var eval = healthSvc.Evaluate();
-            if (eval.Checks.TryGetValue("cluster", out var clusterStatus) &&
-                clusterStatus != HealthStatus.Healthy)
-            {
-                ApiResponse.ServiceUnavailable(Exchange, "Cluster coordinator syncing");
-                Exchange.Stop();
-                return null!;
-            }
         }
 
         return new { status = "ok" };
+    }
+
+    /// <summary>
+    /// Deploy advice for this node: 200 with verdict "hot-swap" (drop the package into modules/ of the running node),
+    /// 409 with "cold-deploy" (cordon, stop, replace the packages, start, wait for ready, uncordon). Advises only.
+    /// </summary>
+    [HttpGet("/deploy")]
+    public object GetDeployAdvice()
+    {
+        var advisor = Context.GetService<DeployAdvisor>();
+        if (advisor is null)
+        {
+            ApiResponse.ServiceUnavailable(Exchange, "Deploy advice not available");
+            Exchange.Stop();
+            return null!;
+        }
+
+        var advice = advisor.Advise();
+        return Answer(advice, advice.Verdict);
+    }
+
+    /// <summary>
+    /// Deploy advice for every alive node of the cluster, asked from any node: 200 only when every node says "hot-swap",
+    /// 409 otherwise. Outside a cluster it lists this node alone.
+    /// </summary>
+    [HttpGet("/deploy/cluster")]
+    public async Task<object> GetClusterDeployAdvice()
+    {
+        var advisor = Context.GetService<DeployAdvisor>();
+        if (advisor is null)
+        {
+            ApiResponse.ServiceUnavailable(Exchange, "Deploy advice not available");
+            Exchange.Stop();
+            return null!;
+        }
+
+        var self = advisor.Advise();
+        IReadOnlyList<DeployAdviceResponse> nodes = Context.GetService<IClusterDeployAdvisor>() is { } cluster
+            ? await cluster.AdviseAllAsync(self).ConfigureAwait(false)
+            : [self];
+        var verdict = nodes.All(n => n.Verdict == DeployVerdicts.HotSwap) ? DeployVerdicts.HotSwap : DeployVerdicts.ColdDeploy;
+        return Answer(new ClusterDeployAdviceResponse { Verdict = verdict, AnsweredBy = self.NodeId, Nodes = nodes }, verdict);
+    }
+
+    /// <summary>200 for a hot swap; 409 with the same body for a cold deploy, so the status code alone carries the verdict.</summary>
+    private object Answer(object body, string verdict)
+    {
+        if (verdict == DeployVerdicts.HotSwap)
+            return body;
+        ApiResponse.Respond(Exchange, 409, body);
+        Exchange.Stop();
+        return null!;
     }
 
     /// <summary>

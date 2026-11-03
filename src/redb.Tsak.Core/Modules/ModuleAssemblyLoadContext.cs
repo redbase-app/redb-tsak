@@ -8,20 +8,44 @@ namespace redb.Tsak.Core.Modules;
 /// Isolated <see cref="AssemblyLoadContext"/> for module isolation.
 /// Each dynamically loaded module gets its own ALC.
 /// When collectible, the ALC can be unloaded and replaced without restarting the process.
-/// When non-collectible (default), the ALC stays in memory but is compatible with
-/// Reflection.Emit consumers (XmlSerializer, compiled Regex, source generators, etc.).
+/// When non-collectible (default), a replaced ALC stays in memory until the process restarts.
 /// Loads from bytes so the original DLL file is never locked.
 /// Probes configured directories for dependencies so modules don't need
 /// to be in the host application's bin folder.
 /// </summary>
 public sealed class ModuleAssemblyLoadContext : AssemblyLoadContext
 {
+    // Every module context made in the process, weakly. AssemblyLoadContext.All drops a context the moment its Unload
+    // starts, while the context stays in memory until it is collected: the count of what is in memory needs its own list.
+    private static readonly List<WeakReference<ModuleAssemblyLoadContext>> Created = [];
+
     private readonly string[] _probePaths;
 
     public ModuleAssemblyLoadContext(string name, string[]? probePaths = null, bool isCollectible = false)
         : base(name: name, isCollectible: isCollectible)
     {
         _probePaths = probePaths ?? [];
+        lock (Created)
+            Created.Add(new WeakReference<ModuleAssemblyLoadContext>(this));
+    }
+
+    /// <summary>
+    /// The module contexts in memory, unloading ones included, until they are collected. The list holds them only for
+    /// as long as the caller does.
+    /// </summary>
+    internal static List<ModuleAssemblyLoadContext> InMemory()
+    {
+        var alive = new List<ModuleAssemblyLoadContext>();
+        lock (Created)
+        {
+            Created.RemoveAll(reference => !reference.TryGetTarget(out _));
+            foreach (var reference in Created)
+            {
+                if (reference.TryGetTarget(out var context))
+                    alive.Add(context);
+            }
+        }
+        return alive;
     }
 
     /// <summary>
@@ -38,10 +62,24 @@ public sealed class ModuleAssemblyLoadContext : AssemblyLoadContext
     internal ModuleManifest? Manifest { get; set; }
 
     /// <summary>
-    /// Unloads if collectible; no-op otherwise. Safe to call unconditionally.
+    /// When Tsak let this context go (<see cref="TryUnload"/>); null while a module, or the rollback history, still uses
+    /// it. From then on the context should leave memory: <see cref="ModuleContextMonitor"/> counts it while it does not.
+    /// </summary>
+    internal DateTime? ReleasedAtUtc { get; private set; }
+
+    /// <summary>Set by <see cref="ModuleContextMonitor"/> once it has taken this released context into its unload check.</summary>
+    internal bool UnloadChecked { get; set; }
+
+    /// <summary>Set by <see cref="ModuleContextMonitor"/> when this collectible context outlived the collections of its check.</summary>
+    internal bool OutlivedUnload { get; set; }
+
+    /// <summary>
+    /// Lets the context go: unloads it if collectible. A context that is not collectible stays in memory until the process
+    /// restarts. Either way it is marked released, so <see cref="ModuleContextMonitor"/> sees it.
     /// </summary>
     public void TryUnload()
     {
+        ReleasedAtUtc ??= DateTime.UtcNow;
         if (IsCollectible)
             Unload();
     }

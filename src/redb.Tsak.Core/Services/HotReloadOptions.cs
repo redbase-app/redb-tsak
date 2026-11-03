@@ -58,6 +58,23 @@ public class HotReloadOptions
     public bool Collectible { get; set; } = false;
 
     /// <summary>
+    /// How many module contexts may stay in memory after Tsak let them go before the <c>hotreload</c> health check turns
+    /// Degraded and asks for a restart of the node. Such a context is a replaced or removed version with
+    /// <see cref="Collectible"/> false, or one that did not unload with it true. Default (null):
+    /// <see cref="KeepVersions"/> + 3.
+    /// </summary>
+    public int? MaxOrphanedContexts { get; set; }
+
+    /// <summary>
+    /// A working set (MB) above which <c>GET /api/health/deploy</c> advises a cold deploy instead of a hot swap. Default
+    /// (null): no limit, the advice looks at the module contexts only.
+    /// </summary>
+    public double? MaxWorkingSetMb { get; set; }
+
+    /// <summary>The limit in effect: <see cref="MaxOrphanedContexts"/>, or <see cref="KeepVersions"/> + 3 when it is not set.</summary>
+    internal int EffectiveMaxOrphanedContexts => MaxOrphanedContexts ?? KeepVersions + 3;
+
+    /// <summary>
     /// Path to the shared assembly directory. Default: "Libs/shared".
     /// Assemblies here are loaded into the Default ALC and auto-registered
     /// as components in all module contexts.

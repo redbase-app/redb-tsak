@@ -684,6 +684,9 @@ public class SystemContextBuilder
         TryRegisterService<AuditQueryService>(context);
         TryRegisterService<Monitoring.Alerts.AlertDispatcher>(context);
         TryRegisterService<Modules.ModuleUploadService>(context);
+        TryRegisterService<Modules.ModuleContextMonitor>(context);
+        TryRegisterService<DeployAdvisor>(context);
+        TryRegisterService<IClusterDeployAdvisor>(context);
         TryRegisterService<Dlq.DlqService>(context);
     }
 

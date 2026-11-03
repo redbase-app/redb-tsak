@@ -122,6 +122,21 @@ public sealed record SystemInfoResponse
     public required string MachineName { get; init; }
     public required int ProcessorCount { get; init; }
     public required double WorkingSetMb { get; init; }
+
+    /// <summary>Module load contexts in memory: the live modules, their rollback history and the orphaned ones.</summary>
+    public int ModuleContextsAlive { get; init; }
+
+    /// <summary>
+    /// Module load contexts that stay in memory after their modules were replaced or removed: with
+    /// <c>Tsak:HotReload:Collectible</c> false every one let go, with it true the ones that did not unload.
+    /// </summary>
+    public int OrphanedModuleContexts { get; init; }
+
+    /// <summary>The limit above which the <c>hotreload</c> health check is Degraded (<c>Tsak:HotReload:MaxOrphanedContexts</c>).</summary>
+    public int MaxOrphanedModuleContexts { get; init; }
+
+    /// <summary>Null within the limit; above it, what the node needs (a restart to reclaim the memory).</summary>
+    public string? ModuleContextsNotice { get; init; }
 }
 
 /// <summary>

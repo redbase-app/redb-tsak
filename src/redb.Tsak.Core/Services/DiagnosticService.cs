@@ -26,7 +26,8 @@ public class DiagnosticService
     public DiagnosticDump CollectSystemDump(
         MetricsService? metricsService = null,
         RouteWatchdogService? watchdog = null,
-        LifecycleAuditService? auditService = null)
+        LifecycleAuditService? auditService = null,
+        Modules.ModuleContextMonitor? moduleContexts = null)
     {
         var contexts = _contextManager.GetAllContexts();
         var collector = new ContextInfoCollector(_contextManager);
@@ -81,15 +82,7 @@ public class DiagnosticService
         SystemMetricsSnapshot? sysMetrics = null;
         var latest = metricsService?.GetLatest();
         if (latest is not null)
-        {
-            sysMetrics = new SystemMetricsSnapshot
-            {
-                CpuPercent = latest.Cpu.ProcessUsage,
-                MemoryMB = latest.Memory.WorkingSetMB,
-                ThreadCount = latest.Threading.ActiveThreads,
-                Gen2Collections = latest.GarbageCollector.Gen2Collections
-            };
-        }
+            sysMetrics = SystemMetrics(latest, moduleContexts);
 
         return new DiagnosticDump
         {
@@ -102,6 +95,18 @@ public class DiagnosticService
             SystemMetrics = sysMetrics
         };
     }
+
+    /// <summary>The system metrics of the dump and the dashboard: the latest point and the module contexts in memory.</summary>
+    internal static SystemMetricsSnapshot SystemMetrics(MetricsPoint latest, Modules.ModuleContextMonitor? moduleContexts) => new()
+    {
+        CpuPercent = latest.Cpu.ProcessUsage,
+        MemoryMB = latest.Memory.WorkingSetMB,
+        ThreadCount = latest.Threading.ActiveThreads,
+        Gen2Collections = latest.GarbageCollector.Gen2Collections,
+        ModuleContextsAlive = moduleContexts?.ModuleContextsAlive ?? 0,
+        OrphanedModuleContexts = moduleContexts?.OrphanedModuleContexts ?? 0,
+        ModuleContextsNotice = moduleContexts?.Notice
+    };
 
     /// <summary>
     /// Builds a diagnostic dump for a single route.

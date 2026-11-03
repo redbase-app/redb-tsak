@@ -158,9 +158,10 @@ public class TsakHostedService : BackgroundService
                     dynamicCount = await concreteRegistry.DiscoverModulesAsync(assemblyPaths,
                         probePaths: assemblyPaths, collectible: collectible);
 
-                    // Hand off startup-loaded packages to HotReloadService (takes ALC ownership)
-                    if (concreteRegistry.LoadedPackages.Count > 0)
-                        _hotReloadService.AdoptStartupPackages(concreteRegistry.LoadedPackages);
+                    // Hand off startup-loaded packages to HotReloadService (takes ALC ownership); the registry lets go.
+                    var startupPackages = concreteRegistry.HandOverLoadedPackages();
+                    if (startupPackages.Count > 0)
+                        _hotReloadService.AdoptStartupPackages(startupPackages);
                 }
                 else
                 {

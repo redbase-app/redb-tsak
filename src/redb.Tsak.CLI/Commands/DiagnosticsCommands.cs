@@ -84,12 +84,7 @@ public static class DiagnosticsCommands
                 ("GC.Memory(MB)", dump.GarbageCollector.TotalMemoryMB.ToString("F1")));
 
             if (dump.SystemMetrics is { } sm)
-            {
-                r.RenderDetail(
-                    ("CPU(%)", sm.CpuPercent.ToString("F1")),
-                    ("Memory(MB)", sm.MemoryMB.ToString("F1")),
-                    ("Threads", sm.ThreadCount.ToString()));
-            }
+                RenderSystemMetrics(r, sm);
 
             if (dump.Contexts.Count > 0)
             {
@@ -173,12 +168,7 @@ public static class DiagnosticsCommands
                     ("Alerts", snap.ActiveAlerts.Count.ToString()));
 
                 if (snap.SystemMetrics is { } sm)
-                {
-                    r.RenderDetail(
-                        ("CPU(%)", sm.CpuPercent.ToString("F1")),
-                        ("Memory(MB)", sm.MemoryMB.ToString("F1")),
-                        ("Threads", sm.ThreadCount.ToString()));
-                }
+                    RenderSystemMetrics(r, sm);
 
                 if (snap.BusiestRoutes.Count > 0)
                 {
@@ -223,5 +213,17 @@ public static class DiagnosticsCommands
         });
 
         return dashCmd;
+    }
+
+    /// <summary>The system metrics of a dump or a dashboard, with the module contexts in memory and what to do about them.</summary>
+    private static void RenderSystemMetrics(IOutputRenderer r, redb.Tsak.Contracts.SystemMetricsSnapshot sm)
+    {
+        r.RenderDetail(
+            ("CPU(%)", sm.CpuPercent.ToString("F1")),
+            ("Memory(MB)", sm.MemoryMB.ToString("F1")),
+            ("Threads", sm.ThreadCount.ToString()),
+            ("ModuleContexts", sm.ModuleContextsAlive.ToString()),
+            ("OrphanedContexts", sm.OrphanedModuleContexts.ToString()),
+            ("Notice", sm.ModuleContextsNotice ?? "—"));
     }
 }

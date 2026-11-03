@@ -147,7 +147,9 @@ are the ones to use inside `Cache`:
 |---|---|---|
 | `Tsak:HotReload:Enabled` | `true` | |
 | `Tsak:HotReload:ScanIntervalSeconds` | `30` | |
-| `Tsak:HotReload:Collectible` | `false` | Old module versions are **not** unloaded from memory. Collectible load contexts free memory but break modules that use `XmlSerializer` or `Emit`, so the safe choice is the default. Turn it on only if your modules are Emit-free and memory reclamation actually matters. |
+| `Tsak:HotReload:Collectible` | `false` | With `false` a replaced or removed module version stays in memory until the process restarts. With `true` it is unloaded once nothing outside the module refers to it; a version that stays is logged and counted. See [README, "Module contexts in memory"](README.md#module-contexts-in-memory). |
+| `Tsak:HotReload:KeepVersions` | `2` | Old versions of a bare-DLL module kept for rollback. |
+| `Tsak:HotReload:MaxOrphanedContexts` | `KeepVersions + 3` | Module contexts that may stay in memory after their modules went before the `hotreload` health check turns Degraded ("restart the node to reclaim memory"). |
 
 ## `Tsak:Cluster`
 

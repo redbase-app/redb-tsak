@@ -186,8 +186,10 @@ can express: `Tsak__Auth__Keys__0__Roles__0=admin`).
 | `ScanIntervalSeconds` | `10` | Scan cadence. |
 | `KeepVersions` | `2` | Old versions retained for rollback. |
 | `StartupTimeoutSeconds` | `60` | Max wait for a module to start. |
-| `RollingUpdate` | `true` | Reload without dropping in-flight work. |
-| `Collectible` | `false` | Unloadable ALCs (off = more compatible). |
+| `RollingUpdate` | `false` | Reserved, not implemented: nodes reload independently. |
+| `Collectible` | `false` | Unload replaced module versions. Off: they stay in memory until restart. |
+| `MaxOrphanedContexts` | `KeepVersions + 3` | Left-over module versions in memory before the `hotreload` health check turns Degraded and the deploy advice says `cold-deploy` (see "After a series of hot swaps"). |
+| `MaxWorkingSetMb` | none | Working set (MB) above which the deploy advice says `cold-deploy`. |
 | `RemovalDebounceScans` | `2` | Scans a file must stay gone before unload (avoids false positives mid-replace). |
 
 ### `Tsak:Watchdog` — stuck-route detection
@@ -380,6 +382,108 @@ services:
 
 Or hot-deploy at runtime (hot-reload watches the dir): copy a new `.tpkg` into `modules/` and the
 worker loads it without a restart.
+
+### After a series of hot swaps
+
+Each hot swap leaves the old module version in memory with `Tsak:HotReload:Collectible=false` (the default), and with
+`true` a version that something still holds stays too. Once more of them pile up than
+`Tsak:HotReload:MaxOrphanedContexts` allows, the `hotreload` health check turns Degraded with "restart the node to
+reclaim memory". A restart is the only way to give that memory back.
+
+What to watch: `OrphanedModuleContexts` in `GET /api/system/info` (or `tsak system info`), the `hotreload` entry of
+`GET /api/system/health`, and the working set of the process. With `Collectible=true` a version that did not unload is
+also logged as a warning: `module context <name> still alive after 10 collections`.
+
+Restart the nodes one at a time, so the cluster keeps serving:
+
+1. Drain the node. In a cluster, cordon it (`POST /api/cluster/nodes/{nodeId}/cordon`): it finishes its work, takes no
+   new work and hands its locks to the peers. A single node has no peers to take over; restart it in a quiet window.
+2. Stop the process (SIGTERM, `docker stop`): every context stops with its own graceful-stop timeout for in-flight
+   exchanges.
+3. Start it again and wait for `GET /api/health/ready` to answer `200`. The node loads the current module versions
+   only, so `OrphanedModuleContexts` is `0` again.
+4. Uncordon it, then go on with the next node.
+
+If the count grows again after every release, the modules are swapped faster than nodes restart: let the pipeline ask
+for the deploy advice below before each release, or try `Collectible=true` on a test node and watch whether the old
+versions go. When a release is due anyway, do not restart first and hot swap after: deploy it cold (next section), the
+restart and the new packages in one step.
+
+### Deploy advice in a pipeline
+
+`GET /api/health/deploy` tells a pipeline how to deploy a new package on a node; `GET /api/health/deploy/cluster`
+asks every alive node in one call. Both are open like the probes, and the status code is the whole answer
+(API_GUIDE.md, "Deploy advice"):
+
+- `200`, `hot-swap`: copy the `.tpkg` into `modules/` of the running node.
+- `409`, `cold-deploy`: cordon the node, stop it, replace the packages in `modules/` while it is down, start it, wait
+  for `/api/health/ready`, uncordon. A restart with the old packages and a hot swap after it would leave one more old
+  version in memory for nothing.
+
+The endpoint only advises: the pipeline does the deploy. `tsak system deploy-advice [--cluster]` asks the same from a
+script and exits `0` for hot-swap, `3` for cold-deploy, `1` or `2` on an error, so a step can branch on the exit code;
+`--output json` prints the advice and nothing else.
+
+#### Kubernetes
+
+The packages reach the pod either through a writable volume mounted at `modules/` (hot swap possible) or inside the
+image or a volume filled at pod start (every deploy is a rollout). With a writable volume:
+
+1. Ask: `curl -s -o advice.json -w '%{http_code}' http://tsak:9090/api/health/deploy/cluster` from a Job or a pipeline
+   step inside the cluster (or `kubectl exec` into one pod). `200` → step 2, `409` → step 3.
+2. Hot swap: copy the package into each pod's `modules/`, through a temporary name and a rename so the worker never
+   reads a half-written file (`kubectl cp app.tpkg tsak-0:/app/modules/app.tpkg.part`, then
+   `kubectl exec tsak-0 -- mv /app/modules/app.tpkg.part /app/modules/app.tpkg`). Check the new version with
+   `tsak module list`.
+3. Cold deploy, one pod at a time (`maxUnavailable: 1`):
+   1. Put the new package where the pods take it from (a new image tag, a new ConfigMap or volume version).
+   2. Cordon the node: `POST /api/cluster/nodes/{nodeId}/cordon` with an admin key from a Secret. A `preStop` hook
+      that sends the same call cordons each pod the rollout stops, without a step of its own. Give the pod a
+      `terminationGracePeriodSeconds` above the contexts' graceful-stop timeout.
+   3. `kubectl rollout restart statefulset/tsak` (or `kubectl set image`): Kubernetes stops the pod, the new one starts
+      with the new packages, and the readiness probe `/api/health/ready` holds the rollout until it serves.
+   4. Uncordon the node once it is ready: `POST /api/cluster/nodes/{nodeId}/uncordon`. With a StatefulSet the node id
+      stays the same across the restart, so the registry still has it cordoned until this call.
+
+#### Compose with TeamCity
+
+One worker per host, `modules/` a bind mount on the host. A build configuration with these steps, run host by host:
+
+1. Ask (command line step):
+
+   ```sh
+   tsak system deploy-advice --url http://$HOST:9090 --output json > advice.json
+   code=$?
+   if [ $code -eq 0 ]; then echo "##teamcity[setParameter name='deploy.mode' value='hot']"
+   elif [ $code -eq 3 ]; then echo "##teamcity[setParameter name='deploy.mode' value='cold']"
+   else exit $code; fi
+   ```
+
+2. Hot swap (runs when `deploy.mode` is `hot`): copy under a temporary name and rename, so the worker never reads a
+   half-written file:
+
+   ```sh
+   scp app.tpkg deploy@$HOST:/srv/tsak/modules/app.tpkg.part
+   ssh deploy@$HOST 'mv /srv/tsak/modules/app.tpkg.part /srv/tsak/modules/app.tpkg'
+   ```
+
+3. Cold deploy (runs when `deploy.mode` is `cold`):
+
+   ```sh
+   curl -fsS -X POST -H "X-Api-Key: $TSAK_ADMIN_KEY" http://$HOST:9090/api/cluster/nodes/$NODE_ID/cordon   # cluster only
+   ssh deploy@$HOST 'cd /srv/tsak && docker compose stop tsak'
+   scp app.tpkg deploy@$HOST:/srv/tsak/modules/app.tpkg
+   ssh deploy@$HOST 'cd /srv/tsak && docker compose start tsak'
+   for i in $(seq 60); do   # up to 5 minutes
+     [ "$(curl -s -o /dev/null -w '%{http_code}' http://$HOST:9090/api/health/ready)" = 200 ] && break
+     [ $i -eq 60 ] && { echo "worker not ready"; exit 1; }
+     sleep 5
+   done
+   curl -fsS -X POST -H "X-Api-Key: $TSAK_ADMIN_KEY" http://$HOST:9090/api/cluster/nodes/$NODE_ID/uncordon # cluster only
+   ```
+
+   A single node without a cluster has nobody to take its work while it is down: run the cold deploy in a quiet
+   window, and leave out the two cordon calls.
 
 ---
 

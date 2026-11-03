@@ -108,19 +108,72 @@ can do, the `tsak` CLI can do — so a human, a script, and the UI are never on 
 
 ## 4. Endpoint map
 
-**69 endpoints across 16 controllers.** All speak JSON. 14 controllers ship in
+**71 endpoints across 16 controllers.** All speak JSON. 14 controllers ship in
 `redb.Tsak.Core`; `ClusterController` comes from `redb.Tsak.Core.Pro` via `ISystemContextPlugin`.
 
-### Health probes — `/api/health` (3, auth-exempt)
+### Health probes — `/api/health` (5, auth-exempt)
 
 | Method | Path | 200 when |
 |---|---|---|
 | GET | `/api/health/startup` | contexts are loaded and the cluster coordinator has synced |
 | GET | `/api/health/live` | process is responsive; no hung exchanges reported by the watchdog |
 | GET | `/api/health/ready` | full health evaluation is not `Unhealthy` |
+| GET | `/api/health/deploy` | a new package can be hot swapped into this node (`409`: deploy it cold) |
+| GET | `/api/health/deploy/cluster` | every alive node of the cluster can take a hot swap (`409`: at least one cannot) |
 
-Failures return `503` with a short reason. Bodies are intentionally minimal — kubelet
-does not read them. See §6 for the rich variant.
+Failures of the first three return `503` with a short reason. Bodies are intentionally minimal — kubelet
+does not read them. See §6 for the rich variant, and "Deploy advice" below for the last two.
+
+### Deploy advice — `/api/health/deploy`
+
+An orchestrator or a CI/CD step (Kubernetes job, TeamCity) asks before it deploys a package: drop it into `modules/`
+of the running node, or deploy it cold. The status code alone is the answer; the endpoint only advises and changes
+nothing.
+
+| Status | `verdict` | What the pipeline does |
+|---|---|---|
+| `200` | `hot-swap` | copy the `.tpkg` into `modules/` of the running node |
+| `409` | `cold-deploy` | cordon the node, stop it, replace the packages in `modules/` while it is down, start it, wait for `/api/health/ready`, uncordon |
+
+A cold deploy is not "restart, then hot swap": a restart with the old packages followed by a swap leaves one more old
+version in memory for nothing. The steps for Kubernetes and for compose with TeamCity are in DEPLOYMENT.md, "Deploy
+advice in a pipeline".
+
+```json
+{
+  "nodeId": "worker-1",
+  "verdict": "cold-deploy",
+  "reasons": ["orphaned-contexts-above-limit"],
+  "moduleContextsAlive": 21,
+  "orphanedModuleContexts": 7,
+  "maxOrphanedModuleContexts": 5,
+  "workingSetMb": 812.4,
+  "maxWorkingSetMb": null,
+  "collectible": false,
+  "timestamp": "2026-11-02T12:00:00Z"
+}
+```
+
+| Reason | When |
+|---|---|
+| `orphaned-contexts-above-limit` | more old module versions stay in memory than `Tsak:HotReload:MaxOrphanedContexts` allows |
+| `next-swap-exceeds-limit` | with `Collectible=false` every swap leaves its old version in memory, and the next one would go above the limit |
+| `working-set-above-limit` | the working set is above `Tsak:HotReload:MaxWorkingSetMb` (no limit unless set) |
+| `node-cordoned` | the node is cordoned (Pro cluster): it is in maintenance |
+| `startup-not-finished` | `/api/health/startup` would answer `503` |
+| `node-unreachable` | cluster form only: the node is alive in the registry, but its own `/api/health/deploy` did not answer |
+
+`/api/health/deploy/cluster` asks the same of every alive node in one call, on any node: the answering node advises
+itself and asks each other node at the `ApiEndpoint` it registered. The body is
+`{ "verdict", "answeredBy", "nodes": [ ...one advice per node... ] }`, and the status is `200` only when every node
+says `hot-swap`. Outside a cluster the list holds the answering node alone.
+
+Both endpoints are open like the probes: a pipeline step asks without a dashboard session or an API key. The body
+holds the node id, the verdict, the reason codes and the counts behind them (module contexts, working set, the
+`Collectible` flag). No configuration, connection, route or module name is in it, so it tells a caller nothing it
+could use against the node. Client `GetDeployAdviceAsync` / `GetClusterDeployAdviceAsync` (a `409` comes back as the
+answer, not as an exception), CLI `tsak system deploy-advice [--cluster]` (exit code `0` hot-swap, `3` cold-deploy,
+`1` and `2` errors).
 
 ### System — `/api/system` (5)
 
@@ -129,7 +182,7 @@ does not read them. See §6 for the rich variant.
 | GET | `/api/system/health` | aggregated health with per-component statuses |
 | GET | `/api/system/metrics` | latest CPU / memory / GC / thread snapshot |
 | GET | `/api/system/metrics/history` | stored metric points for charting |
-| GET | `/api/system/info` | version, uptime, machine info |
+| GET | `/api/system/info` | version, uptime, machine info, module contexts in memory (`ModuleContextsAlive`, `OrphanedModuleContexts`) |
 | GET | `/api/system/config` | effective merged config (`Tsak:*`/`ConnectionStrings:*`), secrets redacted (`admin`) |
 
 `/api/system/config` answers "what settings is this node actually on" on an incident — a flat
@@ -386,7 +439,7 @@ additionally ships stopped (`AutoStart(false)`), so it answers only after somebo
 | Cost | minimal | runs every contributor |
 
 `HealthCheckService` aggregates the built-in `contexts` / `metrics` / `watchdog` / `control-plane` /
-`redb` checks with two extension points, and **never throws**: an exception inside a probe becomes
+`redb` / `hotreload` checks with two extension points, and **never throws**: an exception inside a probe becomes
 `Unhealthy`, not a `500`. Worst status wins: `Unhealthy` > `Degraded` > `Healthy`.
 
 A check that is not healthy can say why in `details` (keyed like `checks`), and the `description` repeats it:
@@ -407,6 +460,11 @@ nodes of an older redb, for example. The service keeps working, and redb logs th
 until it is resolved by hand (redb UPGRADING.md, "Duplicate root structures"); the check makes it visible to
 monitoring. It reads the list the last start or scheme synchronization left (`IRedbService.SchemaProblems`), so a
 health poll queries no database. A worker without redb storage has no `redb` check.
+
+`hotreload` is `Degraded` while more module contexts stay in memory after their modules were replaced or removed
+than `Tsak:HotReload:MaxOrphanedContexts` allows (default `KeepVersions + 3`); the detail ends with "restart the node
+to reclaim memory". The same count is `OrphanedModuleContexts` in `/api/system/info`. See DEPLOYMENT.md, "After a
+series of hot swaps".
 
 - `IHealthContributor` — sees the whole evaluation bag. Pro's `ClusterHealthContributor`
   uses it to report leader and member health.
@@ -488,6 +546,8 @@ public class Ops(ITsakApiClient tsak)
 | `Tsak:Dlq:Enabled` | `true` | capture failed exchanges (at route checkpoints) into `tsak_dlq` |
 | `Tsak:Dlq:RetentionDays` | `30` | prune DLQ entries older than this; `0` keeps forever |
 | `Tsak:Health:DegradedNotReady` | `false` | when `true`, the readiness probe also returns `503` on `Degraded` |
+| `Tsak:HotReload:MaxOrphanedContexts` | `KeepVersions + 3` | old module versions in memory before `hotreload` is Degraded and the deploy advice says `cold-deploy` |
+| `Tsak:HotReload:MaxWorkingSetMb` | none | working set (MB) above which the deploy advice says `cold-deploy` |
 | `Tsak:Modules:Upload:Enabled` | `false` | enable `POST /api/modules/upload` + `/rollback` (RCE surface — keep off unless needed) |
 | `Tsak:Modules:Signature:Required` | `false` | refuse unsigned/tampered `.tpkg` at load (needs `PublicKeyPath`) |
 

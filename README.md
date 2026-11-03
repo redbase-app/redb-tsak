@@ -572,8 +572,23 @@ The debounce (`HotReload:RemovalDebounceScans`, default `2` scans) protects agai
 | `HotReload:KeepVersions` | `2` | Old versions kept in memory for one-command rollback (bare-DLL flow). |
 | `HotReload:StartupTimeoutSeconds` | `60` | Wait time for the new version to settle before retiring the old one. |
 | `HotReload:RollingUpdate` | `false` | RESERVED — not implemented; nodes reload independently. |
-| `HotReload:Collectible` | `false` | Enable `AssemblyLoadContext.Unload()` for full GC reclamation: an old module version is collected once nothing of the host refers to it (see "What does an unload release?" below). With `false` (default) old ALCs stay in memory until process restart. The number of accumulated non-collectible ALCs is exposed as `LeakedAlcCount` for monitoring. |
+| `HotReload:Collectible` | `false` | Enable `AssemblyLoadContext.Unload()` for full GC reclamation: an old module version is collected once nothing of the host refers to it (see "What does an unload release?" below). After each scan that let a context go, Tsak runs a few full collections in the background; a context still in memory after them is logged as a warning (`module context {Name} still alive after 10 collections`). With `false` (default) old contexts stay in memory until process restart. Either way the count is in `GET /api/system/info` (see "Module contexts in memory" below). |
+| `HotReload:MaxOrphanedContexts` | `KeepVersions + 3` | How many module contexts may stay in memory after their modules were replaced or removed before the `hotreload` health check turns Degraded with "restart the node to reclaim memory". The versions rollback keeps on purpose (`KeepVersions`) are not counted. The default leaves room for a few releases on top of the rollback history: a planned release swaps a module once or twice, so more than `KeepVersions + 3` left-over versions on one node means a series of swaps without a restart (a dev loop, or a module whose old version does not unload), and the memory they hold only grows from there. |
+| `HotReload:MaxWorkingSetMb` | none | A working set (MB) above which `GET /api/health/deploy` advises a cold deploy. Unset: the advice looks at the module contexts only. |
 | `HotReload:RemovalDebounceScans` | `2` | Number of consecutive scan cycles a missing file must persist before its module is unloaded — protects against false positives during atomic file replacement. |
+
+### Module contexts in memory
+
+Each module version runs in its own load context. A hot swap, a package reload or a removal lets the old context go; whether it then leaves memory depends on `HotReload:Collectible`. Two numbers say where a node stands:
+
+| Number | Meaning |
+|---|---|
+| `ModuleContextsAlive` | Module contexts in memory: the live modules, the rollback history, the orphaned ones and the ones still unloading. |
+| `OrphanedModuleContexts` | Contexts Tsak let go that are still in memory. With `Collectible: false` that is every context let go; with `true`, the ones still alive after the unload check. A context that leaves memory later stops being counted. |
+
+They are in `GET /api/system/info` (with `MaxOrphanedModuleContexts` and `ModuleContextsNotice`), in the system metrics of `GET /api/diagnostics/dump` and `GET /api/dashboard`, on the node page of the dashboard, and in `tsak system info`, `tsak diagnostics dump` and `tsak diagnostics dashboard`. `HotReloadService.LeakedAlcCount` is the same number as `OrphanedModuleContexts`. Above `HotReload:MaxOrphanedContexts` the `hotreload` health check is Degraded and says "restart the node to reclaim memory"; with `Tsak:Health:DegradedNotReady` that also takes the node out of readiness. What to do then: [DEPLOYMENT.md, "After a series of hot swaps"](DEPLOYMENT.md#after-a-series-of-hot-swaps).
+
+A pipeline asks before it deploys: `GET /api/health/deploy` answers `200` with `hot-swap` (copy the package into `modules/` of the running node) or `409` with `cold-deploy` and the reason codes (cordon, stop, replace the packages, start, wait for ready, uncordon); `GET /api/health/deploy/cluster` asks every alive node in one call, and `tsak system deploy-advice [--cluster]` exits `0` or `3`. Like the probes it needs no API key: the body holds the node id, the verdict, the reason codes and the counts behind them, nothing about configuration, connections, routes or modules. Details: [API_GUIDE.md, "Deploy advice"](API_GUIDE.md#deploy-advice--apihealthdeploy); the Kubernetes and compose with TeamCity steps: [DEPLOYMENT.md, "Deploy advice in a pipeline"](DEPLOYMENT.md#deploy-advice-in-a-pipeline).
 
 ### Building a `.tpkg`
 
@@ -1597,16 +1612,18 @@ Tsak loads class libraries that follow its module convention: a static `InitRout
 No. It is a dependency isolation boundary (separate `AssemblyLoadContext` per module). A malicious module runs with the same OS privileges as the Tsak process. Restrict write access to `modules/` and `Libs/` accordingly. See [SECURITY.md](SECURITY.md).
 
 **Why is `Collectible: false` the default for hot-reload?**
-Because a collectible `AssemblyLoadContext` unloads only when nothing outside it refers to the module any more, and code the host does not control can: a library with a static cache of the types it handled, Emit-generated code kept outside the module's context. Default is the safe choice; with `true` check that the old versions really go (`LeakedAlcCount`, memory).
+Because a collectible `AssemblyLoadContext` unloads only when nothing outside it refers to the module any more, and code the host does not control can: a library with a static cache of the types it handled, Emit-generated code kept outside the module's context. Default is the safe choice; with `true` Tsak checks after each scan that the old versions really go, and logs and counts the ones that stay (`OrphanedModuleContexts`, see "Module contexts in memory").
 
 **What does an unload release?** (with `Collectible: true`) Everything the host and the framework hold of the module:
 
 - the context's routes, services, registry, the module's type resolver (`bean:`, `<bean type>`, `outputClass`), its `${prefix.}` resolvers (`context.RegisterPrefixResolver`) and its save interceptors (`ITsakSaveInterceptors`): they are removed with the context;
 - the caches of redb.Route keyed by type (XML and SOAP serializers, Protobuf parsers, batch POCO properties, endpoint options): they hold the module's types weakly;
 - the caches the .NET libraries keep over the types they handled, System.Text.Json above all: redb and redb.Route empty them when a collectible context unloads (System.Text.Json does not let such a context go otherwise, [dotnet/runtime#65323](https://github.com/dotnet/runtime/issues/65323)), at the cost of cold caches in those libraries once per unload;
-- XmlSerializer generates its serializer into the module's own context, so it goes with it.
+- XmlSerializer generates its serializer into the module's own context, so it goes with it; a compiled `Regex` emits a matcher that is collected on its own.
 
-What stays is what a module puts beyond the host's reach: a static of a library it ships, a thread or timer it starts and does not stop, a handler it subscribes to a process-wide event.
+- the services a bean or component of the module takes in its constructor: redb.Route builds them without asking the host's DI container about the module's own types (`ILogger<TheBean>` comes from the host's `ILoggerFactory`, `IOptions<TheSettings>` and the other options services hold the default instance, any other service over a module type is absent; redb.Route README, "Services of a collectible module's beans"), since that container keeps every type it was asked for as long as the process lives.
+
+What stays is what a module puts beyond the host's reach: a static of a library it ships, a thread or timer it starts and does not stop, a handler it subscribes to a process-wide event, and a service its own code asks the host's container for when the type is the module's own (`context.GetServiceProvider().GetService<ILogger<MyType>>()`; take `ILoggerFactory` and call `CreateLogger<MyType>()` instead).
 
 **What happens to in-flight messages during hot-swap?**
 The old context drains (existing exchanges complete). The new context starts in parallel. Once the new context is healthy and `StartupTimeoutSeconds` elapses, the old context is retired. Zero message loss for transports that support graceful shutdown.

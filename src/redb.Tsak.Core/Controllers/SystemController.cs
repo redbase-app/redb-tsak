@@ -138,6 +138,7 @@ public class SystemController : RedbController
     {
         var contextMgr = Context.GetService<ITsakContextManager>();
         var moduleReg = Context.GetService<ITsakModuleRegistry>();
+        var moduleContexts = Context.GetService<Modules.ModuleContextMonitor>();
 
         // NOTE: GetEntryAssembly() is host-dependent — the Worker under the default deployment,
         // the web host when the dashboard runs standalone.
@@ -157,7 +158,11 @@ public class SystemController : RedbController
             ModuleCount = moduleReg?.GetAllModules().Count ?? 0,
             MachineName = Environment.MachineName,
             ProcessorCount = Environment.ProcessorCount,
-            WorkingSetMb = Environment.WorkingSet / (1024.0 * 1024)
+            WorkingSetMb = Environment.WorkingSet / (1024.0 * 1024),
+            ModuleContextsAlive = moduleContexts?.ModuleContextsAlive ?? 0,
+            OrphanedModuleContexts = moduleContexts?.OrphanedModuleContexts ?? 0,
+            MaxOrphanedModuleContexts = moduleContexts?.MaxOrphanedContexts ?? 0,
+            ModuleContextsNotice = moduleContexts?.Notice
         };
     }
 

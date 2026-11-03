@@ -288,6 +288,10 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IHealthContributor, ControlPlaneHealthContributor>();
         // Schema problems of the redb databases (host and named instances): Degraded while one needs a person.
         services.AddSingleton<IHealthContributor, RedbSchemaHealthContributor>();
+        // Module contexts that stay in memory after a hot swap: Degraded above Tsak:HotReload:MaxOrphanedContexts.
+        services.AddSingleton<IHealthContributor, HotReloadHealthContributor>();
+        // GET /api/health/deploy: hot swap or cold deploy for this node; Pro adds cordon and the cluster form.
+        services.AddSingleton<DeployAdvisor>();
         services.AddHostedService<MetricsCollectionService>();
 
         // Log ring buffer — in-memory circular buffer for live log viewing
@@ -444,6 +448,9 @@ public static class ServiceCollectionExtensions
 
         // Shared assembly loader — loads connectors and shared models from Libs/shared/
         services.AddSingleton<SharedAssemblyLoader>();
+
+        // Counts the module contexts in memory and checks that the ones let go leave it.
+        services.AddSingleton<ModuleContextMonitor>();
 
         // Always register — needed for initial module loading via ALC.
         // Periodic scanning is controlled by HotReload:Enabled at runtime.

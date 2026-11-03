@@ -30,7 +30,8 @@ public class DiagnosticsController : RedbController
         return diagService.CollectSystemDump(
             metricsService: Context.GetService<MetricsService>(),
             watchdog: Context.GetService<RouteWatchdogService>(),
-            auditService: Context.GetService<LifecycleAuditService>());
+            auditService: Context.GetService<LifecycleAuditService>(),
+            moduleContexts: Context.GetService<Modules.ModuleContextMonitor>());
     }
 
     /// <summary>

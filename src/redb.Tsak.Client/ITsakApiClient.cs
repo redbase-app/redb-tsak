@@ -262,6 +262,15 @@ public interface ITsakApiClient : IDisposable
     /// <summary>Get system information.</summary>
     Task<SystemInfoResponse> GetInfoAsync(CancellationToken ct = default);
 
+    /// <summary>
+    /// GET /api/health/deploy: hot swap a new package into this node, or deploy it cold. The 409 of a cold deploy is an
+    /// answer, not an error: both verdicts come back as the response.
+    /// </summary>
+    Task<DeployAdviceResponse> GetDeployAdviceAsync(CancellationToken ct = default);
+
+    /// <summary>GET /api/health/deploy/cluster: the same advice for every alive node of the cluster.</summary>
+    Task<ClusterDeployAdviceResponse> GetClusterDeployAdviceAsync(CancellationToken ct = default);
+
     /// <summary>GET /api/system/assemblies — assemblies actually loaded on the node (Admin only).</summary>
     Task<AssembliesResponse> GetAssembliesAsync(CancellationToken ct = default);
 

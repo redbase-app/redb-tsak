@@ -113,7 +113,7 @@ public sealed record ContextActionResponse
 |---|---|
 | `MetricsResponse` | `Available` flag, latest `SystemMetricsSnapshot`, stored point count |
 | `MetricsHistoryResponse` | Time-windowed list of `SystemMetricsSnapshot` |
-| `SystemMetricsSnapshot` | Timestamp, CPU (process + system), memory, threading, GC |
+| `SystemMetricsSnapshot` | System metrics of the diagnostic dump and the dashboard: CPU, memory, threads, Gen2 collections, module contexts in memory and orphaned ones, notice |
 | `RouteMetricsSummary` | Per-route: processed count, error count, avg/max latency (ms) |
 | `DashboardSnapshot` | Aggregated view: system metrics + context/route states |
 
@@ -139,7 +139,7 @@ public sealed record ContextActionResponse
 
 | Type | Description |
 |---|---|
-| `SystemInfoResponse` | Version, started-at, uptime string, context count, module count, machine name, CPU count, working set (MB) |
+| `SystemInfoResponse` | Version, started-at, uptime string, context count, module count, machine name, CPU count, working set (MB), module contexts in memory and orphaned ones with their limit and notice |
 | `HealthCheckResult` | Status enum, description, per-check dictionary, timestamp |
 
 ### Users (`UserModels.cs`)

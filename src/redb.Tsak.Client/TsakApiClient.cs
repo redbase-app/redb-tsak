@@ -600,6 +600,29 @@ public sealed class TsakApiClient : ITsakApiClient
     }
 
     /// <inheritdoc />
+    public async Task<DeployAdviceResponse> GetDeployAdviceAsync(CancellationToken ct = default)
+    {
+        var response = await _http.GetAsync("api/health/deploy", ct);
+        return await ReadAdviceAsync<DeployAdviceResponse>(response, ct);
+    }
+
+    /// <inheritdoc />
+    public async Task<ClusterDeployAdviceResponse> GetClusterDeployAdviceAsync(CancellationToken ct = default)
+    {
+        var response = await _http.GetAsync("api/health/deploy/cluster", ct);
+        return await ReadAdviceAsync<ClusterDeployAdviceResponse>(response, ct);
+    }
+
+    /// <summary>A deploy advice: 409 carries the cold-deploy verdict in the same body as a 200, any other status is an error.</summary>
+    private static async Task<T> ReadAdviceAsync<T>(HttpResponseMessage response, CancellationToken ct)
+    {
+        if (response.StatusCode != System.Net.HttpStatusCode.Conflict)
+            return await ReadAsync<T>(response, ct);
+        return await response.Content.ReadFromJsonAsync<T>(JsonOptions, ct)
+               ?? throw ApiException.Create(409, "API returned null response body");
+    }
+
+    /// <inheritdoc />
     public async Task<AssembliesResponse> GetAssembliesAsync(CancellationToken ct = default)
     {
         var response = await _http.GetAsync("api/system/assemblies", ct);

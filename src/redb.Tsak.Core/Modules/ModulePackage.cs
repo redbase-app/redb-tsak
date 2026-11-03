@@ -245,8 +245,10 @@ public sealed class ModulePackage : IDisposable
                     entryPoint, manifest.Name, alcName);
             }
 
-            // The module's type resolver searches the companions too, though they live in the Default context.
-            alc.Companions = package.CompanionAssemblies;
+            // The module's type resolver searches the companions too, though they live in the Default context. Isolated
+            // companions live in this context and are found among its own assemblies: a context must not hold its own
+            // assemblies, or the runtime's handle on an unloading context and the assemblies keep each other alive.
+            alc.Companions = isolatedCompanions ? [] : package.CompanionAssemblies;
             // Its manifest's Dependencies order the contexts of the package's modules at start.
             alc.Manifest = manifest;
 

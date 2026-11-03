@@ -87,4 +87,13 @@ public sealed record SystemMetricsSnapshot
     public double MemoryMB { get; init; }
     public int ThreadCount { get; init; }
     public int Gen2Collections { get; init; }
+
+    /// <summary>Module load contexts in memory (<see cref="SystemInfoResponse.ModuleContextsAlive"/>).</summary>
+    public int ModuleContextsAlive { get; init; }
+
+    /// <summary>Module load contexts in memory after their modules went (<see cref="SystemInfoResponse.OrphanedModuleContexts"/>).</summary>
+    public int OrphanedModuleContexts { get; init; }
+
+    /// <summary>Null within the limit; above it, what the node needs (<see cref="SystemInfoResponse.ModuleContextsNotice"/>).</summary>
+    public string? ModuleContextsNotice { get; init; }
 }

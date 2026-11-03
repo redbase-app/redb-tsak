@@ -73,6 +73,10 @@ else
                   Value="@(_sysInfo?.ProcessorCount.ToString() ?? "—")" />
         <TsakCard Title="Started At" Icon="clock"
                   Value="@(_sysInfo?.StartedAt.ToString("yyyy-MM-dd HH:mm") ?? "—")" />
+        @* Module contexts in memory / the ones that stay after their modules went; the hotreload health card says what to do *@
+        <TsakCard Title="Module contexts / orphaned" Icon="server"
+                  Value="@($"{_sysInfo?.ModuleContextsAlive ?? 0} / {_sysInfo?.OrphanedModuleContexts ?? 0}")"
+                  ValueStyle="@(_sysInfo?.ModuleContextsNotice is not null ? "color: var(--status-warning)" : "")" />
         @if (_metrics is { Available: true, Latest: { } snap })
         {
             <TsakCard Title="CPU (process)" Icon="activity"

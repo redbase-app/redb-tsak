@@ -36,15 +36,7 @@ public class DashboardController : RedbController
         SystemMetricsSnapshot? sysMetrics = null;
         var latest = metricsService?.GetLatest();
         if (latest is not null)
-        {
-            sysMetrics = new SystemMetricsSnapshot
-            {
-                CpuPercent = latest.Cpu.ProcessUsage,
-                MemoryMB = latest.Memory.WorkingSetMB,
-                ThreadCount = latest.Threading.ActiveThreads,
-                Gen2Collections = latest.GarbageCollector.Gen2Collections
-            };
-        }
+            sysMetrics = DiagnosticService.SystemMetrics(latest, Context.GetService<Modules.ModuleContextMonitor>());
 
         // total inflight
         var totalInflight = 0;

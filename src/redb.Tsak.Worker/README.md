@@ -163,7 +163,8 @@ Any additional keys become custom context properties accessible by modules at ru
 | `StartupTimeoutSeconds` | `int` | `60` | Max time for a new module version to initialize before automatic rollback. |
 | `RollingUpdate` | `bool` | `false` | RESERVED — not implemented; nodes reload independently. |
 | `RemovalDebounceScans` | `int` | `1` | Scan cycles to wait before confirming a DLL removal. |
-| `Collectible` | `bool` | `false` | Use collectible AssemblyLoadContext (enables GC of old assemblies, but incompatible with some Emit-based APIs). |
+| `Collectible` | `bool` | `false` | Use collectible AssemblyLoadContext: a replaced module version is unloaded once nothing outside it refers to it, and one that stays is logged and counted. With `false` old versions stay in memory until restart. |
+| `MaxOrphanedContexts` | `int?` | `KeepVersions + 3` | Module contexts left in memory after their modules went before the `hotreload` health check turns Degraded ("restart the node to reclaim memory"). |
 | `SharedPath` | `string` | `"Libs/shared"` | Directory for shared assemblies loaded into all module contexts. |
 
 When `Enabled = false`, the worker loads modules once at startup with no further scanning.

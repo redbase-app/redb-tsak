@@ -3,7 +3,7 @@ using redb.Core.Attributes;
 namespace redb.Tsak.Core.Monitoring;
 
 /// <summary>
-/// EAV model for storing per-node metrics snapshots in redb.
+/// Props class of the per-node metrics snapshots stored in redb.
 /// Each node writes its snapshot periodically (ClusterReportIntervalSeconds).
 /// Used for cluster-wide metrics aggregation.
 /// </summary>
@@ -32,4 +32,8 @@ public class TsakMetricsSnapshotProps
     // Context summary
     public int ContextCount { get; set; }
     public int ContextsRunning { get; set; }
+
+    // Module load contexts (Modules.ModuleContextMonitor). A node of an older version writes neither: 0 in its record.
+    public int ModuleContextsAlive { get; set; }
+    public int OrphanedModuleContexts { get; set; }
 }

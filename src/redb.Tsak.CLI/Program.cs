@@ -271,6 +271,9 @@ public static class Program
     // SYSTEM
     // ═══════════════════════════════════════════════════════════════
 
+    /// <summary>The exit code of <c>tsak system deploy-advice</c> for a cold deploy; 1 and 2 are errors.</summary>
+    public const int ColdDeployExitCode = 3;
+
     private static Command BuildSystemCommand()
     {
         var cmd = new Command("system", "System health, metrics, and info");
@@ -339,7 +342,10 @@ public static class Program
                 ("Modules", info.ModuleCount.ToString()),
                 ("Machine", info.MachineName),
                 ("CPUs", info.ProcessorCount.ToString()),
-                ("Memory (MB)", $"{info.WorkingSetMb:F1}"));
+                ("Memory (MB)", $"{info.WorkingSetMb:F1}"),
+                ("Module contexts", info.ModuleContextsAlive.ToString()),
+                ("Orphaned contexts", $"{info.OrphanedModuleContexts} (limit {info.MaxOrphanedModuleContexts})"),
+                ("Notice", info.ModuleContextsNotice ?? "—"));
         });
 
         var configCmd = new Command("config", "Show effective (merged, redacted) configuration");
@@ -359,10 +365,45 @@ public static class Program
                 ("Value", kv => kv.Value ?? "—"));
         });
 
+        // tsak system deploy-advice [--cluster]: exit code 0 hot-swap, 3 cold-deploy (1 and 2 stay errors)
+        var clusterOpt = new Option<bool>("--cluster") { Description = "Ask every alive node of the cluster through this one" };
+        var deployCmd = new Command("deploy-advice",
+            $"Hot swap a new package or deploy it cold? Exit code 0: {DeployVerdicts.HotSwap}, {ColdDeployExitCode}: {DeployVerdicts.ColdDeploy}")
+        {
+            clusterOpt
+        };
+        Handle(deployCmd, async ctx =>
+        {
+            using var client = CreateClient(ctx);
+            var r = CreateRenderer(ctx);
+            IReadOnlyList<DeployAdviceResponse> nodes;
+            string verdict;
+            if (ctx.ParseResult.GetValue(clusterOpt))
+            {
+                var cluster = await client.GetClusterDeployAdviceAsync(ctx.CancellationToken);
+                (nodes, verdict) = (cluster.Nodes, cluster.Verdict);
+            }
+            else
+            {
+                var advice = await client.GetDeployAdviceAsync(ctx.CancellationToken);
+                (nodes, verdict) = ([advice], advice.Verdict);
+            }
+            r.RenderTable(nodes,
+                ("Node", n => n.NodeId),
+                ("Verdict", n => n.Verdict),
+                ("Reasons", n => n.Reasons.Count == 0 ? "—" : string.Join(", ", n.Reasons)),
+                ("Orphaned", n => $"{n.OrphanedModuleContexts}/{n.MaxOrphanedModuleContexts}"),
+                ("Contexts", n => n.ModuleContextsAlive.ToString()),
+                ("WorkingSet(MB)", n => n.MaxWorkingSetMb is { } max ? $"{n.WorkingSetMb:F0}/{max:F0}" : $"{n.WorkingSetMb:F0}"),
+                ("Collectible", n => n.Collectible ? "Yes" : "No"));
+            ctx.ExitCode = verdict == DeployVerdicts.HotSwap ? 0 : ColdDeployExitCode;
+        });
+
         cmd.Add(healthCmd);
         cmd.Add(metricsCmd);
         cmd.Add(infoCmd);
         cmd.Add(configCmd);
+        cmd.Add(deployCmd);
         return cmd;
     }
 

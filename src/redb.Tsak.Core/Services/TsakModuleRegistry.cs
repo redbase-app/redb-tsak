@@ -18,8 +18,22 @@ public class TsakModuleRegistry : ITsakModuleRegistry
     private readonly ITsakModuleStore _store;
     private readonly ILogger<TsakModuleRegistry> _logger;
 
-    /// <summary>Packages loaded during startup discovery. Consumed by HotReloadService.AdoptStartupPackages().</summary>
+    /// <summary>
+    /// Packages loaded during startup discovery and not handed over yet (<see cref="HandOverLoadedPackages"/>).
+    /// </summary>
     public IReadOnlyDictionary<string, ModulePackage> LoadedPackages => _loadedPackages;
+
+    /// <summary>
+    /// Hands the packages of startup discovery over to their owner (HotReloadService.AdoptStartupPackages) and lets go of
+    /// them: a registry still holding a package keeps its load context, and so every old version of it, in memory after
+    /// the first hot swap.
+    /// </summary>
+    internal IReadOnlyDictionary<string, ModulePackage> HandOverLoadedPackages()
+    {
+        var packages = new Dictionary<string, ModulePackage>(_loadedPackages, StringComparer.OrdinalIgnoreCase);
+        _loadedPackages.Clear();
+        return packages;
+    }
 
     public TsakModuleRegistry(
         ITsakModuleStore store, ILogger<TsakModuleRegistry> logger,

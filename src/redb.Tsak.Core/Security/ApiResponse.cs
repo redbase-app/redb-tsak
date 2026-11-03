@@ -31,6 +31,15 @@ public static class ApiResponse
         exchange.Out.Headers[ContentTypeHeader] = JsonContentType;
     }
 
+    /// <summary>Write a JSON body with any status code: an answer whose status code is part of the answer.</summary>
+    public static void Respond(IExchange exchange, int statusCode, object body)
+    {
+        exchange.Out ??= exchange.In.Clone();
+        exchange.Out.Body = body;
+        exchange.Out.Headers[StatusCodeHeader] = statusCode;
+        exchange.Out.Headers[ContentTypeHeader] = JsonContentType;
+    }
+
     /// <summary>Write a 204 No Content response.</summary>
     public static void NoContent(IExchange exchange)
     {

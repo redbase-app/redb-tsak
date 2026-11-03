@@ -69,13 +69,15 @@ Tracks file timestamps and performs graceful hot-swap:
 2. Stop old module (drain in-flight exchanges)
 3. Register new module, start context
 4. Optionally unload old ALC (requires `Collectible = true`)
+5. Check in the background that the contexts let go leave memory (`ModuleContextMonitor`)
 
 Key configuration (`Tsak:HotReload`):
 
 | Key | Default | Description |
 |---|---|---|
 | `ScanIntervalSeconds` | `10` | How often to scan `Libs/` |
-| `Collectible` | `false` | Enable ALC unload for GC reclamation (incompatible with `Reflection.Emit`) |
+| `Collectible` | `false` | Unload replaced module versions for GC reclamation; one still in memory after the unload check is logged and counted |
+| `MaxOrphanedContexts` | `KeepVersions + 3` | Module contexts left in memory after their modules went before the `hotreload` health check turns Degraded |
 | `KeepVersions` | `2` | Old versions kept for rollback |
 | `StartupTimeoutSeconds` | `60` | New version must settle within this window |
 | `RollingUpdate` | `false` | RESERVED — not implemented; nodes reload independently |
@@ -187,7 +189,7 @@ Per-module isolated `AssemblyLoadContext`. Resolution order:
 2. Shared loader (`SharedAssemblyLoader` — common assemblies provided by the host)
 3. Default ALC (host assemblies)
 
-`Collectible = true` enables `Unload()` for GC reclamation after a hot-swap, at the cost of incompatibility with `Reflection.Emit`-based serializers.
+`Collectible = true` enables `Unload()` for GC reclamation after a hot-swap. The context leaves memory once nothing outside the module refers to it; `ModuleContextMonitor` checks that after each scan and counts the contexts that stay (`OrphanedModuleContexts`, the `hotreload` health check).
 
 ### `ModulePackage`
 

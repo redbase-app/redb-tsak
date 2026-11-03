@@ -68,7 +68,9 @@ tsak system health                        # Health check (live status)
 tsak system health --watch --interval 2  # Poll every 2 s
 tsak system metrics                       # Current CPU, memory, GC snapshot
 tsak system metrics --watch              # Live metrics dashboard
-tsak system info                          # Version, uptime, context/module counts
+tsak system info                          # Version, uptime, context/module counts, module contexts in memory
+tsak system deploy-advice                 # Hot swap or cold deploy? Exit code 0: hot-swap, 3: cold-deploy
+tsak system deploy-advice --cluster -o json  # Every alive node through this one; JSON only on stdout
 ```
 
 ### `context` — Route context lifecycle

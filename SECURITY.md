@@ -70,7 +70,7 @@ Tsak uses API Key authentication with HMAC-SHA256 hashing.
 ### Module Isolation
 
 - Each module is loaded in its own `AssemblyLoadContext` — a compromised module cannot directly access another module's types
-- `Collectible` ALC mode is **disabled by default** because `Reflection.Emit`-based code (serializers, compiled regex) crashes inside collectible contexts — enabling it without understanding the risk can cause runtime failures
+- `Collectible` ALC mode is **disabled by default**: an unload releases a module only when nothing outside it refers to it, and a library with a static cache of the module's types can keep it in memory. Tsak checks the unload and counts what stays (README, "Module contexts in memory"); unloading is a memory matter, not an isolation boundary
 - Modules are loaded from the `Tsak:Modules:AssemblyPaths` directories — **restrict write access** to these directories in production
 - Tsak does not sandbox module code — a module with malicious code runs with the same OS privileges as the Tsak process
 

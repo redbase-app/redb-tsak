@@ -22,17 +22,19 @@ public sealed class HotReloadService : IDisposable
     private readonly ILogger<HotReloadService> _logger;
     private readonly string[] _assemblyProbePaths;
     private readonly bool _collectible;
+    private readonly ModuleContextMonitor _contextMonitor;
 
-    /// <summary>Number of non-collectible ALCs accumulated (never freed until process restart).</summary>
-    private int _leakedAlcCount;
     // Idempotent disposal + coordination with an in-progress scan (review item 4.12): Dispose unloads
     // ALCs, so a scan running concurrently must finish first (the gate) and a scan starting after
     // disposal must bail (_disposed).
     private int _disposed;
     private readonly SemaphoreSlim _scanGate = new(1, 1);
 
-    /// <summary>Number of non-collectible ALCs that were orphaned and can't be unloaded. For diagnostics/monitoring.</summary>
-    public int LeakedAlcCount => Volatile.Read(ref _leakedAlcCount);
+    /// <summary>
+    /// Module load contexts still in memory after Tsak let them go, in both modes of
+    /// <see cref="HotReloadOptions.Collectible"/>: the same number as <see cref="ModuleContextMonitor.OrphanedModuleContexts"/>.
+    /// </summary>
+    public int LeakedAlcCount => _contextMonitor.OrphanedModuleContexts;
 
     // DLLs that were scanned and found to contain no ITsakModule — remember last-write time so
     // we re-scan if the file is replaced with a newer version that might contain a module.
@@ -72,7 +74,8 @@ public sealed class HotReloadService : IDisposable
         IOptions<HotReloadOptions> options,
         IConfiguration configuration,
         ILogger<HotReloadService> logger,
-        Modules.ModuleLoadGate? loadGate = null)
+        Modules.ModuleLoadGate? loadGate = null,
+        ModuleContextMonitor? contextMonitor = null)
     {
         _registry = registry;
         _coordinator = coordinator;
@@ -90,12 +93,23 @@ public sealed class HotReloadService : IDisposable
         _loadGate = loadGate ?? new Modules.ModuleLoadGate(configuration,
             Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance.CreateLogger<Modules.ModuleLoadGate>());
 
+        // The optional parameter keeps plain unit-test construction working; DI provides the node's monitor.
+        _contextMonitor = contextMonitor ?? new ModuleContextMonitor(_options, logger, TimeSpan.FromMilliseconds(100));
+
         if (!_collectible)
         {
             _logger.LogInformation(
-                "HotReload: Collectible=false (default). Old module versions will NOT be unloaded from memory. " +
-                "This is safe for modules using XmlSerializer/Emit. " +
-                "Set Tsak:HotReload:Collectible=true if your modules are Emit-free and you need memory reclamation");
+                "HotReload: Collectible=false (default). A replaced or removed module version stays in memory until the " +
+                "process restarts; the hotreload health check turns Degraded above {Limit} of them. " +
+                "Tsak:HotReload:Collectible=true unloads old versions once nothing outside the module refers to them",
+                _contextMonitor.MaxOrphanedContexts);
+        }
+        else
+        {
+            _logger.LogInformation(
+                "HotReload: Collectible=true. Replaced module versions are unloaded; one still in memory after {Collections} " +
+                "collections is logged and counted, and the hotreload health check turns Degraded above {Limit} of them",
+                ModuleContextMonitor.Collections, _contextMonitor.MaxOrphanedContexts);
         }
     }
 
@@ -206,6 +220,8 @@ public sealed class HotReloadService : IDisposable
         finally
         {
             _scanGate.Release();
+            // Every swap, reload and removal of the scan let its old contexts go by now: check they leave memory.
+            _contextMonitor.ScheduleCheck();
         }
     }
 
@@ -801,11 +817,7 @@ public sealed class HotReloadService : IDisposable
 
             // Dispose the package ALC (unloads entry points if collectible)
             if (_packageInstances.TryRemove(tpkgPath, out var oldPkg))
-            {
                 oldPkg.Dispose();
-                if (!_collectible)
-                    Interlocked.Increment(ref _leakedAlcCount);
-            }
         }
 
         // Detect removed bare .dll modules
@@ -869,11 +881,7 @@ public sealed class HotReloadService : IDisposable
             {
                 var isPackageOwned = info.DllPath.EndsWith(".tpkg", StringComparison.OrdinalIgnoreCase);
                 if (!isPackageOwned)
-                {
                     info.Alc?.TryUnload();
-                    if (info.Alc is not null && !_collectible)
-                        Interlocked.Increment(ref _leakedAlcCount);
-                }
             }
 
             // 4. Clean up archived versions
@@ -882,11 +890,7 @@ public sealed class HotReloadService : IDisposable
                 lock (history)
                 {
                     foreach (var prev in history)
-                    {
                         prev.Alc?.TryUnload();
-                        if (prev.Alc is not null && !_collectible)
-                            Interlocked.Increment(ref _leakedAlcCount);
-                    }
                     history.Clear();
                 }
             }
@@ -1071,11 +1075,7 @@ public sealed class HotReloadService : IDisposable
             // Don't TryUnload individual module ALCs for package modules — the package ALC is
             // unloaded atomically below. Only a module that moved here from a bare DLL has its own.
             if (oldInfo?.Alc is not null && oldInfo.DllPath != tpkgPath)
-            {
                 oldInfo.Alc.TryUnload();
-                if (!_collectible)
-                    Interlocked.Increment(ref _leakedAlcCount);
-            }
             if (!newNames.Contains(name))
             {
                 // A module the new version no longer ships: stop its context BEFORE the old package (and
@@ -1087,12 +1087,7 @@ public sealed class HotReloadService : IDisposable
         }
 
         // Old package goes away only now — the old context (and its file= resource reads) is gone.
-        if (oldPackage is not null)
-        {
-            oldPackage.Dispose();
-            if (!_collectible)
-                Interlocked.Increment(ref _leakedAlcCount);
-        }
+        oldPackage?.Dispose();
 
         // Update package tracking. Record the tracked write-time only now, after a successful reload
         // (4.11) — the scan loop no longer records it eagerly, so a failed reload (validation/open
@@ -1188,8 +1183,6 @@ public sealed class HotReloadService : IDisposable
 
         // The new package goes away only after the old contexts replaced the new ones.
         newPackage.Dispose();
-        if (!_collectible)
-            Interlocked.Increment(ref _leakedAlcCount);
 
         if (restoreException is not null || !restored.Succeeded || restorable.Count == 0)
         {
@@ -1273,12 +1266,7 @@ public sealed class HotReloadService : IDisposable
                     {
                         var evicted = history[^1];
                         history.RemoveAt(history.Count - 1);
-                        if (evicted.Alc is not null)
-                        {
-                            evicted.Alc.TryUnload();
-                            if (!_collectible)
-                                Interlocked.Increment(ref _leakedAlcCount);
-                        }
+                        evicted.Alc?.TryUnload();
                     }
                 }
             }
@@ -1322,23 +1310,12 @@ public sealed class HotReloadService : IDisposable
             //    published to the shared LoadedAssemblyTracker: it lives only in newAlc (isolated),
             //    exactly as the .tpkg path treats entry points (ModulePackage — entry points are never
             //    tracked). Publishing it would Assembly.Load a second, non-unloadable copy into the
-            //    Default ALC (a leak that isn't even counted in _leakedAlcCount) and risk a type-identity
+            //    Default ALC (a leak no module context count would show) and risk a type-identity
             //    split-brain; cross-module shared types must flow through the shared/companion layer,
             //    which IS tracked. (Review item F-7.)
             _loadedModules[moduleName] = new LoadedModuleInfo(newAlc, newDllPath, newVersion);
 
-            if (!_collectible)
-            {
-                var leaked = Interlocked.Increment(ref _leakedAlcCount);
-                _logger.LogWarning(
-                    "Hot-swapped {Module} to v{Version} (Collectible=false: {LeakedCount} orphaned ALC(s) in memory, " +
-                    "not reclaimable until process restart)",
-                    moduleName, newVersion, leaked);
-            }
-            else
-            {
-                _logger.LogInformation("Hot-swapped {Module} to version {Version}", moduleName, newVersion);
-            }
+            _logger.LogInformation("Hot-swapped {Module} to version {Version}", moduleName, newVersion);
             return true;
         }
         catch (Exception ex)
