@@ -32,6 +32,14 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Pending changes live in `changelog/unreleased/` until the release; `pwsh scripts/changelog.ps1 -Preview` shows them.
 
+## [4.6.1] — 2026-11-04
+
+### Changed
+
+- **Built on redb 4.6.1 and redb.Route 4.6.1.** The worker, its images and archives carry the SQL Server integer
+  average fix of redb and the AS4 fixes of redb.Route (issuer-serial key references, malformed base64, the receipt of
+  a duplicate, the refusal codes the eDelivery tests expect). No change in Tsak itself; nothing to do on your side.
+
 ## [4.6.0] — 2026-11-03
 
 ### Added
