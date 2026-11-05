@@ -32,6 +32,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Pending changes live in `changelog/unreleased/` until the release; `pwsh scripts/changelog.ps1 -Preview` shows them.
 
+## [4.6.2] — 2026-11-05
+
+### Changed
+
+- **Built on redb 4.6.2 and redb.Route 4.6.2.** No change in Tsak itself: the worker, its images and archives move to
+  4.6.2 with the rest of the ecosystem. Nothing to do on your side.
+
 ## [4.6.1] — 2026-11-04
 
 ### Changed
