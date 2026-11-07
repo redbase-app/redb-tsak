@@ -1,0 +1,6 @@
+@page "/denied"
+
+@* Where the auth cookie sends a signed-in user whose role does not open the page they asked for
+   (CookieAuthenticationOptions.AccessDeniedPath). An anonymous visitor never gets here: this page requires a
+   signed-in user like every other one. *@
+<AccessDenied />

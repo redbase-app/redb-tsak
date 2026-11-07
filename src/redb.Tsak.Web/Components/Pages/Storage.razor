@@ -1,0 +1,574 @@
+@page "/node/{NodeId}/storage"
+@inject INodeClientProvider NodeProvider
+@inject ILogger<Storage> Log
+@inject ToastService Toast
+@using redb.Tsak.Client
+@using redb.Tsak.Contracts
+@using redb.Tsak.Web.Components.Shared
+@implements IDisposable
+
+<TsakPageHeader Title="Storage" Description="Indexes, tables and planner statistics of the databases this node uses">
+    <Actions>
+        @if (_groups.Count > 1)
+        {
+            <select class="input" style="width: 280px; padding: 4px 8px; font-size: 0.8rem;"
+                    value="@_selectedKey" @onchange="OnInstanceChanged">
+                @foreach (var group in _groups)
+                {
+                    <option value="@group.Key">@group.Label</option>
+                }
+            </select>
+        }
+        @if (_groups.Count > 0)
+        {
+            @if (_readAt is { } readAt)
+            {
+                <span class="text-xs text-tertiary" title="The numbers on this page are from that moment">read @readAt.ToString("HH:mm:ss")</span>
+            }
+            <button class="btn @(_stats is null ? "btn-primary" : "btn-secondary") btn-sm"
+                    @onclick="LoadStats" disabled="@_loadingStats">
+                <TsakIcon Name="refresh" Size="14" /> @(_stats is null ? "Read" : "Re-read")
+            </button>
+            @if (_stats is not null)
+            {
+                <AuthorizedView AdminOnly="true">
+                    <button class="btn btn-primary btn-sm" title="@AnalyzeAllHint" @onclick="AnalyzeAll" disabled="@_analyzing">
+                        <TsakIcon Name="activity" Size="14" /> Analyze database
+                    </button>
+                </AuthorizedView>
+            }
+        }
+    </Actions>
+</TsakPageHeader>
+
+@if (_loadingInstances)
+{
+    <div class="empty-state">
+        <div class="spinner spinner-lg"></div>
+        <p>Asking the node which databases it uses…</p>
+    </div>
+}
+else if (_groups.Count == 0 && _error is { Length: > 0 })
+{
+    @* Not the same as "no databases": the node was asked and did not answer. Saying "none" here would be
+       an answer this page has not got. *@
+    <div class="card">
+        <div class="empty-state">
+            <TsakIcon Name="alert-triangle" Size="48" />
+            <p>The node did not answer which databases it uses</p>
+            <p class="text-xs text-secondary mono" style="max-width: 640px; word-break: break-word;">@_error</p>
+            <button class="btn btn-primary" style="margin-top: var(--space-3);" @onclick="LoadInstances">
+                <TsakIcon Name="refresh" Size="14" /> Try again
+            </button>
+        </div>
+    </div>
+}
+else if (_groups.Count == 0)
+{
+    <div class="empty-state">
+        <TsakIcon Name="database" Size="48" />
+        <p>This node uses no redb database</p>
+    </div>
+}
+else
+{
+    <div class="grid-stats">
+        <TsakCard Title="Database" Icon="database" Value="@Current.Title" />
+        <TsakCard Title="Engine" Icon="server" Value="@($"{Current.Primary.Provider}{(Current.Primary.UsePro ? " · Pro" : "")}")" />
+        @if (_stats is not null)
+        {
+            <TsakCard Title="Tables" Icon="route" Value="@_stats.Tables.Count.ToString()" />
+            <TsakCard Title="Indexes" Icon="zap" Value="@_stats.Indexes.Count.ToString()" />
+            <TsakCard Title="Remarks" Icon="alert-triangle" Value="@_advice.Count.ToString()"
+                      ValueStyle="@(_advice.Count > 0 ? "color: var(--status-warning)" : "color: var(--status-online)")" />
+        }
+    </div>
+
+    @* Who asked for this database. Identity alone declares the same three databases in five of its contexts,
+       so the rows are grouped by the database itself and the contexts are named here instead. *@
+    <div class="card" style="margin-bottom: var(--space-4);">
+        <div style="padding: var(--space-3) var(--space-4);" class="text-sm text-secondary">
+            <TsakIcon Name="info" Size="14" />
+            @if (Current.Primary.ContextName is null)
+            {
+                <text>Tsak's own database: modules, contexts, keys, audit and dead-letter live here.</text>
+            }
+            else if (Current.Members.Count == 1)
+            {
+                <text>Declared by the context @Current.Primary.ContextName as "@Current.Primary.Name".</text>
+            }
+            else
+            {
+                <text>
+                    The same database is declared by @Current.Members.Count contexts:
+                    @string.Join(", ", Current.Members.Select(m => $"{m.ContextName} ({m.Name})"))
+                </text>
+            }
+        </div>
+    </div>
+
+    @if (_error is { Length: > 0 })
+    {
+        @* The refusal stays on the page, not only in a toast that fades: it carries the reference the worker
+           log is searchable by, and the operator needs it to hand on. *@
+        <div class="card" style="margin-bottom: var(--space-4); border-color: var(--status-error);">
+            <div style="padding: var(--space-4);">
+                <div class="text-sm" style="color: var(--status-error); display: flex; align-items: center; gap: var(--space-2);">
+                    <TsakIcon Name="alert-triangle" Size="16" /> The database refused to report its statistics
+                </div>
+                <div class="text-xs text-secondary mono" style="margin-top: var(--space-2); word-break: break-word;">@_error</div>
+                <div class="text-xs text-tertiary" style="margin-top: var(--space-2);">
+                    The worker log holds the engine's own message under that reference.
+                </div>
+            </div>
+        </div>
+    }
+
+    @if (_stats is null)
+    {
+        @* Nothing is read until asked: a database a context declared but never activated opens its
+           connection on exactly this call, and the page must not do that behind the operator's back. *@
+        <div class="card">
+            <div class="empty-state">
+                <TsakIcon Name="database" Size="48" />
+                <p>Nothing read yet</p>
+                <p class="text-secondary" style="max-width: 640px;">
+                    Press Read to query the catalogs of <b>@Current.Title</b>: its tables with their sizes and
+                    row counts, its indexes with their columns, and what the engine knows about how they are used.
+                </p>
+                <p class="text-xs text-tertiary" style="max-width: 640px;">
+                    This never happens on a timer — a database a context declared but never activated opens its
+                    connection on this very call.
+                </p>
+                <button class="btn btn-primary" style="margin-top: var(--space-3);"
+                        @onclick="LoadStats" disabled="@_loadingStats">
+                    <TsakIcon Name="refresh" Size="14" /> @(_loadingStats ? "Reading…" : "Read")
+                </button>
+            </div>
+        </div>
+    }
+    else
+    {
+        @* The window the counters cover decides whether "nothing read this index" is a fact or our ignorance,
+           so it is stated before any number that depends on it. *@
+        <div class="card" style="margin-bottom: var(--space-4);">
+            <div style="padding: var(--space-3) var(--space-4);" class="text-sm text-secondary">
+                @if (!Current.Primary.SupportsUsageCounters)
+                {
+                    <span>
+                        <TsakIcon Name="info" Size="14" />
+                        This engine counts no index usage, so the tables below say what the indexes are, not whether anything reads them.
+                    </span>
+                }
+                else if (_stats.CountersSince is { } since)
+                {
+                    <span>
+                        <TsakIcon Name="clock" Size="14" />
+                        Usage counters cover everything since @since.ToLocalTime().ToString("yyyy-MM-dd HH:mm").
+                        @if (_stats.IsReplica == true)
+                        {
+                            <text>This node is a replica: they count the reads served here.</text>
+                        }
+                    </span>
+                }
+                else
+                {
+                    <span>
+                        <TsakIcon Name="info" Size="14" />
+                        The engine does not say since when the counters have been counting, so a zero read count is not evidence.
+                    </span>
+                }
+            </div>
+        </div>
+
+        @if (_advice.Count > 0)
+        {
+            <div class="card" style="margin-bottom: var(--space-4);">
+                <div class="card-header">
+                    <span class="card-title" style="display: flex; align-items: center; gap: var(--space-2);">
+                        <TsakIcon Name="alert-triangle" Size="16" /> Remarks
+                        <span class="text-secondary text-sm" style="font-weight: 400;">
+                            — only indexes nothing structural depends on
+                        </span>
+                    </span>
+                </div>
+                <div style="padding: 0 var(--space-4) var(--space-4);">
+                    @foreach (var item in _advice)
+                    {
+                        <div class="attention-row">
+                            <TsakBadge Text="@KindLabel(item.Kind)" Variant="warning" ShowDot="false" />
+                            <div style="flex: 1; min-width: 0;">
+                                <div class="text-sm mono">@QualifiedName(item.Schema, item.Table).@item.Index</div>
+                                <div class="text-xs text-secondary" style="margin-top: var(--space-1);">@item.Detail</div>
+                            </div>
+                        </div>
+                    }
+                </div>
+            </div>
+        }
+
+        <div class="card" style="margin-bottom: var(--space-4);">
+            <div class="card-header">
+                <span class="card-title" style="display: flex; align-items: center; gap: var(--space-2);">
+                    <TsakIcon Name="route" Size="16" /> Tables
+                </span>
+            </div>
+            <div style="padding: 0 var(--space-4) var(--space-4);">
+                <TsakGrid Items="_stats.Tables" T="RedbTableInfo" @ref="_tables" PageSize="@_pageSize" PageSizeChanged="@(size => _pageSize = size)" PageSizeOptions="PageSizes" Filterable="true"
+                          FilterSelector="@(t => QualifiedName(t.Schema, t.Table))">
+                    <EmptyContent>
+                        <div class="empty-state"><p class="text-secondary">No tables</p></div>
+                    </EmptyContent>
+                    <HeaderContent>
+                        <th class="grid-sortable" @onclick="@(() => SortTables("table", t => QualifiedName(t.Schema, t.Table)))">Table@(_tables?.SortIndicator("table"))</th>
+                        <th class="grid-sortable" @onclick="@(() => SortTables("owner", t => t.IsRedbOwned ? 0 : 1))">Owner@(_tables?.SortIndicator("owner"))</th>
+                        <th class="grid-sortable" @onclick="@(() => SortTables("rows", t => t.EstimatedRows ?? -1))">Rows@(_tables?.SortIndicator("rows"))</th>
+                        <th class="grid-sortable" @onclick="@(() => SortTables("data", t => t.DataSizeBytes ?? -1))">Data@(_tables?.SortIndicator("data"))</th>
+                        <th class="grid-sortable" @onclick="@(() => SortTables("indexes", t => t.IndexesSizeBytes ?? -1))">Indexes@(_tables?.SortIndicator("indexes"))</th>
+                        @if (Current.Primary.SupportsAnalyzeTimestamps)
+                        {
+                            <th class="grid-sortable" @onclick="@(() => SortTables("dead", t => t.DeadRows ?? -1))">Dead rows@(_tables?.SortIndicator("dead"))</th>
+                            <th class="grid-sortable" @onclick="@(() => SortTables("analyzed", t => t.LastAnalyze ?? t.LastAutoAnalyze ?? DateTimeOffset.MinValue))">Analyzed@(_tables?.SortIndicator("analyzed"))</th>
+                        }
+                        else
+                        {
+                            <th class="grid-sortable" @onclick="@(() => SortTables("stats", t => t.HasStatistics == true ? 0 : 1))">Statistics@(_tables?.SortIndicator("stats"))</th>
+                        }
+                        <th></th>
+                    </HeaderContent>
+                    <RowContent>
+                        <td class="mono text-sm">@QualifiedName(context.Schema, context.Table)</td>
+                        <td>
+                            <TsakBadge Text="@(context.IsRedbOwned ? "redb" : "app")"
+                                       Variant="@(context.IsRedbOwned ? "info" : "offline")" ShowDot="false" />
+                        </td>
+                        <td class="mono text-sm">@Number(context.EstimatedRows)</td>
+                        <td class="mono text-sm">@Size(context.DataSizeBytes)</td>
+                        <td class="mono text-sm">@Size(context.IndexesSizeBytes)</td>
+                        @if (Current.Primary.SupportsAnalyzeTimestamps)
+                        {
+                            <td class="mono text-sm">@Number(context.DeadRows)</td>
+                            <td class="mono text-xs">@Moment(context.LastAnalyze ?? context.LastAutoAnalyze)</td>
+                        }
+                        else
+                        {
+                            <td>
+                                <TsakBadge Text="@(context.HasStatistics == true ? "present" : "none")"
+                                           Variant="@(context.HasStatistics == true ? "online" : "offline")" ShowDot="false" />
+                            </td>
+                        }
+                        <td>
+                            <AuthorizedView AdminOnly="true">
+                                <button class="btn btn-ghost btn-sm" title="@AnalyzeTableHint"
+                                        @onclick="() => AnalyzeTable(context)" disabled="@_analyzing">
+                                    <TsakIcon Name="activity" Size="14" /> Analyze
+                                </button>
+                            </AuthorizedView>
+                        </td>
+                    </RowContent>
+                </TsakGrid>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title" style="display: flex; align-items: center; gap: var(--space-2);">
+                    <TsakIcon Name="zap" Size="16" /> Indexes
+                </span>
+            </div>
+            <div style="padding: 0 var(--space-4) var(--space-4);">
+                <TsakGrid Items="_stats.Indexes" T="RedbIndexInfo" @ref="_indexes" PageSize="@_pageSize" PageSizeChanged="@(size => _pageSize = size)" PageSizeOptions="PageSizes" Filterable="true"
+                          FilterSelector="@(i => $"{QualifiedName(i.Schema, i.Table)} {i.Name} {string.Join(' ', i.Columns)}")">
+                    <EmptyContent>
+                        <div class="empty-state"><p class="text-secondary">No indexes</p></div>
+                    </EmptyContent>
+                    <HeaderContent>
+                        <th class="grid-sortable" @onclick="@(() => SortIndexes("index", i => i.Name))">Index@(_indexes?.SortIndicator("index"))</th>
+                        <th class="grid-sortable" @onclick="@(() => SortIndexes("table", i => QualifiedName(i.Schema, i.Table)))">Table@(_indexes?.SortIndicator("table"))</th>
+                        <th class="grid-sortable" @onclick="@(() => SortIndexes("columns", i => string.Join(",", i.Columns)))">Columns@(_indexes?.SortIndicator("columns"))</th>
+                        <th class="grid-sortable" @onclick="@(() => SortIndexes("holds", i => i.IsSystemCritical ? i.CriticalReason : i.IsUnique == true ? "unique" : "zzz"))">Holds@(_indexes?.SortIndicator("holds"))</th>
+                        <th class="grid-sortable" @onclick="@(() => SortIndexes("size", i => i.SizeBytes ?? -1))">Size@(_indexes?.SortIndicator("size"))</th>
+                        @if (Current.Primary.SupportsUsageCounters)
+                        {
+                            <th class="grid-sortable" @onclick="@(() => SortIndexes("reads", i => (i.Seeks ?? 0) + (i.Scans ?? 0)))">Reads@(_indexes?.SortIndicator("reads"))</th>
+                            <th class="grid-sortable" @onclick="@(() => SortIndexes("last", i => i.LastUsed ?? DateTimeOffset.MinValue))">Last read@(_indexes?.SortIndicator("last"))</th>
+                        }
+                    </HeaderContent>
+                    <RowContent>
+                        <td class="mono text-sm">@context.Name</td>
+                        <td class="mono text-xs text-secondary">@QualifiedName(context.Schema, context.Table)</td>
+                        <td class="mono text-xs">
+                            @string.Join(", ", context.Columns)
+                            @if (context.IncludedColumns.Count > 0)
+                            {
+                                <span class="text-tertiary"> + @string.Join(", ", context.IncludedColumns)</span>
+                            }
+                        </td>
+                        <td>
+                            @if (context.IsSystemCritical)
+                            {
+                                <TsakBadge Text="@context.CriticalReason" Variant="info" ShowDot="false" />
+                            }
+                            else if (context.IsUnique == true)
+                            {
+                                <TsakBadge Text="unique" Variant="info" ShowDot="false" />
+                            }
+                            else
+                            {
+                                <span class="text-tertiary">—</span>
+                            }
+                        </td>
+                        <td class="mono text-sm">@Size(context.SizeBytes)</td>
+                        @if (Current.Primary.SupportsUsageCounters)
+                        {
+                            <td class="mono text-sm">@Reads(context)</td>
+                            <td class="mono text-xs">@Moment(context.LastUsed)</td>
+                        }
+                    </RowContent>
+                </TsakGrid>
+            </div>
+        </div>
+    }
+}
+
+<TsakConfirmDialog @ref="_confirm" />
+
+@code {
+    [Parameter] public string NodeId { get; set; } = "";
+
+    /// <summary>What the two analyze buttons promise, in the words an operator needs before pressing.</summary>
+    private const string AnalyzeAllHint =
+        "Refresh the planner statistics of the whole database. On a large one this runs for minutes, and the "
+        + "database keeps serving traffic while it does.";
+
+    private const string AnalyzeTableHint =
+        "Refresh the planner statistics of this table only — the usual answer when one table turned slow.";
+
+    private IReadOnlyList<StorageInstanceGroup> _groups = [];
+    private string _selectedKey = "";
+    private RedbStorageStats? _stats;
+    private IReadOnlyList<IndexAdviceItem> _advice = [];
+    private string? _error;
+    /// <summary>What was read, per database, with the moment it was read.</summary>
+    private sealed record ReadResult(RedbStorageStats Stats, IReadOnlyList<IndexAdviceItem> Advice, DateTimeOffset At);
+
+    // Switching back to a database already read shows what was read instead of asking for Read again. Only
+    // what the operator asked for is kept — a database never read is still never connected to.
+    private readonly Dictionary<string, ReadResult> _read = new(StringComparer.Ordinal);
+    private DateTimeOffset? _readAt;
+
+    /// <summary>Page sizes offered under both tables; a database has as many indexes as it has.</summary>
+    private static readonly int[] PageSizes = [20, 50, 100, 200];
+
+    // The size the reader picked, kept by the page: the grids are re-created whenever the page swaps what it
+    // shows, and a choice that lives inside them would be forgotten on every switch of database.
+    private int _pageSize = 20;
+
+    private TsakGrid<RedbTableInfo>? _tables;
+    private TsakGrid<RedbIndexInfo>? _indexes;
+
+    // Sorting lives in the grid, which owns the paging the order has to agree with; the page only says what
+    // each column sorts by. A value the engine did not report sorts as -1 or as the earliest moment, so the
+    // rows that say "—" gather at one end instead of being scattered through the order.
+    private void SortTables(string column, Func<RedbTableInfo, IComparable> selector) => _tables?.Sort(column, selector);
+
+    private void SortIndexes(string column, Func<RedbIndexInfo, IComparable> selector) => _indexes?.Sort(column, selector);
+
+    private bool _loadingInstances = true;
+    private bool _loadingStats;
+    private bool _analyzing;
+    private TsakConfirmDialog? _confirm;
+
+    private CancellationTokenSource? _cts;
+    // Component-scoped token: the read of a large catalog is abandoned when the operator navigates away.
+    private CancellationToken Ct
+    {
+        get { try { return _cts?.Token ?? default; } catch (ObjectDisposedException) { return default; } }
+    }
+
+    private StorageInstanceGroup Current =>
+        _groups.FirstOrDefault(g => g.Key == _selectedKey) ?? _groups[0];
+
+    protected override async Task OnInitializedAsync()
+    {
+        _cts = new CancellationTokenSource();
+        await LoadInstances();
+    }
+
+    /// <summary>
+    /// Asks the node which databases it uses. On the control client, not the polling one: a worker busy with
+    /// an analyze, a start-up or fifteen declarations of its own answers this in more than the five seconds
+    /// the polling client allows, and a page with no list is a page with nothing at all.
+    /// </summary>
+    private async Task LoadInstances()
+    {
+        var client = NodeProvider.GetControlClient(NodeId) ?? NodeProvider.GetClient(NodeId);
+        if (client is null)
+        {
+            _groups = [];
+            return;
+        }
+
+        _loadingInstances = true;
+        try
+        {
+            var instances = await client.ListRedbInstancesAsync(Ct);
+            _groups = StorageInstanceGrouping.Group(instances);
+            _error = null;
+            if (_groups.Count > 0)
+                _selectedKey = _groups[0].Key;
+        }
+        catch (Exception ex)
+        {
+            Log.LogWarning(ex, "[Storage] failed to list redb instances of node {NodeId}", NodeId);
+            // The list stays unknown, not empty: "no databases" is an answer this page has not got.
+            _groups = [];
+            _error = ex.Message;
+        }
+        finally
+        {
+            _loadingInstances = false;
+        }
+    }
+
+
+    /// <summary>
+    /// Reads the catalogs of the selected database. Deliberately not on a timer: an instance a context
+    /// declared but never activated opens its database connection on exactly this call.
+    /// </summary>
+    private async Task LoadStats()
+    {
+        if (_groups.Count == 0) return;
+
+        var client = NodeProvider.GetControlClient(NodeId) ?? NodeProvider.GetClient(NodeId);
+        if (client is null) return;
+
+        _loadingStats = true;
+        try
+        {
+            var instance = Current.Primary;
+            _error = null;
+            _stats = await client.GetStorageStatsAsync(
+                string.IsNullOrEmpty(instance.Name) ? null : instance.Name, instance.ContextName, Ct);
+            _advice = IndexAdvice.Collect(
+                _stats.Indexes,
+                countersAreMeaningful: instance.SupportsUsageCounters && _stats.CountersSince is not null);
+            _readAt = DateTimeOffset.Now;
+            _read[Current.Key] = new ReadResult(_stats, _advice, _readAt.Value);
+        }
+        catch (Exception ex)
+        {
+            Log.LogWarning(ex, "[Storage] failed to read statistics of {Instance}", _selectedKey);
+            _error = ex.Message;
+            Toast.Error($"Could not read the statistics: {ex.Message}");
+        }
+        finally
+        {
+            _loadingStats = false;
+        }
+    }
+
+    private void OnInstanceChanged(ChangeEventArgs e)
+    {
+        _selectedKey = e.Value?.ToString() ?? "";
+        _error = null;
+
+        // The numbers on screen belong to the database selected a moment ago. If this one was read earlier,
+        // show that reading; otherwise the page waits to be asked, as it does on first arrival.
+        if (_read.TryGetValue(_selectedKey, out var previous))
+        {
+            _stats = previous.Stats;
+            _advice = previous.Advice;
+            _readAt = previous.At;
+        }
+        else
+        {
+            _stats = null;
+            _advice = [];
+            _readAt = null;
+        }
+    }
+
+    private async Task AnalyzeAll()
+    {
+        var confirmed = await _confirm!.ShowAsync(
+            $"Refresh the planner statistics of the whole database behind '{Current.Title}'? "
+            + "On a large database this runs for minutes.",
+            "Analyze database");
+        if (!confirmed) return;
+
+        await RunAnalyze(null, null, $"Statistics of '{Current.Title}' refreshed");
+    }
+
+    private async Task AnalyzeTable(RedbTableInfo table)
+    {
+        await RunAnalyze(table.Table, table.Schema, $"Statistics of '{QualifiedName(table.Schema, table.Table)}' refreshed");
+    }
+
+    private async Task RunAnalyze(string? table, string? schema, string success)
+    {
+        // Control client: an ANALYZE outlasts the polling timeout by design, and a false client-side timeout
+        // would have the operator run it a second time (С12).
+        var client = NodeProvider.GetControlClient(NodeId);
+        if (client is null) return;
+
+        _analyzing = true;
+        try
+        {
+            var instance = Current.Primary;
+            var result = await client.AnalyzeStorageAsync(
+                string.IsNullOrEmpty(instance.Name) ? null : instance.Name, instance.ContextName, table, schema, Ct);
+            Toast.Success($"{success} in {result.ElapsedMs} ms");
+            await LoadStats();
+        }
+        catch (Exception ex)
+        {
+            Log.LogWarning(ex, "[Storage] analyze failed on {Instance}", _selectedKey);
+            Toast.Error($"Analyze failed: {ex.Message}");
+        }
+        finally
+        {
+            _analyzing = false;
+        }
+    }
+
+    private static string QualifiedName(string? schema, string table) =>
+        string.IsNullOrEmpty(schema) ? table : $"{schema}.{table}";
+
+    private static string KindLabel(IndexAdviceKind kind) => kind switch
+    {
+        IndexAdviceKind.Unused => "unread",
+        IndexAdviceKind.Duplicate => "duplicate",
+        IndexAdviceKind.CoveredByWiderIndex => "covered",
+        _ => "remark"
+    };
+
+    /// <summary>Reads as the engine counts them: PostgreSQL reports one combined number, SQL Server two.</summary>
+    private static string Reads(RedbIndexInfo i) =>
+        i.Scans is null ? Number(i.Seeks) : $"{Number(i.Seeks)} / {Number(i.Scans)}";
+
+    private static string Number(long? value) => value is null ? "—" : value.Value.ToString("N0");
+
+    private static string Moment(DateTimeOffset? value) =>
+        value is null ? "—" : value.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+
+    private static string Size(long? bytes)
+    {
+        if (bytes is null) return "—";
+        double value = bytes.Value;
+        string[] units = ["B", "KB", "MB", "GB", "TB"];
+        var unit = 0;
+        while (value >= 1024 && unit < units.Length - 1)
+        {
+            value /= 1024;
+            unit++;
+        }
+        return unit == 0 ? $"{bytes.Value} B" : $"{value:F1} {units[unit]}";
+    }
+
+    public void Dispose()
+    {
+        _cts?.Cancel();
+        _cts?.Dispose();
+    }
+}

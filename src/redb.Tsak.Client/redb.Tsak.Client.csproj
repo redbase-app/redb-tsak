@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>redb.Tsak.Client</RootNamespace>
+    <PackageId>redb.Tsak.Client</PackageId>
+    <Description>Typed HTTP client for the redb.Tsak runtime REST API.</Description>
+    <PackageTags>redb;tsak;client;api;http</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\redb.Tsak.Contracts\redb.Tsak.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,215 @@
+-- Quartz.NET 3.22 schema migration for redb.Tsak (sqlServer), for the administrator.
+--
+-- The Tsak worker adds the columns below itself at start (QuartzSchemaInitializer), under a lock, when its
+-- database role may ALTER the Quartz tables. Run this script when it may not (the worker then logs a warning
+-- naming this file), or to apply the index alignment, which the worker never does on its own.
+--
+--   3.17 MISFIRE_ORIG_FIRE_TIME: ScheduledFireTimeUtc keeps the time a misfired trigger was due.
+--   3.18 EXECUTION_GROUP: the per-node limit of execution groups is applied in the acquire query.
+--   3.19 PREFERRED_NODE, PREFERRED_NODE_AUTO: node affinity in a cluster (both or neither).
+--   3.20 index alignment: performance only; drops and creates indexes, so run it in a quiet window.
+--
+-- Every statement checks first, so the script is safe to run more than once. Run it with sqlcmd or SSMS (it uses GO).
+-- Tables carry the QRTZ_ prefix Tsak configures. Taken from the Quartz.NET 3.x migrations (Apache License 2.0),
+-- database/migrations/3.17 to 3.20 of github.com/quartznet/quartznet.
+--
+-- !! FIRST RUN IN A TEST ENVIRONMENT AGAINST A COPY OF YOUR PRODUCTION DATABASE !!
+
+-- ==== 3.17 add misfire orig fire time ====
+
+IF COL_LENGTH('dbo.QRTZ_TRIGGERS','MISFIRE_ORIG_FIRE_TIME') IS NULL
+BEGIN
+  ALTER TABLE [dbo].[QRTZ_TRIGGERS] ADD [MISFIRE_ORIG_FIRE_TIME] bigint NULL;
+END
+GO
+
+-- ==== 3.18 add execution group ====
+
+IF COL_LENGTH('dbo.QRTZ_TRIGGERS','EXECUTION_GROUP') IS NULL
+BEGIN
+  ALTER TABLE [dbo].[QRTZ_TRIGGERS] ADD [EXECUTION_GROUP] nvarchar(200) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.QRTZ_FIRED_TRIGGERS','EXECUTION_GROUP') IS NULL
+BEGIN
+  ALTER TABLE [dbo].[QRTZ_FIRED_TRIGGERS] ADD [EXECUTION_GROUP] nvarchar(200) NULL;
+END
+GO
+
+-- ==== 3.19 add preferred node ====
+
+IF COL_LENGTH('dbo.QRTZ_TRIGGERS','PREFERRED_NODE') IS NULL
+BEGIN
+  ALTER TABLE [dbo].[QRTZ_TRIGGERS] ADD [PREFERRED_NODE] nvarchar(200) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.QRTZ_TRIGGERS','PREFERRED_NODE_AUTO') IS NULL
+BEGIN
+  ALTER TABLE [dbo].[QRTZ_TRIGGERS] ADD [PREFERRED_NODE_AUTO] bit NOT NULL DEFAULT 0;
+END
+GO
+
+-- ==== 3.20 index alignment ====
+
+-- === Create the indexes this version expects ===================================
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_T_G_J' AND object_id = OBJECT_ID('dbo.QRTZ_TRIGGERS'))
+BEGIN
+  CREATE INDEX [IDX_QRTZ_T_G_J] ON [dbo].[QRTZ_TRIGGERS](SCHED_NAME, JOB_GROUP, JOB_NAME);
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_T_C' AND object_id = OBJECT_ID('dbo.QRTZ_TRIGGERS'))
+BEGIN
+  CREATE INDEX [IDX_QRTZ_T_C] ON [dbo].[QRTZ_TRIGGERS](SCHED_NAME, CALENDAR_NAME);
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_T_N_G_STATE' AND object_id = OBJECT_ID('dbo.QRTZ_TRIGGERS'))
+BEGIN
+  CREATE INDEX [IDX_QRTZ_T_N_G_STATE] ON [dbo].[QRTZ_TRIGGERS](SCHED_NAME, TRIGGER_GROUP, TRIGGER_STATE);
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_T_N_STATE' AND object_id = OBJECT_ID('dbo.QRTZ_TRIGGERS'))
+BEGIN
+  CREATE INDEX [IDX_QRTZ_T_N_STATE] ON [dbo].[QRTZ_TRIGGERS](SCHED_NAME, TRIGGER_NAME, TRIGGER_GROUP, TRIGGER_STATE);
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_T_NEXT_FIRE_TIME' AND object_id = OBJECT_ID('dbo.QRTZ_TRIGGERS'))
+BEGIN
+  CREATE INDEX [IDX_QRTZ_T_NEXT_FIRE_TIME] ON [dbo].[QRTZ_TRIGGERS](SCHED_NAME, NEXT_FIRE_TIME);
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_T_NFT_ST' AND object_id = OBJECT_ID('dbo.QRTZ_TRIGGERS'))
+BEGIN
+  CREATE INDEX [IDX_QRTZ_T_NFT_ST] ON [dbo].[QRTZ_TRIGGERS](SCHED_NAME, TRIGGER_STATE, NEXT_FIRE_TIME);
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_T_NFT_ST_MISFIRE' AND object_id = OBJECT_ID('dbo.QRTZ_TRIGGERS'))
+BEGIN
+  CREATE INDEX [IDX_QRTZ_T_NFT_ST_MISFIRE] ON [dbo].[QRTZ_TRIGGERS](SCHED_NAME, MISFIRE_INSTR, NEXT_FIRE_TIME, TRIGGER_STATE);
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_T_NFT_ST_MISFIRE_GRP' AND object_id = OBJECT_ID('dbo.QRTZ_TRIGGERS'))
+BEGIN
+  CREATE INDEX [IDX_QRTZ_T_NFT_ST_MISFIRE_GRP] ON [dbo].[QRTZ_TRIGGERS](SCHED_NAME, MISFIRE_INSTR, NEXT_FIRE_TIME, TRIGGER_GROUP, TRIGGER_STATE);
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_FT_INST_JOB_REQ_RCVRY' AND object_id = OBJECT_ID('dbo.QRTZ_FIRED_TRIGGERS'))
+BEGIN
+  CREATE INDEX [IDX_QRTZ_FT_INST_JOB_REQ_RCVRY] ON [dbo].[QRTZ_FIRED_TRIGGERS](SCHED_NAME, INSTANCE_NAME, REQUESTS_RECOVERY);
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_FT_G_J' AND object_id = OBJECT_ID('dbo.QRTZ_FIRED_TRIGGERS'))
+BEGIN
+  CREATE INDEX [IDX_QRTZ_FT_G_J] ON [dbo].[QRTZ_FIRED_TRIGGERS](SCHED_NAME, JOB_GROUP, JOB_NAME);
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_FT_G_T' AND object_id = OBJECT_ID('dbo.QRTZ_FIRED_TRIGGERS'))
+BEGIN
+  CREATE INDEX [IDX_QRTZ_FT_G_T] ON [dbo].[QRTZ_FIRED_TRIGGERS](SCHED_NAME, TRIGGER_GROUP, TRIGGER_NAME);
+END
+GO
+
+-- === Drop the ones it no longer uses ==========================================
+-- Guarded, so each is a no-op when that index is not present.
+
+IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_J_GRP' AND object_id = OBJECT_ID('dbo.QRTZ_JOB_DETAILS'))
+BEGIN
+  DROP INDEX [IDX_QRTZ_J_GRP] ON [dbo].[QRTZ_JOB_DETAILS];
+END
+GO
+
+IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_J_REQ_RECOVERY' AND object_id = OBJECT_ID('dbo.QRTZ_JOB_DETAILS'))
+BEGIN
+  DROP INDEX [IDX_QRTZ_J_REQ_RECOVERY] ON [dbo].[QRTZ_JOB_DETAILS];
+END
+GO
+
+IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_T_JG' AND object_id = OBJECT_ID('dbo.QRTZ_TRIGGERS'))
+BEGIN
+  DROP INDEX [IDX_QRTZ_T_JG] ON [dbo].[QRTZ_TRIGGERS];
+END
+GO
+
+IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_T_G' AND object_id = OBJECT_ID('dbo.QRTZ_TRIGGERS'))
+BEGIN
+  DROP INDEX [IDX_QRTZ_T_G] ON [dbo].[QRTZ_TRIGGERS];
+END
+GO
+
+IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_T_STATE' AND object_id = OBJECT_ID('dbo.QRTZ_TRIGGERS'))
+BEGIN
+  DROP INDEX [IDX_QRTZ_T_STATE] ON [dbo].[QRTZ_TRIGGERS];
+END
+GO
+
+IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_T_NFT_MISFIRE' AND object_id = OBJECT_ID('dbo.QRTZ_TRIGGERS'))
+BEGIN
+  DROP INDEX [IDX_QRTZ_T_NFT_MISFIRE] ON [dbo].[QRTZ_TRIGGERS];
+END
+GO
+
+IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_FT_JG' AND object_id = OBJECT_ID('dbo.QRTZ_FIRED_TRIGGERS'))
+BEGIN
+  DROP INDEX [IDX_QRTZ_FT_JG] ON [dbo].[QRTZ_FIRED_TRIGGERS];
+END
+GO
+
+IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_FT_TG' AND object_id = OBJECT_ID('dbo.QRTZ_FIRED_TRIGGERS'))
+BEGIN
+  DROP INDEX [IDX_QRTZ_FT_TG] ON [dbo].[QRTZ_FIRED_TRIGGERS];
+END
+GO
+
+IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_FT_TRIG_INST_NAME' AND object_id = OBJECT_ID('dbo.QRTZ_FIRED_TRIGGERS'))
+BEGIN
+  DROP INDEX [IDX_QRTZ_FT_TRIG_INST_NAME] ON [dbo].[QRTZ_FIRED_TRIGGERS];
+END
+GO
+
+IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_FT_TRIG_NM_GP' AND object_id = OBJECT_ID('dbo.QRTZ_FIRED_TRIGGERS'))
+BEGIN
+  DROP INDEX [IDX_QRTZ_FT_TRIG_NM_GP] ON [dbo].[QRTZ_FIRED_TRIGGERS];
+END
+GO
+
+IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_FT_TRIG_NAME' AND object_id = OBJECT_ID('dbo.QRTZ_FIRED_TRIGGERS'))
+BEGIN
+  DROP INDEX [IDX_QRTZ_FT_TRIG_NAME] ON [dbo].[QRTZ_FIRED_TRIGGERS];
+END
+GO
+
+IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_FT_TRIG_GROUP' AND object_id = OBJECT_ID('dbo.QRTZ_FIRED_TRIGGERS'))
+BEGIN
+  DROP INDEX [IDX_QRTZ_FT_TRIG_GROUP] ON [dbo].[QRTZ_FIRED_TRIGGERS];
+END
+GO
+
+IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_FT_JOB_NAME' AND object_id = OBJECT_ID('dbo.QRTZ_FIRED_TRIGGERS'))
+BEGIN
+  DROP INDEX [IDX_QRTZ_FT_JOB_NAME] ON [dbo].[QRTZ_FIRED_TRIGGERS];
+END
+GO
+
+IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_FT_JOB_GROUP' AND object_id = OBJECT_ID('dbo.QRTZ_FIRED_TRIGGERS'))
+BEGIN
+  DROP INDEX [IDX_QRTZ_FT_JOB_GROUP] ON [dbo].[QRTZ_FIRED_TRIGGERS];
+END
+GO
+
+IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IDX_QRTZ_FT_JOB_REQ_RECOVERY' AND object_id = OBJECT_ID('dbo.QRTZ_FIRED_TRIGGERS'))
+BEGIN
+  DROP INDEX [IDX_QRTZ_FT_JOB_REQ_RECOVERY] ON [dbo].[QRTZ_FIRED_TRIGGERS];
+END
+GO

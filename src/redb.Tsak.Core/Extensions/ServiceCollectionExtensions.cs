@@ -1,0 +1,584 @@
+using Quartz;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
+using OpenTelemetry.Exporter;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
+using redb.Core.Extensions;
+using redb.Core.Pro.Extensions;
+using redb.Postgres.Pro.Extensions;
+using redb.MSSql.Pro.Extensions;
+using redb.SQLite.Pro.Extensions;   // UseSqlite is tier-agnostic (AddRedb → Free, AddRedbPro → Pro)
+using redb.Tsak.Core.Contracts;
+using redb.Tsak.Core.Monitoring;
+using redb.Tsak.Core.Modules;
+using redb.Tsak.Core.Services;
+using redb.Tsak.Core.Security;
+using redb.Tsak.Core.Services.Storage;
+using redb.Core.Models.Configuration;
+using redb.Tsak.Core.Quartz;
+using redb.Route.Http;
+using redb.Route.Telemetry;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+
+namespace redb.Tsak.Core.Extensions;
+
+/// <summary>
+/// DI registration for Tsak services.
+/// Reads Tsak:Storage and Tsak:Redb config sections to configure storage provider.
+/// </summary>
+public static class ServiceCollectionExtensions
+{
+    /// <summary>
+    /// Register all Tsak services into the DI container.
+    /// Storage mode is determined by Tsak:Storage:Type (InMemory | Redb).
+    /// </summary>
+    public static IServiceCollection AddTsak(this IServiceCollection services, IConfiguration configuration)
+    {
+        ConfigureRedb(services, configuration);
+        ConfigureStorage(services, configuration);
+
+        // The ONE load-boundary trust gate for module code — startup discovery, hot-reload scans
+        // and staged validation all verify through it (review 2026-09-02, К3).
+        services.AddSingleton<Modules.ModuleLoadGate>();
+
+        services.AddSingleton<ITsakModuleRegistry, TsakModuleRegistry>();
+        services.AddSingleton<ITsakContextManager, TsakContextManager>();
+        services.AddSingleton<ITsakCoordinator, TsakCoordinator>();
+
+        // Shared registry for cross-context direct-vm / vm components
+        services.TryAddSingleton<redb.Route.Components.SharedVmRegistry>();
+
+        // REST API (_system context) — HTTP component + builder
+        services.AddRedbRouteHttp();
+        services.AddSingleton<SystemContextBuilder>();
+
+        // Reverse proxies the worker sits behind (Tsak:Http:TrustedProxies, addresses or CIDRs).
+        // Configured on the shared Kestrel host, so every HTTP-based listener in the process, the
+        // management API included, sees the client's address and scheme rather than the proxy's.
+        // A value that does not parse fails the start: a silent drop from a security list is how
+        // a typo and a working configuration become indistinguishable.
+        var trustedProxies = configuration.GetSection("Tsak:Http:TrustedProxies").Get<string[]>() ?? [];
+        services.AddRedbRouteHttpHosting(hosting =>
+        {
+            foreach (var entry in trustedProxies)
+            {
+                try
+                {
+                    hosting.TrustedProxies.Add(entry);
+                }
+                catch (FormatException ex)
+                {
+                    throw new InvalidOperationException(
+                        $"Tsak:Http:TrustedProxies contains '{entry}', which is neither an IP address nor a CIDR network.", ex);
+                }
+            }
+        });
+
+        // Admin audit (default sink: structured WRN log; Pro can replace with redb-backed sink)
+        services.AddTsakAdminAudit();
+
+        // Watchdog alert delivery (all channels off by default; configured via Tsak:Watchdog:Alerts)
+        services.AddTsakAlerts(configuration);
+
+        // Dead-letter queue (capture failed exchanges at route checkpoints + replay).
+        services.AddSingleton<Dlq.DlqService>();
+        services.AddSingleton<IHostedService, Dlq.DlqSchemaInitializer>();
+        // Retention runs as a cron:// route on the _system context (SystemContextBuilder), not a job.
+
+        // Module deployment (upload/rollback). Disabled by default — an RCE-capable surface.
+        var uploadOptions = new Modules.ModuleUploadOptions();
+        configuration.GetSection("Tsak:Modules:Upload").Bind(uploadOptions);
+        var moduleSigOptions = new Modules.ModuleSignatureOptions();
+        configuration.GetSection("Tsak:Modules:Signature").Bind(moduleSigOptions);
+        services.AddSingleton(uploadOptions);
+        services.AddSingleton(moduleSigOptions);
+        services.AddSingleton<Modules.ModuleUploadService>();
+
+        ConfigureHotReload(services, configuration);
+        ConfigureMonitoring(services, configuration);
+        ConfigureQuartz(services, configuration);
+
+        // Cluster (Pro) is registered separately via redb.Tsak.Core.Pro.Extensions.AddTsakCluster()
+        // because it lives in the Pro assembly which depends on this Core library.
+
+        services.AddHostedService<TsakHostedService>();
+        return services;
+    }
+
+    private static void ConfigureStorage(IServiceCollection services, IConfiguration configuration)
+    {
+        var storageType = configuration["Tsak:Storage:Type"] ?? "InMemory";
+
+        if (storageType.Equals("InMemory", StringComparison.OrdinalIgnoreCase))
+        {
+            services.AddSingleton<ITsakModuleStore, InMemoryTsakModuleStore>();
+            services.AddSingleton<ITsakStateStore, InMemoryTsakStateStore>();
+            services.AddSingleton<IApiKeyStore, ConfigApiKeyStore>();
+
+            // Warn: InMemory state store loses route:suspended:* on restart — clustered routes
+            // won't respect previously suspended state after a process restart.
+            if (configuration.GetValue<bool>("Tsak:Cluster:Enabled"))
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.Error.WriteLine(
+                    "[WARN] Cluster is enabled but Storage:Type is InMemory. "
+                    + "Route suspension state will be LOST on process restart. "
+                    + "Consider Storage:Type=Redb for persistent state.");
+                Console.ResetColor();
+            }
+        }
+        else if (storageType.Equals("Redb", StringComparison.OrdinalIgnoreCase))
+        {
+            services.AddSingleton<ITsakModuleStore, RedbTsakModuleStore>();
+            services.AddSingleton<ITsakStateStore, RedbTsakStateStore>();
+            services.AddSingleton<IApiKeyStore, RedbApiKeyStore>();
+        }
+    }
+
+    private static void ConfigureRedb(IServiceCollection services, IConfiguration configuration)
+    {
+        var provider = configuration["Tsak:Redb:Provider"]?.ToLowerInvariant();
+        if (string.IsNullOrEmpty(provider))
+            return;
+        // Default to Pro (the Pro redb tier is free): absent Tsak:Redb:UsePro ⇒ Pro. Set it to false
+        // explicitly to run the Free tier.
+        var usePro = configuration.GetValue("Tsak:Redb:UsePro", true);
+        var connectionString = provider switch
+        {
+            "mssql" or "sqlserver" => configuration.GetConnectionString("MSSql"),
+            "sqlite" => configuration.GetConnectionString("Sqlite"),
+            _ => configuration.GetConnectionString("Postgres")
+        };
+
+        if (string.IsNullOrEmpty(connectionString))
+            throw new InvalidOperationException(
+                $"Connection string for provider '{provider}' is not configured. " +
+                $"Set ConnectionStrings:{(provider switch { "mssql" or "sqlserver" => "MSSql", "sqlite" => "Sqlite", _ => "Postgres" })} in appsettings.json");
+
+        var strategy = Enum.TryParse<PropsSaveStrategy>(configuration["Tsak:Redb:PropsSaveStrategy"], true, out var parsed)
+            ? parsed
+            : PropsSaveStrategy.DeleteInsert;
+
+        // The Tsak license (tsak.cluster, tsak.web.pro, ...) is INDEPENDENT of the
+        // redb database tier. UsePro only selects Free (AddRedb) vs Pro (AddRedbPro)
+        // redb providers; the license must land in the shared LicenseStore either
+        // way, so Tsak Pro features (multi-node cluster, web dashboard) work even on
+        // a Free redb database.
+        var license = LicenseConfigReader.Read(configuration, "Tsak:Redb:License");
+
+        if (usePro)
+        {
+            services.AddRedbPro(options =>
+            {
+                if (provider is "mssql" or "sqlserver")
+                    options.UseMsSql(connectionString);
+                else if (provider is "sqlite")
+                    options.UseSqlite(connectionString);
+                else
+                    options.UsePostgres(connectionString);
+
+                if (!string.IsNullOrEmpty(license))
+                    options.WithLicense(license);   // registers the license (redb Pro + LicenseStore)
+
+                options.Configure(c =>
+                {
+                    // Binder first, explicit decisions after: everything below stays authoritative,
+                    // and the binder only reaches properties nothing here was setting.
+                    RedbConfigBinder.Apply(c, configuration.GetSection("Tsak:Redb"), "Tsak:Redb",
+                        m => Console.Error.WriteLine(m));
+                    c.PropsSaveStrategy = strategy;
+                    c.EnsureCreated = true;
+                    ApplyCacheConfig(c, configuration);
+                });
+            });
+        }
+        else
+        {
+            // Free redb DB, but still honour the Tsak license so tsak.cluster /
+            // tsak.web.pro unlock — UsePro governs only the redb DB tier.
+            if (!string.IsNullOrEmpty(license))
+                redb.Licensing.LicenseStore.AddLicense(license);
+
+            services.AddRedb(options =>
+            {
+                if (provider is "mssql" or "sqlserver")
+                    options.UseMsSql(connectionString);
+                else if (provider is "sqlite")
+                    options.UseSqlite(connectionString);
+                else
+                    options.UsePostgres(connectionString);
+
+                options.Configure(c =>
+                {
+                    // Binder first, explicit decisions after: everything below stays authoritative,
+                    // and the binder only reaches properties nothing here was setting.
+                    RedbConfigBinder.Apply(c, configuration.GetSection("Tsak:Redb"), "Tsak:Redb",
+                        m => Console.Error.WriteLine(m));
+                    c.PropsSaveStrategy = strategy;
+                    c.EnsureCreated = true;
+                    ApplyCacheConfig(c, configuration);
+                });
+            });
+        }
+    }
+
+    /// <summary>
+    /// Maps the optional <c>Tsak:Redb:Cache</c> section onto the redb configuration. Every key is
+    /// optional and defaults to redb's own default, so an absent section changes nothing.
+    /// <para>
+    /// <b>Safety note:</b> <c>SkipHashValidationOnCacheCheck=true</c> trusts the in-process cache
+    /// without re-checking the object hash in the database. That is correct only for a single writer.
+    /// In a Tsak cluster (multiple nodes writing to the same database) it can serve stale data, so we
+    /// log a warning if both are on.
+    /// </para>
+    /// </summary>
+    private static void ApplyCacheConfig(redb.Core.Models.Configuration.RedbServiceConfiguration c, IConfiguration configuration)
+    {
+        var cache = configuration.GetSection("Tsak:Redb:Cache");
+        if (!cache.Exists()) return;
+
+        // Props cache
+        if (cache["EnableProps"] is { } ep && bool.TryParse(ep, out var enableProps)) c.EnablePropsCache = enableProps;
+        if (cache.GetValue<int?>("PropsMaxSize") is { } pms) c.PropsCacheMaxSize = pms;
+        if (cache.GetValue<int?>("PropsTtlMinutes") is { } ptm) c.PropsCacheTtl = TimeSpan.FromMinutes(ptm);
+        if (cache["SkipHashValidationOnCacheCheck"] is { } sh && bool.TryParse(sh, out var skipHash))
+            c.SkipHashValidationOnCacheCheck = skipHash;
+
+        // List cache
+        if (cache["EnableList"] is { } el && bool.TryParse(el, out var enableList)) c.EnableListCache = enableList;
+        if (cache.GetValue<int?>("ListTtlMinutes") is { } ltm) c.ListCacheTtl = TimeSpan.FromMinutes(ltm);
+
+        // Metadata cache
+        if (cache["EnableMetadata"] is { } em && bool.TryParse(em, out var enableMeta)) c.EnableMetadataCache = enableMeta;
+        if (cache.GetValue<int?>("MetadataTtlMinutes") is { } mtm) c.MetadataCacheLifetimeMinutes = mtm;
+
+        // Hash recompute on save + cache domain isolation
+        if (cache["AutoRecomputeHash"] is { } ar && bool.TryParse(ar, out var autoHash)) c.AutoRecomputeHash = autoHash;
+        if (!string.IsNullOrWhiteSpace(cache["CacheDomain"])) c.CacheDomain = cache["CacheDomain"];
+
+        // Cluster + skip-hash is a stale-read hazard.
+        if (c.SkipHashValidationOnCacheCheck && configuration.GetValue<bool>("Tsak:Cluster:Enabled"))
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.Error.WriteLine(
+                "[WARN] Tsak:Redb:Cache:SkipHashValidationOnCacheCheck=true with Tsak:Cluster:Enabled=true. " +
+                "Skipping cache hash validation can serve STALE data across cluster nodes writing to the same " +
+                "database. Set it to false in clustered deployments.");
+            Console.ResetColor();
+        }
+    }
+
+    private static void ConfigureMonitoring(IServiceCollection services, IConfiguration configuration)
+    {
+        var section = configuration.GetSection("Tsak:Metrics");
+        services.Configure<MetricsOptions>(section);
+
+        services.AddSingleton<MetricsService>();
+        services.AddSingleton<ContextMetricsCollector>();
+        services.AddSingleton<ContextInfoCollector>();
+        services.AddSingleton<LifecycleAuditService>();
+        services.AddSingleton<HealthCheckService>();
+        // Control-plane health (review item 4.1): if the _system context fails to start, readiness must
+        // report the node as unhealthy instead of silently serving as if fully operational.
+        services.AddSingleton<ControlPlaneHealth>();
+        services.AddSingleton<IHealthContributor, ControlPlaneHealthContributor>();
+        // Schema problems of the redb databases (host and named instances): Degraded while one needs a person.
+        services.AddSingleton<IHealthContributor, RedbSchemaHealthContributor>();
+        // Module contexts that stay in memory after a hot swap: Degraded above Tsak:HotReload:MaxOrphanedContexts.
+        services.AddSingleton<IHealthContributor, HotReloadHealthContributor>();
+        // GET /api/health/deploy: hot swap or cold deploy for this node; Pro adds cordon and the cluster form.
+        services.AddSingleton<DeployAdvisor>();
+        services.AddHostedService<MetricsCollectionService>();
+
+        // Log ring buffer — in-memory circular buffer for live log viewing
+        var logBufferSize = configuration.GetValue<int?>("Tsak:Logs:BufferSize") ?? 2000;
+        var logBuffer = new LogRingBuffer(logBufferSize);
+        services.AddSingleton(logBuffer);
+        services.AddSingleton(new RingBufferSink(logBuffer));
+
+        // Route watchdog — detects hung exchanges
+        var watchdogSection = configuration.GetSection("Tsak:Watchdog");
+        services.Configure<WatchdogOptions>(watchdogSection);
+        services.AddSingleton<RouteWatchdogService>();
+        services.AddHostedService(sp => sp.GetRequiredService<RouteWatchdogService>());
+
+        // OpenTelemetry pipeline.
+        //   • Metrics → Prometheus exporter (Grafana)  — Tsak:Metrics:Prometheus:Enabled
+        //   • Traces  → OTLP exporter (Jaeger / collector) — Tsak:Tracing:Otlp:Enabled
+        // Either toggle (or both) activates the shared pipeline; both default to off.
+        var prometheusEnabled = configuration.GetValue<bool>("Tsak:Metrics:Prometheus:Enabled");
+        var otlpEnabled = configuration.GetValue<bool>("Tsak:Tracing:Otlp:Enabled");
+        if (prometheusEnabled || otlpEnabled)
+        {
+            // Modules hosted on top of Tsak (e.g. redb.Identity) can expose their own
+            // Meters and ActivitySources without taking a runtime dependency on Tsak —
+            // they advertise the names via configuration and Tsak subscribes them into
+            // the OTel pipeline on startup. Keeps Tsak.Core module-agnostic.
+            // Example:
+            //   "Tsak": { "Metrics": { "Prometheus": {
+            //       "AdditionalMeters": [ "RedbIdentity" ],
+            //       "AdditionalSources": [ "RedbIdentity" ]
+            //   } } }
+            var additionalMeters = configuration
+                .GetSection("Tsak:Metrics:Prometheus:AdditionalMeters")
+                .Get<string[]>() ?? Array.Empty<string>();
+            var additionalSources = configuration
+                .GetSection("Tsak:Metrics:Prometheus:AdditionalSources")
+                .Get<string[]>() ?? Array.Empty<string>();
+
+            var otel = services.AddOpenTelemetry();
+
+            // Resource service.name — what shows up in Jaeger / the collector. Configurable
+            // so operators can distinguish nodes; defaults to "redb-tsak-worker" (without it
+            // OTel reports the ugly "unknown_service:redb.Tsak.Worker").
+            var serviceName = configuration.GetValue<string>("Tsak:Tracing:ServiceName");
+            if (string.IsNullOrWhiteSpace(serviceName)) serviceName = "redb-tsak-worker";
+            otel.ConfigureResource(r => r.AddService(serviceName));
+
+            if (prometheusEnabled)
+            {
+                var port = configuration.GetValue<int?>("Tsak:Metrics:Prometheus:Port") ?? 9464;
+                // The OTel scrape listener binds LOOPBACK only (localhost) — that needs no admin
+                // and no URL ACL on any OS (the Windows wildcard-bind footgun is gone). It is an
+                // internal endpoint: the public scrape target is the Tsak facade's `/metrics`
+                // route (Kestrel, the Api port), which proxies to this loopback listener. See
+                // SystemContextBuilder. Keeping it on loopback also means it is never exposed
+                // unauthenticated on an external interface by accident.
+                var prefix = $"http://localhost:{port}/";
+
+                // Pre-flight the bind: an optional metrics exporter must NEVER crash the host.
+                // (Loopback almost always binds; this just guarantees graceful degradation.)
+                if (CanBindHttpListener(prefix))
+                {
+                    otel.WithMetrics(m =>
+                    {
+                        m.AddMeter(RouteMetrics.MeterName);
+                        foreach (var meter in additionalMeters)
+                        {
+                            if (!string.IsNullOrWhiteSpace(meter))
+                                m.AddMeter(meter);
+                        }
+                        m.AddRuntimeInstrumentation()
+                         .AddProcessInstrumentation()
+                         .AddPrometheusHttpListener(o =>
+                         {
+                             // The listener binds http://{Host}:{Port}/ — the same loopback prefix checked above.
+                             o.Host = "localhost";
+                             o.Port = port;
+                         });
+                    });
+                }
+            }
+
+            // Tracing sources are always subscribed when the pipeline is up; the OTLP
+            // exporter is attached only when Tsak:Tracing:Otlp:Enabled. Jaeger ingests
+            // OTLP natively (gRPC :4317 / HTTP :4318) — point Endpoint at the collector.
+            otel.WithTracing(t =>
+            {
+                t.AddSource(RouteActivitySource.SourceName);
+                foreach (var source in additionalSources)
+                {
+                    if (!string.IsNullOrWhiteSpace(source))
+                        t.AddSource(source);
+                }
+
+                if (otlpEnabled)
+                {
+                    var endpoint = configuration.GetValue<string>("Tsak:Tracing:Otlp:Endpoint")
+                                   ?? "http://localhost:4317";
+                    var protocol = configuration.GetValue<string>("Tsak:Tracing:Otlp:Protocol");
+                    t.AddOtlpExporter(o =>
+                    {
+                        o.Endpoint = new Uri(endpoint);
+                        if (string.Equals(protocol, "http/protobuf", StringComparison.OrdinalIgnoreCase))
+                            o.Protocol = OtlpExportProtocol.HttpProtobuf;
+                    });
+                }
+            });
+        }
+    }
+
+    /// <summary>
+    /// Probes whether an <see cref="System.Net.HttpListener"/> can claim <paramref name="prefix"/>.
+    /// Returns false (and logs an actionable warning to stderr) instead of letting a bind failure
+    /// propagate and take down hosting — the Prometheus exporter is optional infrastructure.
+    /// </summary>
+    private static bool CanBindHttpListener(string prefix)
+    {
+        // Retry briefly: on a restart the previous Worker may still hold the port for a
+        // moment (HTTP.sys releases the binding slightly after the old process exits), which
+        // would otherwise make the new instance silently skip metrics for that run.
+        const int attempts = 5;
+        for (var attempt = 1; attempt <= attempts; attempt++)
+        {
+            try
+            {
+                var listener = new System.Net.HttpListener();
+                listener.Prefixes.Add(prefix);
+                listener.Start();
+                listener.Stop();
+                listener.Close();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (attempt < attempts)
+                {
+                    System.Threading.Thread.Sleep(700);
+                    continue;
+                }
+                Console.Error.WriteLine(
+                    $"[Tsak] Prometheus exporter DISABLED — cannot bind HttpListener '{prefix}' after " +
+                    $"{attempts} attempts. The Worker continues without metrics (an optional exporter " +
+                    $"must never crash the host). Reason: {ex.Message}");
+                return false;
+            }
+        }
+        return false;
+    }
+
+    private static void ConfigureHotReload(IServiceCollection services, IConfiguration configuration)
+    {
+        var section = configuration.GetSection("Tsak:HotReload");
+        services.Configure<HotReloadOptions>(section);
+
+        // Shared assembly loader — loads connectors and shared models from Libs/shared/
+        services.AddSingleton<SharedAssemblyLoader>();
+
+        // Counts the module contexts in memory and checks that the ones let go leave it.
+        services.AddSingleton<ModuleContextMonitor>();
+
+        // Always register — needed for initial module loading via ALC.
+        // Periodic scanning is controlled by HotReload:Enabled at runtime.
+        services.AddSingleton<HotReloadService>();
+    }
+
+    /// <summary>Scheduler name shipped in appsettings.json; with AdoJobStore it is scoped to the Tsak cluster.</summary>
+    private const string DefaultSchedulerName = "TsakScheduler";
+
+    private static void ConfigureQuartz(IServiceCollection services, IConfiguration configuration)
+    {
+        var quartzSection = configuration.GetSection("Quartz");
+        if (quartzSection.Exists())
+        {
+            services.Configure<QuartzOptions>(quartzSection);
+
+            // Auto-inject connection string and driver delegate from redb config
+            // when AdoJobStore is used without explicit Quartz data source settings
+            var jobStoreType = configuration["Quartz:quartz.jobStore.type"] ?? "";
+            if (jobStoreType.Contains("AdoJobStore", StringComparison.OrdinalIgnoreCase))
+            {
+                // Same provider set as redb storage; the per-provider Quartz values live in the dialect.
+                var dialect = Audit.TsakSqlDialect.ForQuartz(configuration);
+
+                var explicitCs = configuration["Quartz:quartz.dataSource.default.connectionString"];
+                if (string.IsNullOrEmpty(explicitCs))
+                {
+                    var connStr = configuration.GetConnectionString(dialect.ConnectionStringName);
+
+                    if (!string.IsNullOrEmpty(connStr))
+                    {
+                        services.PostConfigure<QuartzOptions>(opts =>
+                        {
+                            opts["quartz.dataSource.default.connectionString"] = connStr;
+                            opts["quartz.dataSource.default.provider"] = dialect.QuartzProvider;
+                            opts.TryAdd("quartz.jobStore.dataSource", "default");
+                            opts.TryAdd("quartz.jobStore.tablePrefix", "QRTZ_");
+                            opts.TryAdd("quartz.serializer.type", "newtonsoft");
+                            opts.TryAdd("quartz.jobStore.driverDelegateType", dialect.QuartzDriverDelegate);
+                        });
+                    }
+                }
+
+                // Quartz hard-refuses SQLite + clustered at startup ("SQLite cannot be used as
+                // clustered mode due to locking problems": the QRTZ_LOCKS semaphore needs the row
+                // locks SQLite does not have). The shipped clustered=true default (review
+                // 2026-09-02, В11) targets the shared-database providers; a SQLite database is a
+                // local file no second node can share, so non-clustered is safe by construction.
+                // Publish already forces this (sanitize-appsettings.ps1) — mirrored here so a dev
+                // run behaves the same. Deliberate override, not TryAdd; registered after the
+                // blocks above so it wins.
+                if (!dialect.SupportsClusteredJobStore)
+                {
+                    services.PostConfigure<QuartzOptions>(opts =>
+                        opts["quartz.jobStore.clustered"] = "false");
+                }
+
+                // Quartz clusters AdoJobStore nodes by scheduler name, and several Tsak clusters may
+                // share one database: the shipped name (or none) is scoped to the Tsak cluster, so each
+                // Tsak cluster is its own Quartz cluster. Any other name is the operator's deliberate
+                // Quartz cluster boundary and is kept.
+                var schedulerName = $"{DefaultSchedulerName}-{redb.Tsak.Core.Services.Storage.TsakStorageScope.ClusterName(configuration)}";
+                services.PostConfigure<QuartzOptions>(opts =>
+                {
+                    if (!opts.TryGetValue("quartz.scheduler.instanceName", out var name)
+                        || string.IsNullOrWhiteSpace(name)
+                        || name == DefaultSchedulerName)
+                        opts["quartz.scheduler.instanceName"] = schedulerName;
+                });
+            }
+        }
+        else
+        {
+            // No `Quartz` config section: in-memory schedulers (non-persistent, single node). RAMJobStore is
+            // Quartz's default; set it explicitly for clarity.
+            services.Configure<QuartzOptions>(opts =>
+                opts.TryAdd("quartz.jobStore.type", "Quartz.Simpl.RAMJobStore, Quartz"));
+        }
+
+        // The schema initializer creates the AdoJobStore tables before any context — and so any scheduler — starts
+        // (it no-ops otherwise). Hosted services start sequentially in registration order; TsakHostedService is
+        // registered after this.
+        services.AddSingleton<IHostedService, QuartzSchemaInitializer>();
+
+        // A scheduler per route context, as Apache Camel's per CamelContext (redb.Route.Quartz builds it from these
+        // options with the context's first cron/qtimer route, names it {prefix}-{context}, starts it after the
+        // context and shuts it down with the context). Tsak shares the options, not a scheduler: each context has its
+        // own job namespace — two modules that both say cron://nightly do not collide — and, clustered, a Quartz
+        // cluster of exactly the nodes that run that context. TsakContextManager and SystemContextBuilder hand the
+        // options to every context; the dashboard reads the scheduler of each.
+        // The node id of the same configuration the Quartz section came from: quartz.scheduler.instanceId = NODE.
+        var nodeId = Services.TsakNodeIdentity.Resolve(configuration);
+        services.AddSingleton(provider =>
+            SchedulerOptionsOf(provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<QuartzOptions>>().Value, nodeId));
+    }
+
+    /// <summary>
+    /// The per-context scheduler options from the resolved Quartz properties: the configured name (scoped to the Tsak
+    /// cluster above) becomes the prefix the context name follows. A scheduler per context keeps a small pool unless
+    /// configured otherwise.
+    /// <para>
+    /// <c>quartz.scheduler.instanceId = NODE</c> (the shipped value) becomes <paramref name="nodeId"/>: the instance
+    /// stays the same across restarts, so after a crash the node takes its own fired triggers back at its first
+    /// check-in instead of waiting until the cluster counts its old record as failed, and a preferred-node pin names
+    /// a node that comes back. Every context's scheduler of the node carries it; they are distinct Quartz clusters
+    /// (one scheduler name each), so the id is unique where Quartz needs it. <c>AUTO</c> and an explicit id are
+    /// Quartz's and stay as configured.
+    /// </para>
+    /// </summary>
+    internal static redb.Route.Quartz.QuartzSchedulerOptions SchedulerOptionsOf(QuartzOptions quartz, string nodeId)
+    {
+        var properties = quartz
+            .Where(p => p.Value is not null && p.Key != "quartz.scheduler.instanceName")
+            .ToDictionary(p => p.Key, p => p.Value!, StringComparer.Ordinal);
+        if (properties.TryGetValue("quartz.scheduler.instanceId", out var instanceId)
+            && string.Equals(instanceId.Trim(), Services.TsakNodeIdentity.QuartzInstanceIdOfNode, StringComparison.OrdinalIgnoreCase))
+            properties["quartz.scheduler.instanceId"] = nodeId;
+        // threadCount is Quartz's older name of maxConcurrency (the shipped appsettings use it): either one is a
+        // configured pool, and adding the other would leave the pool size to the order Quartz applies them in.
+        if (!properties.ContainsKey("quartz.threadPool.maxConcurrency") && !properties.ContainsKey("quartz.threadPool.threadCount"))
+            properties["quartz.threadPool.maxConcurrency"] = DefaultContextSchedulerThreads;
+
+        var prefix = quartz.TryGetValue("quartz.scheduler.instanceName", out var name) && !string.IsNullOrWhiteSpace(name)
+            ? name
+            : DefaultSchedulerName;
+        return new redb.Route.Quartz.QuartzSchedulerOptions { InstanceNamePrefix = prefix, Properties = properties };
+    }
+
+    /// <summary>Thread pool of one context's scheduler when the configuration sets none.</summary>
+    private const string DefaultContextSchedulerThreads = "4";
+}

@@ -1,0 +1,22 @@
+# redb.Tsak Worker — ServiceMonitor (Prometheus Operator)
+# Apply this INSTEAD of the prometheus.io/scrape annotations when you run the
+# Prometheus Operator (kube-prometheus-stack). The `release` label must match
+# your Prometheus instance's serviceMonitorSelector (commonly the Helm release
+# name, e.g. "kube-prometheus-stack").
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: redb-tsak-worker
+  namespace: redb
+  labels:
+    app.kubernetes.io/name: redb-tsak-worker
+    app.kubernetes.io/part-of: redb-tsak
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redb-tsak-worker
+  endpoints:
+    - port: http           # facade serves /metrics on the API port (9090)
+      path: /metrics
+      interval: 15s

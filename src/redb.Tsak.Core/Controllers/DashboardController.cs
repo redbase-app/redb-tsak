@@ -1,0 +1,80 @@
+using redb.Route.Controllers;
+using redb.Route.Controllers.Attributes;
+using redb.Route.Core;
+using redb.Tsak.Contracts;
+using redb.Tsak.Core.Contracts;
+using redb.Tsak.Core.Monitoring;
+using redb.Tsak.Core.Services;
+
+namespace redb.Tsak.Core.Controllers;
+
+/// <summary>
+/// Aggregated dashboard snapshot endpoint for the web UI.
+/// Combines system metrics, context summaries, top routes, and watchdog alerts.
+/// </summary>
+[Route("/api/dashboard")]
+public class DashboardController : RedbController
+{
+    private ITsakContextManager GetManager() => Context.GetService<ITsakContextManager>()
+        ?? throw new InvalidOperationException("ITsakContextManager not registered");
+
+    private ContextInfoCollector GetCollector() => Context.GetService<ContextInfoCollector>()
+        ?? new ContextInfoCollector(GetManager());
+
+    [HttpGet("")]
+    public object GetDashboard()
+    {
+        var mgr = GetManager();
+        var collector = GetCollector();
+        var metricsService = Context.GetService<MetricsService>();
+        var watchdog = Context.GetService<RouteWatchdogService>();
+
+        var contexts = mgr.GetAllContexts();
+        var allRouteMetrics = collector.CollectAllRouteMetrics();
+
+        // System metrics
+        SystemMetricsSnapshot? sysMetrics = null;
+        var latest = metricsService?.GetLatest();
+        if (latest is not null)
+            sysMetrics = DiagnosticService.SystemMetrics(latest, Context.GetService<Modules.ModuleContextMonitor>());
+
+        // total inflight
+        var totalInflight = 0;
+        foreach (var (_, ctx) in contexts)
+        {
+            if (ctx is RouteContext routeCtx)
+                totalInflight += routeCtx.InflightRepository.Count;
+        }
+
+        return new DashboardSnapshot
+        {
+            TotalContexts = contexts.Count,
+            RunningContexts = contexts.Count(c => c.Context.IsStarted),
+            TotalInflight = totalInflight,
+            BusiestRoutes = allRouteMetrics
+                .OrderByDescending(r => r.ThroughputPerSecond)
+                .Take(5)
+                .ToList(),
+            ErrorProneRoutes = allRouteMetrics
+                .Where(r => r.Errors > 0)
+                .OrderByDescending(r => r.Errors)
+                .Take(5)
+                .ToList(),
+            // Deliberately a separate list, not part of ErrorProneRoutes: a route shedding at
+            // its concurrency ceiling with zero errors is healthy but under-provisioned.
+            SheddingRoutes = allRouteMetrics
+                .Where(r => r.Rejected > 0)
+                .OrderByDescending(r => r.Rejected)
+                .Take(5)
+                .ToList(),
+            // Refused requests are the caller's fault: neither errors of the route nor load it sheds.
+            RefusingRoutes = allRouteMetrics
+                .Where(r => r.Refused > 0)
+                .OrderByDescending(r => r.Refused)
+                .Take(5)
+                .ToList(),
+            ActiveAlerts = watchdog?.GetState()?.ActiveAlerts ?? [],
+            SystemMetrics = sysMetrics
+        };
+    }
+}

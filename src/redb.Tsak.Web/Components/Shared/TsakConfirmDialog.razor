@@ -1,0 +1,55 @@
+@* Confirmation dialog for destructive actions. *@
+
+@if (_visible)
+{
+    <div class="confirm-overlay" @onclick="Cancel">
+        <div class="confirm-dialog" @onclick:stopPropagation="true">
+            <div class="confirm-header">
+                <TsakIcon Name="alert-triangle" Size="20" />
+                <span class="font-semibold">@Title</span>
+            </div>
+            <p class="confirm-message">@Message</p>
+            <div class="confirm-actions">
+                <button class="btn btn-secondary btn-sm" @onclick="Cancel">Cancel</button>
+                <button class="btn @(_variant == "danger" ? "btn-danger" : "btn-primary") btn-sm" @onclick="Confirm">
+                    @ConfirmText
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private bool _visible;
+    private string _variant = "danger";
+    private TaskCompletionSource<bool>? _tcs;
+
+    [Parameter] public string Title { get; set; } = "Confirm action";
+    [Parameter] public string Message { get; set; } = "Are you sure?";
+    [Parameter] public string ConfirmText { get; set; } = "Confirm";
+
+    public Task<bool> ShowAsync(string? message = null, string? title = null, string variant = "danger")
+    {
+        _tcs = new TaskCompletionSource<bool>();
+        if (message is not null) Message = message;
+        if (title is not null) Title = title;
+        _variant = variant;
+        _visible = true;
+        InvokeAsync(StateHasChanged);
+        return _tcs.Task;
+    }
+
+    private void Confirm()
+    {
+        _visible = false;
+        _tcs?.TrySetResult(true);
+        StateHasChanged();
+    }
+
+    private void Cancel()
+    {
+        _visible = false;
+        _tcs?.TrySetResult(false);
+        StateHasChanged();
+    }
+}

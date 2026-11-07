@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>redb.Tsak.Contracts</RootNamespace>
+    <PackageId>redb.Tsak.Contracts</PackageId>
+    <Description>Shared DTO models for the redb.Tsak management API. Referenced by Core (server) and Client.</Description>
+    <PackageTags>redb;tsak;contracts;dto;api</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

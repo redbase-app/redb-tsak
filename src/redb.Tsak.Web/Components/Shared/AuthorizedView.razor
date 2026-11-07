@@ -1,0 +1,40 @@
+@using Microsoft.AspNetCore.Components.Authorization
+
+@if (_show)
+{
+    @ChildContent
+}
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
+
+    [Parameter] public bool AdminOnly { get; set; }
+    [Parameter] public bool OperatorOnly { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    private bool _show;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // The roles come from a signed auth cookie, so they cannot be forged client-side.
+        // Pages themselves are gated by the [Authorize] in _Imports.razor (anonymous access is
+        // refused at the route); this component only differentiates tiers within a page.
+        var state = AuthState is null ? null : await AuthState;
+        var user = state?.User;
+
+        if (AdminOnly)
+        {
+            _show = user?.IsInRole("admin") ?? false;
+            return;
+        }
+
+        if (OperatorOnly)
+        {
+            _show = user?.IsInRole("operator") ?? false;
+            return;
+        }
+
+        // Any authenticated dashboard user.
+        _show = user?.Identity?.IsAuthenticated ?? false;
+    }
+}

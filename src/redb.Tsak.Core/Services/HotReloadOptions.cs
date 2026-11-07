@@ -1,0 +1,89 @@
+namespace redb.Tsak.Core.Services;
+
+/// <summary>
+/// Configuration for hot reload. Bound to <c>Tsak:HotReload</c>.
+/// </summary>
+public class HotReloadOptions
+{
+    /// <summary>Enable hot reload. Default: true.</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>Filesystem scan interval in seconds. Default: 30.</summary>
+    public int ScanIntervalSeconds { get; set; } = 30;
+
+    /// <summary>Number of previous versions to keep for rollback. Default: 2.</summary>
+    public int KeepVersions { get; set; } = 2;
+
+    /// <summary>
+    /// RESERVED — not enforced: no code reads this value. A module start is not time-boxed, because the
+    /// coordinator contract takes no CancellationToken (docs/BOUNDARIES_AND_FOLLOWUPS.md, F-5). A new
+    /// version that fails to initialize or start IS rolled back — just not on a timeout. Default: 60.
+    /// </summary>
+    public int StartupTimeoutSeconds { get; set; } = 60;
+
+    /// <summary>
+    /// RESERVED — sequential cluster rolling updates are NOT implemented yet: no code reads this
+    /// flag and RollingUpdateCoordinator has no callers, so nodes reload modules independently on
+    /// their own scan schedule (review 2026-09-02, С16). Default: false; enabling it only logs a
+    /// warning. Stagger updates yourself by deploying the package to nodes sequentially.
+    /// </summary>
+    public bool RollingUpdate { get; set; } = false;
+
+    /// <summary>
+    /// Number of scan cycles to wait before confirming a module removal (DLL deleted from disk).
+    /// Protects against false removals during file replacement (delete + copy). Default: 1.
+    /// With ScanIntervalSeconds=10 and RemovalDebounceScans=1, the effective delay is ~10s.
+    /// </summary>
+    public int RemovalDebounceScans { get; set; } = 1;
+
+    /// <summary>
+    /// Number of consecutive scans a newly-seen (or changed) <c>.tpkg</c> must keep the same size and
+    /// last-write time before it is opened/verified. Prevents reading a half-written package while an
+    /// operator is still copying it in (review item 4.11). Default: 2 (one settle cycle). Set to 1 to
+    /// disable the wait. With ScanIntervalSeconds=30 and AdditionStabilityScans=2 the effective wait is
+    /// up to ~30s after the copy stops changing the file.
+    /// </summary>
+    public int AdditionStabilityScans { get; set; } = 2;
+
+    /// <summary>
+    /// Use collectible AssemblyLoadContext for module isolation. Default: false.
+    /// When true, old module versions are unloaded from memory on hot-swap, once nothing of the host refers to them:
+    /// the caches of redb.Route keyed by type hold their key weakly, a module's type resolver and prefix resolvers
+    /// live in its context, its save interceptors go with its context, and on unload redb and redb.Route empty the
+    /// caches the .NET libraries keep over the types they handled (System.Text.Json among them,
+    /// https://github.com/dotnet/runtime/issues/65323). A library of the module's own with a static cache of its
+    /// types, or Emit-generated code kept outside the module's context, can still hold it.
+    /// When false (default), old versions stay in memory until the process restarts.
+    /// </summary>
+    public bool Collectible { get; set; } = false;
+
+    /// <summary>
+    /// How many module contexts may stay in memory after Tsak let them go before the <c>hotreload</c> health check turns
+    /// Degraded and asks for a restart of the node. Such a context is a replaced or removed version with
+    /// <see cref="Collectible"/> false, or one that did not unload with it true. Default (null):
+    /// <see cref="KeepVersions"/> + 3.
+    /// </summary>
+    public int? MaxOrphanedContexts { get; set; }
+
+    /// <summary>
+    /// A working set (MB) above which <c>GET /api/health/deploy</c> advises a cold deploy instead of a hot swap. Default
+    /// (null): no limit, the advice looks at the module contexts only.
+    /// </summary>
+    public double? MaxWorkingSetMb { get; set; }
+
+    /// <summary>The limit in effect: <see cref="MaxOrphanedContexts"/>, or <see cref="KeepVersions"/> + 3 when it is not set.</summary>
+    internal int EffectiveMaxOrphanedContexts => MaxOrphanedContexts ?? KeepVersions + 3;
+
+    /// <summary>
+    /// Path to the shared assembly directory. Default: "Libs/shared".
+    /// Assemblies here are loaded into the Default ALC and auto-registered
+    /// as components in all module contexts.
+    /// </summary>
+    public string SharedPath { get; set; } = "Libs/shared";
+
+    /// <summary>
+    /// When true, all contexts are restarted (in dependency order) when a shared
+    /// assembly changes on disk. Default: true.
+    /// </summary>
+    public bool RestartContextsOnSharedChange { get; set; } = true;
+}

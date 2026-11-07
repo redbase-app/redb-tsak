@@ -1,0 +1,20 @@
+@* Status badge with colored dot. Usage: <TsakBadge Text="Online" Variant="online" /> *@
+
+<span class="badge badge-@Variant">
+    @if (ShowDot)
+    {
+        <span class="badge-dot"></span>
+    }
+    @Text
+</span>
+
+@code {
+    /// <summary>Display text.</summary>
+    [Parameter, EditorRequired] public string Text { get; set; } = "";
+
+    /// <summary>Badge variant: online, warning, error, info, offline.</summary>
+    [Parameter] public string Variant { get; set; } = "offline";
+
+    /// <summary>Show colored dot indicator.</summary>
+    [Parameter] public bool ShowDot { get; set; } = true;
+}

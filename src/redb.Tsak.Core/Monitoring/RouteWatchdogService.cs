@@ -1,0 +1,282 @@
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using redb.Route.Core;
+using redb.Tsak.Contracts;
+using redb.Tsak.Core.Contracts;
+
+namespace redb.Tsak.Core.Monitoring;
+
+/// <summary>
+/// Background service that periodically scans all route contexts for
+/// suspected (long-running) and hung (stale) in-flight exchanges.
+/// Emits log warnings/errors and maintains a queryable alert state.
+/// </summary>
+public sealed class RouteWatchdogService : BackgroundService
+{
+    private readonly ITsakContextManager _contextManager;
+    private readonly ILogger<RouteWatchdogService> _logger;
+    private readonly WatchdogOptions _options;
+    private readonly Alerts.AlertDispatcher? _alerts;
+
+    private readonly object _lock = new();
+    private volatile bool _enabled;
+    private DateTime _lastCheckAt;
+    private int _autoRestartsPerformed;
+    private readonly List<WatchdogAlert> _activeAlerts = [];
+
+    // Keys already reported to the alert dispatcher; lets us fire only on NEW alerts, since the
+    // scan rebuilds the full snapshot every cycle. The dispatcher also dedups by time window.
+    private readonly HashSet<string> _notifiedKeys = [];
+
+    // Planned waits already written to the log (exchange id and the wait's end): one line per wait, not one per scan.
+    private readonly HashSet<string> _announcedWaits = new(StringComparer.Ordinal);
+
+    public RouteWatchdogService(
+        ITsakContextManager contextManager,
+        ILogger<RouteWatchdogService> logger,
+        IOptions<WatchdogOptions> options,
+        Alerts.AlertDispatcher? alerts = null)
+    {
+        _contextManager = contextManager;
+        _logger = logger;
+        _options = options.Value;
+        _enabled = _options.Enabled;
+        _alerts = alerts;
+    }
+
+    /// <summary>Enables the watchdog at runtime.</summary>
+    public void Enable()
+    {
+        _enabled = true;
+        _logger.LogInformation("Route watchdog enabled");
+    }
+
+    /// <summary>Disables the watchdog at runtime.</summary>
+    public void Disable()
+    {
+        _enabled = false;
+        lock (_lock) _activeAlerts.Clear();
+        _logger.LogInformation("Route watchdog disabled");
+    }
+
+    /// <summary>Returns true if the watchdog is currently enabled.</summary>
+    public bool IsEnabled => _enabled;
+
+    /// <summary>Returns a snapshot of the current watchdog state.</summary>
+    public WatchdogState GetState()
+    {
+        lock (_lock)
+        {
+            return new WatchdogState
+            {
+                LastCheckAt = _lastCheckAt,
+                SuspectedExchanges = _activeAlerts.Count(a => a.Level == "Suspected"),
+                HungExchanges = _activeAlerts.Count(a => a.Level == "Hung"),
+                AutoRestartsPerformed = _autoRestartsPerformed,
+                Enabled = _enabled,
+                ActiveAlerts = _activeAlerts.ToList()
+            };
+        }
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        _logger.LogInformation(
+            "Route watchdog started, interval: {Interval}s, suspected: {Suspected}m, hung: {Hung}m",
+            _options.CheckIntervalSeconds,
+            _options.SuspectedThresholdMinutes,
+            _options.HungThresholdMinutes);
+
+        await Task.Delay(TimeSpan.FromSeconds(3), stoppingToken);
+
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            if (_enabled)
+            {
+                try
+                {
+                    await ScanAllContextsAsync(stoppingToken);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error during watchdog scan");
+                }
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(_options.CheckIntervalSeconds), stoppingToken);
+        }
+
+        _logger.LogInformation("Route watchdog stopped");
+    }
+
+    internal async Task ScanAllContextsAsync(CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        var suspectedThreshold = TimeSpan.FromMinutes(_options.SuspectedThresholdMinutes);
+        var hungThreshold = TimeSpan.FromMinutes(_options.HungThresholdMinutes);
+        var newAlerts = new List<WatchdogAlert>();
+        // One restart per context per scan (review 2026-09-02, С20): ten hung exchanges used to
+        // trigger ten back-to-back stop/start cycles of the same context within a single scan,
+        // repeatedly killing freshly arrived in-flight work.
+        var restartedThisScan = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seenWaits = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var (contextName, context) in _contextManager.GetAllContexts())
+        {
+            if (context is not RouteContext routeCtx)
+                continue;
+
+            var inflights = routeCtx.InflightRepository.Browse();
+
+            foreach (var inflight in inflights)
+            {
+                // A planned wait (a redelivery delay, a delay step) is not a hang: the exchange is skipped while it lasts,
+                // and afterwards it is measured from the end of the wait, so a redelivered attempt is judged on its own.
+                if (inflight.WaitingUntil is { } waitingUntil && waitingUntil > now)
+                {
+                    if (_announcedWaits.Add($"{inflight.ExchangeId}|{waitingUntil.Ticks}"))
+                        _logger.LogInformation(
+                            "Exchange {ExchangeId} in route {RouteId} (context: {Context}) waits for a planned redelivery or delay until {Until:O}; the watchdog does not count the wait",
+                            inflight.ExchangeId, inflight.RouteId, contextName, waitingUntil);
+                    seenWaits.Add($"{inflight.ExchangeId}|{waitingUntil.Ticks}");
+                    continue;
+                }
+
+                var elapsed = now - inflight.BusySince;
+
+                if (elapsed >= hungThreshold)
+                {
+                    _logger.LogError(
+                        "Hung exchange {ExchangeId} in route {RouteId} (context: {Context}), elapsed: {Elapsed:F0}s",
+                        inflight.ExchangeId, inflight.RouteId, contextName, elapsed.TotalSeconds);
+
+                    newAlerts.Add(new WatchdogAlert
+                    {
+                        ExchangeId = inflight.ExchangeId,
+                        RouteId = inflight.RouteId,
+                        ContextName = contextName,
+                        Level = "Hung",
+                        DetectedAt = now,
+                        ElapsedSeconds = elapsed.TotalSeconds
+                    });
+
+                    if (_options.AutoRestartHungRoutes && !ct.IsCancellationRequested
+                        && contextName != "_system" // never auto-restart the management API context (С20)
+                        && restartedThisScan.Add(contextName))
+                    {
+                        await TryAutoRestartRouteAsync(contextName, inflight.RouteId, ct);
+                    }
+                }
+                else if (elapsed >= suspectedThreshold)
+                {
+                    _logger.LogWarning(
+                        "Suspected exchange {ExchangeId} in route {RouteId} (context: {Context}), elapsed: {Elapsed:F0}s",
+                        inflight.ExchangeId, inflight.RouteId, contextName, elapsed.TotalSeconds);
+
+                    newAlerts.Add(new WatchdogAlert
+                    {
+                        ExchangeId = inflight.ExchangeId,
+                        RouteId = inflight.RouteId,
+                        ContextName = contextName,
+                        Level = "Suspected",
+                        DetectedAt = now,
+                        ElapsedSeconds = elapsed.TotalSeconds
+                    });
+                }
+            }
+        }
+
+        // Waits that ended are forgotten, so the set holds only the current ones.
+        _announcedWaits.IntersectWith(seenWaits);
+
+        lock (_lock)
+        {
+            _activeAlerts.Clear();
+            _activeAlerts.AddRange(newAlerts);
+            _lastCheckAt = now;
+        }
+
+        NotifyNewAlerts(newAlerts);
+    }
+
+    /// <summary>
+    /// Pushes genuinely new alerts to the dispatcher. The scan rebuilds the whole snapshot each
+    /// cycle, so we track already-notified keys here and let the dispatcher additionally dedup by
+    /// time window. Keys that clear (exchange completed) are forgotten, so a later recurrence
+    /// alerts again.
+    /// </summary>
+    private void NotifyNewAlerts(List<WatchdogAlert> current)
+    {
+        if (_alerts is null || !_alerts.IsActive) return;
+
+        var currentKeys = new HashSet<string>();
+        foreach (var a in current)
+        {
+            var key = $"{a.Level}|{a.ContextName}|{a.RouteId}|{a.ExchangeId}";
+            currentKeys.Add(key);
+            if (_notifiedKeys.Add(key))
+            {
+                _alerts.Enqueue(new Alerts.AlertNotification
+                {
+                    Level = a.Level,
+                    Title = $"{a.Level} exchange in route '{a.RouteId}'",
+                    ContextName = a.ContextName,
+                    RouteId = a.RouteId,
+                    ExchangeId = a.ExchangeId,
+                    ElapsedSeconds = a.ElapsedSeconds,
+                    Timestamp = a.DetectedAt
+                });
+            }
+        }
+
+        _notifiedKeys.IntersectWith(currentKeys); // forget cleared alerts
+    }
+
+    private async Task TryAutoRestartRouteAsync(string contextName, string routeId, CancellationToken ct)
+    {
+        try
+        {
+            _logger.LogWarning("Auto-restarting context {Context} due to hung route {RouteId}",
+                contextName, routeId);
+
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(_options.AutoRestartTimeoutSeconds));
+
+            await _contextManager.RestartContextAsync(contextName, cts.Token);
+            Interlocked.Increment(ref _autoRestartsPerformed);
+
+            _logger.LogInformation("Auto-restart completed for context {Context}", contextName);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            // The per-restart timeout elapsed — possibly BETWEEN the stop and the start, leaving
+            // the context down (review 2026-09-02, С20). Try to bring it back once, unbounded by
+            // the elapsed budget; a context left stopped is worse than a slow start.
+            _logger.LogError(
+                "Auto-restart of context {Context} timed out after {Timeout}s — attempting a recovery start",
+                contextName, _options.AutoRestartTimeoutSeconds);
+            try
+            {
+                await _contextManager.StartContextAsync(contextName, ignoreAutoStart: true);
+                _logger.LogInformation("Recovery start completed for context {Context}", contextName);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Recovery start failed for context {Context} — it may be stopped", contextName);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Auto-restart failed for context {Context}", contextName);
+        }
+    }
+}

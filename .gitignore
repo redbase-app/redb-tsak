@@ -1,0 +1,32 @@
+# Build outputs
+bin/
+obj/
+*.user
+.vs/
+
+# NuGet
+*.nupkg
+*.snupkg
+nupkg/
+
+# Test results
+TestResults/
+
+# Secrets / local config
+nuget.config.json
+appsettings.Development.json
+appsettings.Local.json
+*.pem
+*.key
+*.pfx
+DEPLOYMENT_SECRETS.md
+
+# Tsak runtime artifacts
+src/**/Libs/
+src/**/output/
+src/**/Logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

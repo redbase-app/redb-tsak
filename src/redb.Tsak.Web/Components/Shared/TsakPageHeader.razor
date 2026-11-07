@@ -1,0 +1,38 @@
+@* Page header with title, description, auto-refresh label and refresh button. *@
+
+<div class="page-header">
+    <div style="display: flex; align-items: center; justify-content: space-between;">
+        <div>
+            <h1 class="page-title">@Title</h1>
+            @if (Description is not null)
+            {
+                <p class="page-description">@Description</p>
+            }
+        </div>
+        <div style="display: flex; align-items: center; gap: var(--space-2);">
+            @if (Actions is not null)
+            {
+                @Actions
+            }
+            @if (RefreshInterval is not null)
+            {
+                <span class="text-xs text-tertiary">Auto-refresh @RefreshInterval</span>
+            }
+            @if (OnRefresh.HasDelegate)
+            {
+                <button class="btn btn-secondary btn-sm" @onclick="OnRefresh">
+                    <TsakIcon Name="refresh" Size="14" />
+                    Refresh
+                </button>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string Title { get; set; } = "";
+    [Parameter] public string? Description { get; set; }
+    [Parameter] public string? RefreshInterval { get; set; }
+    [Parameter] public EventCallback OnRefresh { get; set; }
+    [Parameter] public RenderFragment? Actions { get; set; }
+}

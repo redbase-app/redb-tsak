@@ -1,0 +1,64 @@
+@using Microsoft.JSInterop
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+<div class="chart-container" style="@(Height.HasValue ? $"height:{Height}px" : "")">
+    <canvas id="@_canvasId"></canvas>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string ChartId { get; set; } = default!;
+    [Parameter] public int? Height { get; set; }
+
+    private string _canvasId => $"chart-{ChartId}";
+
+    public async Task CreateLineAsync(string[] labels, ChartDataset[] datasets, string? yAxisLabel = null)
+    {
+        await JS.InvokeVoidAsync("tsakCharts.createLine", _canvasId, labels, datasets, yAxisLabel);
+    }
+
+    /// <summary>
+    /// Creates an area chart (line with fill) with the given labels and datasets.
+    /// </summary>
+    public async Task CreateAreaAsync(string[] labels, ChartDataset[] datasets, string? yAxisLabel = null)
+    {
+        await JS.InvokeVoidAsync("tsakCharts.createArea", _canvasId, labels, datasets, yAxisLabel);
+    }
+
+    /// <summary>
+    /// Creates a bar chart with the given labels and datasets.
+    /// </summary>
+    public async Task CreateBarAsync(string[] labels, ChartDataset[] datasets, string? yAxisLabel = null)
+    {
+        await JS.InvokeVoidAsync("tsakCharts.createBar", _canvasId, labels, datasets, yAxisLabel);
+    }
+
+    /// <summary>
+    /// Creates a donut chart with the given labels, values and colors.
+    /// </summary>
+    public async Task CreateDonutAsync(string[] labels, double[] data, string[] colors)
+    {
+        await JS.InvokeVoidAsync("tsakCharts.createDonut", _canvasId, labels, data, colors);
+    }
+
+    /// <summary>
+    /// Updates chart data without recreating it.
+    /// </summary>
+    public async Task UpdateAsync(string[] labels, ChartDataset[] datasets)
+    {
+        await JS.InvokeVoidAsync("tsakCharts.update", _canvasId, labels, datasets);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("tsakCharts.destroy", _canvasId);
+        }
+        catch (JSDisconnectedException) { }
+        catch (JSException) { }
+        catch (InvalidOperationException) { }
+    }
+
+    public record ChartDataset(string Label, double[] Data, string BorderColor, string? BackgroundColor = null);
+}

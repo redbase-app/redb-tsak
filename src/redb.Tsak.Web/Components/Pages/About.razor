@@ -1,0 +1,194 @@
+@page "/about"
+@inject INodeClientProvider NodeProvider
+@using System.Reflection
+@using redb.Tsak.Client
+@using redb.Tsak.Contracts
+
+<TsakPageHeader Title="About" Description="Version, links, and what is actually running" />
+
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4);">
+    @* Product *@
+    <div class="card" style="margin: 0;">
+        <div class="card-header">
+            <span class="card-title"><TsakIcon Name="database" Size="16" /> redb.Tsak</span>
+        </div>
+        <table style="width: 100%;">
+            <tbody>
+                <tr><td class="text-secondary" style="width: 160px;">Dashboard version</td><td class="mono">@DashboardVersion</td></tr>
+                <tr><td class="text-secondary">Description</td><td class="text-sm">Runtime container for redb.Route contexts with management API</td></tr>
+                <tr><td class="text-secondary">License</td><td class="text-sm">Apache-2.0 (open source). Pro components are free and require no license key.</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    @* Links *@
+    <div class="card" style="margin: 0;">
+        <div class="card-header">
+            <span class="card-title"><TsakIcon Name="external-link" Size="16" /> Links</span>
+        </div>
+        <table style="width: 100%;">
+            <tbody>
+                <tr><td class="text-secondary" style="width: 160px;">GitHub</td><td><a class="mono text-sm" href="https://github.com/redbase-app/redb-tsak" target="_blank" rel="noopener noreferrer">github.com/redbase-app/redb-tsak</a></td></tr>
+                <tr><td class="text-secondary">Releases</td><td><a class="mono text-sm" href="https://github.com/redbase-app/redb-tsak/releases" target="_blank" rel="noopener noreferrer">github.com/redbase-app/redb-tsak/releases</a></td></tr>
+                <tr><td class="text-secondary">Routing engine</td><td><a class="mono text-sm" href="https://github.com/redbase-app/redb-route" target="_blank" rel="noopener noreferrer">github.com/redbase-app/redb-route</a></td></tr>
+                <tr><td class="text-secondary">Website</td><td><a class="mono text-sm" href="https://redbase.app" target="_blank" rel="noopener noreferrer">redbase.app</a></td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@* Node *@
+<div class="card" style="margin-top: var(--space-4);">
+    <div class="card-header">
+        <span class="card-title"><TsakIcon Name="server" Size="16" /> Node</span>
+        @if (_aliveNodes.Count > 1)
+        {
+            <select class="input" style="width: 220px; padding: 4px 8px; font-size: 0.8rem;" @bind="SelectedNodeId">
+                @foreach (var n in _aliveNodes)
+                {
+                    <option value="@n.NodeId">@n.NodeId (@n.Hostname)</option>
+                }
+            </select>
+        }
+    </div>
+    @if (_infoError is not null)
+    {
+        <p class="text-sm" style="color: var(--status-error); padding: var(--space-2);">Failed to load node info: @_infoError</p>
+    }
+    else if (_info is null)
+    {
+        <p class="text-secondary text-sm" style="padding: var(--space-2);">@(_loading ? "Loading…" : "No live node available.")</p>
+    }
+    else
+    {
+        <table style="width: 100%;">
+            <tbody>
+                <tr><td class="text-secondary" style="width: 160px;">Node</td><td class="mono">@_selectedNodeId</td></tr>
+                <tr><td class="text-secondary">Node version</td><td class="mono">@(_info.InformationalVersion ?? _info.Version)</td></tr>
+                <tr><td class="text-secondary">Machine</td><td class="mono">@_info.MachineName</td></tr>
+                <tr><td class="text-secondary">Started</td><td class="text-sm">@_info.StartedAt.ToString("yyyy-MM-dd HH:mm:ss")</td></tr>
+                <tr><td class="text-secondary">Uptime</td><td class="mono text-sm">@_info.Uptime</td></tr>
+                <tr><td class="text-secondary">Contexts / Modules</td><td class="mono">@_info.ContextCount / @_info.ModuleCount</td></tr>
+            </tbody>
+        </table>
+    }
+</div>
+
+@* Which redb is REALLY running — admin only (the API refuses non-admins anyway) *@
+<AuthorizedView AdminOnly="true">
+    <div class="card" style="margin-top: var(--space-4);">
+        <div class="card-header">
+            <span class="card-title"><TsakIcon Name="package" Size="16" /> Loaded redb assemblies</span>
+            @if (_assemblies is not null)
+            {
+                <span class="text-secondary text-sm">@_assemblies.RedbCount of @_assemblies.Count loaded</span>
+            }
+        </div>
+        @if (_assembliesError is not null)
+        {
+            <p class="text-sm" style="color: var(--status-error); padding: var(--space-2);">Failed to load assemblies: @_assembliesError</p>
+        }
+        else if (_assemblies is null)
+        {
+            <p class="text-secondary text-sm" style="padding: var(--space-2);">@(_loading ? "Loading…" : "No live node available.")</p>
+        }
+        else
+        {
+            <TsakGrid Items="_assemblies.Redb" T="LoadedAssemblyInfo">
+                <HeaderContent>
+                    <th>Assembly</th>
+                    <th>Version</th>
+                    <th>Source</th>
+                </HeaderContent>
+                <RowContent>
+                    <td class="mono text-sm">@context.Name</td>
+                    <td class="mono text-sm">@(context.Version ?? "—")</td>
+                    <td class="text-sm">@context.Source</td>
+                </RowContent>
+            </TsakGrid>
+        }
+    </div>
+</AuthorizedView>
+
+@code {
+    // Same source as the startup banner: informational version ("3.7.2") with the +metadata
+    // suffix cut, falling back to the four-part assembly version.
+    private static readonly string DashboardVersion =
+        typeof(About).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion?.Split('+')[0]
+        ?? typeof(About).Assembly.GetName().Version?.ToString()
+        ?? "unknown";
+
+    [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
+
+    private bool _loading = true;
+    private bool _isAdmin;
+    private List<NodeInfo> _aliveNodes = [];
+    private string _selectedNodeId = "";
+    private SystemInfoResponse? _info;
+    private string? _infoError;
+    private AssembliesResponse? _assemblies;
+    private string? _assembliesError;
+
+    private string SelectedNodeId
+    {
+        get => _selectedNodeId;
+        set
+        {
+            if (_selectedNodeId == value) return;
+            _selectedNodeId = value;
+            _ = InvokeAsync(async () =>
+            {
+                await LoadNodeAsync();
+                StateHasChanged();
+            });
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = AuthState is null ? null : await AuthState;
+        _isAdmin = state?.User?.IsInRole("admin") ?? false;
+
+        var topology = await NodeProvider.LoadTopologyAsync();
+        _aliveNodes = topology.Nodes.Where(n => n.IsAlive).ToList();
+        _selectedNodeId = _aliveNodes.FirstOrDefault()?.NodeId ?? "";
+
+        await LoadNodeAsync();
+        _loading = false;
+    }
+
+    private async Task LoadNodeAsync()
+    {
+        _info = null;
+        _infoError = null;
+        _assemblies = null;
+        _assembliesError = null;
+
+        var client = string.IsNullOrEmpty(_selectedNodeId) ? null : NodeProvider.GetClient(_selectedNodeId);
+        if (client is null) return;
+
+        try
+        {
+            _info = await client.GetInfoAsync();
+        }
+        catch (Exception ex)
+        {
+            _infoError = ex.Message; // surfaced in the UI, deliberately not swallowed
+        }
+
+        // Admin-only fetch: the endpoint requires the admin role, a call from a lower tier
+        // would just burn a request to get a 403.
+        if (_isAdmin)
+        {
+            try
+            {
+                _assemblies = await client.GetAssembliesAsync();
+            }
+            catch (Exception ex)
+            {
+                _assembliesError = ex.Message; // surfaced in the UI, deliberately not swallowed
+            }
+        }
+    }
+}

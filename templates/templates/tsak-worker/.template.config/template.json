@@ -1,0 +1,73 @@
+{
+  "$schema": "http://json.schemastore.org/template",
+  "author": "RedBase",
+  "classifications": [ "Worker", "Service", "redb.Tsak", "RedBase" ],
+  "identity": "RedBase.Tsak.Worker.Template",
+  "name": "redb.Tsak Worker Host",
+  "description": "A Tsak worker host: runs redb.Route modules from its module folder with hot reload, a management API and a scheduler, its state in redb or in memory.",
+  "shortName": "tsak-worker",
+  "tags": {
+    "language": "C#",
+    "type": "project"
+  },
+  "sourceName": "TsakHost",
+  "preferNameDirectory": true,
+  "symbols": {
+    "db": {
+      "type": "parameter",
+      "datatype": "choice",
+      "defaultValue": "sqlite",
+      "displayName": "Database",
+      "description": "Database provider (used when storage = redb)",
+      "choices": [
+        { "choice": "sqlite",   "description": "SQLite (a file next to the host, nothing to install)" },
+        { "choice": "postgres", "description": "PostgreSQL (via Npgsql)" },
+        { "choice": "mssql",    "description": "Microsoft SQL Server" }
+      ]
+    },
+    "storage": {
+      "type": "parameter",
+      "datatype": "choice",
+      "defaultValue": "redb",
+      "displayName": "State store",
+      "description": "State store backing",
+      "choices": [
+        { "choice": "redb",     "description": "Persistent state in REDB (recommended)" },
+        { "choice": "inmemory", "description": "In-memory only (state lost on restart)" }
+      ]
+    },
+    "pro": {
+      "type": "parameter",
+      "datatype": "bool",
+      "defaultValue": "true",
+      "displayName": "Pro",
+      "description": "RedBase Pro tier and Pro features (cluster, redb-backed key store, audit). The 4.x Pro tier is free; --pro false switches the redb provider to the Free one and the save strategy to DeleteInsert"
+    },
+    "UsePostgres": {
+      "type": "computed",
+      "value": "(db == \"postgres\")"
+    },
+    "UseMsSql": {
+      "type": "computed",
+      "value": "(db == \"mssql\")"
+    },
+    "UseSqlite": {
+      "type": "computed",
+      "value": "(db == \"sqlite\")"
+    },
+    "UseRedbStorage": {
+      "type": "computed",
+      "value": "(storage == \"redb\")"
+    }
+  },
+  "sources": [
+    {
+      "modifiers": [
+        {
+          "condition": "(!pro)",
+          "exclude": [ "**/*.pro.cs" ]
+        }
+      ]
+    }
+  ]
+}

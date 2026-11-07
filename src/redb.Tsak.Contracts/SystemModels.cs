@@ -1,0 +1,175 @@
+using System.Text.Json.Serialization;
+
+namespace redb.Tsak.Contracts;
+
+/// <summary>
+/// Effective (merged, resolved) configuration for this node, from <c>GET /api/system/config</c>.
+/// Flat key → value map over the <c>Tsak:*</c> and <c>ConnectionStrings:*</c> sections, with secrets
+/// redacted. Answers "what settings is this node actually running with" on an incident.
+/// </summary>
+public sealed record EffectiveConfigResult
+{
+    public required bool Available { get; init; }
+    public int RedactedCount { get; init; }
+    public IReadOnlyDictionary<string, string?> Values { get; init; } =
+        new Dictionary<string, string?>();
+}
+
+/// <summary>
+/// Health check states.
+/// </summary>
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum HealthStatus
+{
+    Healthy,
+    Degraded,
+    Unhealthy
+}
+
+/// <summary>
+/// Result of a health check evaluation.
+/// </summary>
+public sealed record HealthCheckResult
+{
+    public HealthStatus Status { get; init; }
+    public string Description { get; init; } = "";
+    public Dictionary<string, HealthStatus> Checks { get; init; } = new();
+
+    /// <summary>What a check that is not healthy found, by its key in <see cref="Checks"/>; empty when none explains itself.</summary>
+    public Dictionary<string, string> Details { get; init; } = new();
+
+    public DateTime Timestamp { get; init; } = DateTime.UtcNow;
+}
+
+/// <summary>
+/// System metrics response.
+/// </summary>
+public sealed record MetricsResponse
+{
+    public required bool Available { get; init; }
+    public int? StoredPoints { get; init; }
+    public MetricSnapshot? Latest { get; init; }
+}
+
+/// <summary>
+/// Metrics history response (array of snapshots over a time window).
+/// </summary>
+public sealed record MetricsHistoryResponse
+{
+    public required bool Available { get; init; }
+    public MetricSnapshot[] Points { get; init; } = [];
+}
+
+/// <summary>
+/// A single snapshot of process and system metrics at a point in time.
+/// </summary>
+public sealed record MetricSnapshot
+{
+    public DateTime Timestamp { get; init; }
+    public long TimestampMs { get; init; }
+    public CpuMetrics Cpu { get; init; } = new();
+    public MemoryMetrics Memory { get; init; } = new();
+    public ThreadingMetrics Threading { get; init; } = new();
+    public GcMetrics GarbageCollector { get; init; } = new();
+}
+
+public sealed record CpuMetrics
+{
+    public double ProcessUsage { get; init; }
+    public double SystemUsage { get; init; }
+}
+
+public sealed record MemoryMetrics
+{
+    public double WorkingSetMB { get; init; }
+    public double PrivateMemoryMB { get; init; }
+    public double VirtualMemoryMB { get; init; }
+    public double GCMemoryMB { get; init; }
+    public double SystemMemoryUsageMB { get; init; }
+}
+
+public sealed record ThreadingMetrics
+{
+    public int ActiveThreads { get; init; }
+    public long ThreadPoolPendingWork { get; init; }
+}
+
+public sealed record GcMetrics
+{
+    public int Gen0Collections { get; init; }
+    public int Gen1Collections { get; init; }
+    public int Gen2Collections { get; init; }
+    public double TotalMemoryMB { get; init; }
+}
+
+/// <summary>
+/// System information response.
+/// </summary>
+public sealed record SystemInfoResponse
+{
+    public required string Version { get; init; }
+
+    /// <summary>
+    /// Informational (SemVer) version of the host process, e.g. "3.7.2" — the same value the
+    /// startup banner prints, unlike the four-part assembly <see cref="Version"/> ("3.7.2.0").
+    /// Null when the host assembly carries no informational version.
+    /// </summary>
+    public string? InformationalVersion { get; init; }
+    public required DateTime StartedAt { get; init; }
+    public required string Uptime { get; init; }
+    public required int ContextCount { get; init; }
+    public required int ModuleCount { get; init; }
+    public required string MachineName { get; init; }
+    public required int ProcessorCount { get; init; }
+    public required double WorkingSetMb { get; init; }
+
+    /// <summary>Module load contexts in memory: the live modules, their rollback history and the orphaned ones.</summary>
+    public int ModuleContextsAlive { get; init; }
+
+    /// <summary>
+    /// Module load contexts that stay in memory after their modules were replaced or removed: with
+    /// <c>Tsak:HotReload:Collectible</c> false every one let go, with it true the ones that did not unload.
+    /// </summary>
+    public int OrphanedModuleContexts { get; init; }
+
+    /// <summary>The limit above which the <c>hotreload</c> health check is Degraded (<c>Tsak:HotReload:MaxOrphanedContexts</c>).</summary>
+    public int MaxOrphanedModuleContexts { get; init; }
+
+    /// <summary>Null within the limit; above it, what the node needs (a restart to reclaim the memory).</summary>
+    public string? ModuleContextsNotice { get; init; }
+}
+
+/// <summary>
+/// One assembly loaded in a node's process, from <c>GET /api/system/assemblies</c>.
+/// <c>Source</c> tells where it came from: "shared" (byte-loaded from the shared layer),
+/// "bin" (app output), "runtime" (.NET), or "in-memory".
+/// </summary>
+public sealed record LoadedAssemblyInfo
+{
+    public required string Name { get; init; }
+    public string? Version { get; init; }
+    public required string Source { get; init; }
+    public required string Location { get; init; }
+}
+
+/// <summary>
+/// Response of <c>GET /api/system/assemblies</c> — which assemblies are REALLY running on a
+/// node (Admin only). <c>Redb</c> is the interesting subset (redb.* assemblies) surfaced first.
+/// </summary>
+public sealed record AssembliesResponse
+{
+    public required int Count { get; init; }
+    public required int RedbCount { get; init; }
+    public IReadOnlyList<LoadedAssemblyInfo> Redb { get; init; } = [];
+    public IReadOnlyList<LoadedAssemblyInfo> All { get; init; } = [];
+}
+
+/// <summary>
+/// Standard API error response.
+/// </summary>
+public sealed record ApiErrorResponse
+{
+    public required string Error { get; init; }
+    public required string Message { get; init; }
+    public required int StatusCode { get; init; }
+}

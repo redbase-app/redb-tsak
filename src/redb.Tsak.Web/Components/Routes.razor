@@ -1,0 +1,30 @@
+@using Microsoft.AspNetCore.Components.Routing
+@using Microsoft.AspNetCore.Components.Authorization
+
+<Router AppAssembly="typeof(Program).Assembly">
+    <Found Context="routeData">
+        <AuthorizeRouteView RouteData="routeData" DefaultLayout="typeof(TsakShell)">
+            <NotAuthorized Context="auth">
+                @* Anonymous: to the login form. Signed in, but below the page's role: told so, in place. *@
+                @if (auth.User.Identity?.IsAuthenticated == true)
+                {
+                    <AccessDenied />
+                }
+                else
+                {
+                    <RedirectToLogin />
+                }
+            </NotAuthorized>
+        </AuthorizeRouteView>
+        <FocusOnNavigate RouteData="routeData" Selector="h1" />
+    </Found>
+    <NotFound>
+        <LayoutView Layout="typeof(TsakShell)">
+            <div class="empty-state">
+                <TsakIcon Name="alert-triangle" Size="48" />
+                <h2>Page not found</h2>
+                <p class="text-secondary">The requested page does not exist.</p>
+            </div>
+        </LayoutView>
+    </NotFound>
+</Router>

@@ -1,0 +1,22 @@
+@* What a signed-in user sees on a page above their role. Being sent to the login form instead read as a
+   logout, and signing in again led straight back to the same refusal. *@
+<div class="empty-state">
+    <TsakIcon Name="shield" Size="48" />
+    <h2>Access denied</h2>
+    <p class="text-secondary">
+        Your role@(string.IsNullOrEmpty(_role) ? "" : $" ({_role})") does not open this page. Logs and the dead-letter
+        queue need the operator role; the audit trail and Auth &amp; Users need the admin role.
+    </p>
+</div>
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
+
+    private string? _role;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (AuthState is null) return;
+        _role = (await AuthState).User.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value;
+    }
+}
