@@ -89,7 +89,7 @@ Requires a shared database (Postgres or MSSQL). Node topology is discovered from
 | `ConnectionStrings:Postgres` or `ConnectionStrings:MSSql` | Database connection string for the redb store. |
 | `Tsak:Redb:Provider` | Database provider: `"postgres"` or `"mssql"`. |
 | `Tsak:Redb:UsePro` | Must be `true` for cluster features. |
-| `Tsak:Redb:License` | **Leave empty on 3.x** — Pro and `tsak.cluster` need no key (free through major 3). Accepts a single JWT, a `\|`-separated string, or a JSON array if a future major requires one. |
+| `Tsak:Redb:License` | **Leave empty** — Pro and `tsak.cluster` are free and need no key. Accepts a single JWT, a `\|`-separated string, or a JSON array. |
 | `Tsak:Redb:PropsSaveStrategy` | Props save strategy (e.g. `"ChangeTracking"`). |
 
 **Example:**

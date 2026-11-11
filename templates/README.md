@@ -42,7 +42,7 @@ The default provider is SQLite, so the host starts on a machine with nothing ins
 |-----------|---------|-------------|
 | `--db` | `sqlite` | `sqlite`, `postgres` or `mssql`. A database is always configured, and modules read their data through it |
 | `--storage` | `redb` | `redb` (persistent state) or `inmemory` (Tsak's own state and the Quartz job store in RAM; a database is still required) |
-| `--pro` | `true` | `true` is the Pro tier (free for the whole 4.x line); `false` switches the redb provider to Free, where the save strategy becomes `DeleteInsert`, because batch `ChangeTracking` is not implemented there |
+| `--pro` | `true` | `true` is the Pro tier (free, no key); `false` switches the redb provider to Free, where the save strategy becomes `DeleteInsert`, because batch `ChangeTracking` is not implemented there |
 
 ## Modules
 

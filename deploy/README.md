@@ -22,8 +22,8 @@ The Tsak cluster is **redb-backed**: leader election, heartbeats and round-robin
 distribution live in the redb store (this is **not** Quartz clustering, which stays off on
 SQLite). The shipped `appsettings.json` is already wired for it, so there is nothing to turn on:
 
-- `Tsak:Redb:UsePro: true` — Pro, including `tsak.cluster`, is **free and unrestricted on the whole
-  3.x line**, so there is no license key and no node cap;
+- `Tsak:Redb:UsePro: true` — Pro, including `tsak.cluster`, is **free and unrestricted**, so there
+  is no license key and no node cap;
 - `Tsak:Cluster:Enabled: true`, on an embedded **SQLite** store (zero external dependencies).
 
 So a **single Worker process is already a working one-node cluster** — start it and it elects
@@ -44,9 +44,8 @@ Run **standalone** (no cluster) by flipping one flag:
 "Tsak": { "Cluster": { "Enabled": false } }
 ```
 
-> `License` stays **empty** — the whole 3.x line runs Pro free, in production, with no node cap
-> (licensing re-enables only at major 4.0). For a multi-node cluster the one thing you do change is
-> the store: point every node at a shared Postgres/MSSql redb database instead of embedded SQLite.
+> `License` stays **empty** — Pro runs free, in production, with no node cap. For a multi-node
+> cluster the one thing you do change is the store: point every node at a shared Postgres/MSSql redb database instead of embedded SQLite.
 
 ## What Tsak exposes
 

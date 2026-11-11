@@ -37,7 +37,7 @@ Required when `Storage:Type = "Redb"` or `Cluster:Enabled = true`.
 |-----|------|---------|-------------|
 | `Provider` | `string` | — | `"postgres"` or `"mssql"`. |
 | `UsePro` | `bool` | `false` | Enable redb.Core.Pro features (props change tracking, clustering). |
-| `License` | `string \| string[]` | — | **Not needed on 3.x** — Pro and `tsak.cluster` are free through major 3, so leave this unset even with `UsePro = true`. Accepts a single JWT, a `\|`-separated string, or a JSON array if a future major requires one. |
+| `License` | `string \| string[]` | — | **Not needed** — Pro and `tsak.cluster` are free, so leave this unset even with `UsePro = true`. Accepts a single JWT, a `\|`-separated string, or a JSON array. |
 | `PropsSaveStrategy` | `string` | `"DeleteInsert"` | Props write strategy: `"DeleteInsert"` or `"ChangeTracking"`. |
 
 Connection string is selected automatically based on `Provider`:

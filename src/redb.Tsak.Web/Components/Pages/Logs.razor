@@ -67,17 +67,17 @@
                 <table class="table" style="margin: 0; table-layout: fixed; width: 100%;">
                     <thead>
                         <tr>
-                            <th style="width: 10%;">Time</th>
+                            <th style="width: 14%;" title="Each line's own timestamp in the node's time zone; hover a time for its UTC offset">@LogTime.Header</th>
                             <th style="width: 55px;">Level</th>
                             <th style="width: 60%;">Message</th>
-                            <th style="width: calc(30% - 55px);">Source</th>
+                            <th style="width: calc(26% - 55px);">Source</th>
                         </tr>
                     </thead>
                     <tbody>
                         @foreach (var entry in FilteredEntries)
                         {
                             <tr style="@GetRowStyle(entry.Level)">
-                                <td class="mono">@entry.Timestamp.ToString("HH:mm:ss.fff")</td>
+                                <td class="mono" title="@LogTime.FormatWithOffset(entry.Timestamp)">@LogTime.Format(entry.Timestamp)</td>
                                 <td><TsakBadge Text="@entry.Level" Variant="@GetLevelVariant(entry.Level)" ShowDot="false" /></td>
                                 <td style="word-break: break-word; white-space: pre-wrap;">
                                     @entry.Message
@@ -115,7 +115,7 @@ else
                 <HeaderContent>
                     <th>Filename</th>
                     <th style="width: 120px;">Size</th>
-                    <th style="width: 180px;">Last Modified</th>
+                    <th style="width: 180px;">Last Modified (UTC)</th>
                     <th style="width: 100px;">Download</th>
                 </HeaderContent>
                 <RowContent>

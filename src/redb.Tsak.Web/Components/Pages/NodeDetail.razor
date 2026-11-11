@@ -498,13 +498,13 @@ else
                             </div>
                         </EmptyContent>
                         <HeaderContent>
-                            <th style="width: 140px;">Timestamp</th>
+                            <th style="width: 180px;" title="Each line's own timestamp in the node's time zone; hover a time for its UTC offset">@LogTime.Header</th>
                             <th style="width: 80px;">Level</th>
                             <th>Message</th>
                             <th style="width: 160px;">Source</th>
                         </HeaderContent>
                         <RowContent>
-                            <td class="mono text-xs">@context.Timestamp.ToString("HH:mm:ss.fff")</td>
+                            <td class="mono text-xs" title="@LogTime.FormatWithOffset(context.Timestamp)">@LogTime.Format(context.Timestamp)</td>
                             <td><TsakBadge Text="@context.Level" Variant="@GetLevelBadge(context.Level)" ShowDot="false" /></td>
                             <td class="text-sm" style="word-break: break-word;">
                                 @context.Message

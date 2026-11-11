@@ -32,6 +32,23 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Pending changes live in `changelog/unreleased/` until the release; `pwsh scripts/changelog.ps1 -Preview` shows them.
 
+## [4.7.1] — 2026-11-11
+
+### Security
+
+- **Archives ship the .NET 10.0.15 runtime, SignalR client dependencies are patched.** The self-contained archives
+  carried the 10.0.14 runtime, affected by CVE-2026-114147 (ASP.NET Core denial of service); they now carry 10.0.15.
+  The container images already run on the patched base. Replace the archive or pull the new image.
+
+### Fixed
+
+- **Dashboard log lines show their date.** The Logs page (Live tab) and the node's Logs tab showed only the time of a
+  line; they now show `yyyy-MM-dd HH:mm:ss.fff` in the node's time zone, with the UTC offset in the tooltip. The Files
+  tab labels its modification time as UTC. Packages: `redb.Tsak.Web`.
+- **The cluster dashboard waits for the redb schema on its first start instead of failing once.** Against an empty
+  database it no longer logs a hosting failure before the worker has created the schema: it waits, up to 300 s by
+  default (`Tsak:Web:SchemaWaitSeconds`, `0` keeps the old behaviour), and then fails with a message naming the cause. Packages: `redb.Tsak.Web.Pro`.
+
 ## [4.7.0] — 2026-11-06
 
 ### Added

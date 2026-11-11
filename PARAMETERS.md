@@ -34,7 +34,7 @@ This section configures the redb service the worker hosts.
 |---|---|---|
 | `Tsak:Redb:Provider` | `auto` | `postgres`, `mssql`, `sqlite`, or `auto` to infer from the connection string. |
 | `Tsak:Redb:ConnectionString` | — | Required unless the provider resolves one itself. |
-| `Tsak:Redb:UsePro` | `true` | Pro is free and needs no key through major 4 (`LicensePolicy.FreeThroughMajor`), so the default is Pro. Set `false` for the Free tier. |
+| `Tsak:Redb:UsePro` | `true` | Pro is free and needs no key, so the default is Pro. Set `false` for the Free tier. |
 | `Tsak:Redb:License` | — | Optional; a fallback license for named instances. |
 | `Tsak:Redb:PropsSaveStrategy` | `ChangeTracking` | How property rows are written. **Requires Pro.** The Free provider implements only `DeleteInsert`: its batch path throws `NotSupportedException`, and since the cluster bootstrap saves in a batch on startup, the host stops. Setting `UsePro=false` means setting this to `DeleteInsert` too. |
 
@@ -120,6 +120,7 @@ are the ones to use inside `Cache`:
 | `Tsak:Web:Mode` | `standalone` | |
 | `Tsak:Web:StandaloneUrl` | `http://localhost:9090` | |
 | `Tsak:Web:Nodes` | — | Node list in cluster mode. |
+| `Tsak:Web:SchemaWaitSeconds` | `300` | Cluster mode: how long the dashboard waits at start for the redb schema, which the worker creates. Past the limit the start fails with a message naming the cause. `0` = no wait. |
 | `Tsak:Web:AdminLogin` | — | |
 | `Tsak:Web:AdminPasswordHash` | — | **Prefer this over `AdminPassword`.** A BCrypt hash (`$2a$`, `$2b$`, `$2y$`), verified in constant time. In cluster mode it is stored as the admin's password when the admin has none; wins over `AdminPassword`. |
 | `Tsak:Web:AdminPassword` | — | Plaintext. Accepted, but it ends up in whatever holds your config. |
