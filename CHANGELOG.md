@@ -32,6 +32,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Pending changes live in `changelog/unreleased/` until the release; `pwsh scripts/changelog.ps1 -Preview` shows them.
 
+## [4.7.2] — 2026-11-13
+
+### Changed
+
+- **Built on redb 4.7.2 and redb.Route 4.7.2.** The images and archives take the SQLite fix of redb 4.7.2: a save repeated
+  after a rolled-back transaction no longer overwrites another object. redb.Tsak itself has no change.
+
 ## [4.7.1] — 2026-11-11
 
 ### Security
