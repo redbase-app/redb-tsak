@@ -14,7 +14,7 @@ Older versions do not receive security fixes. Upgrade to the latest release.
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Report privately to: **security@redbase.app**
+Report privately to: **support@redbase.app**
 
 Include in your report:
 - Package and version (`tsak --version`)
