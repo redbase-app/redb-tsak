@@ -1,5 +1,7 @@
 # redb.Tsak.Core
 
+> Documentation and articles: <https://redbase.app>
+
 The server-side engine of [redb.Tsak](../../README.md). Contains the REST API controllers, all runtime services (hot-reload, context management, coordinator, watchdog, metrics), the module system (assembly loading, isolated ALCs), security middleware (API key auth with HMAC-SHA256), and storage abstractions.
 
 This project is referenced by the Worker host (`redb.Tsak.Worker`) and the Pro variant (`redb.Tsak.Core.Pro`). It is not meant to be consumed directly by application code — use `redb.Tsak.Client` for programmatic access.

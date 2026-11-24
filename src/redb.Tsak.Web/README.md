@@ -88,8 +88,7 @@ Requires a shared database (Postgres or MSSQL). Node topology is discovered from
 |---------|-------------|
 | `ConnectionStrings:Postgres` or `ConnectionStrings:MSSql` | Database connection string for the redb store. |
 | `Tsak:Redb:Provider` | Database provider: `"postgres"` or `"mssql"`. |
-| `Tsak:Redb:UsePro` | Must be `true` for cluster features. |
-| `Tsak:Redb:License` | **Leave empty** — Pro and `tsak.cluster` are free and need no key. Accepts a single JWT, a `\|`-separated string, or a JSON array. |
+| `Tsak:Redb:UsePro` | Must be `true` for cluster features. Pro is free of charge and needs no key. |
 | `Tsak:Redb:PropsSaveStrategy` | Props save strategy (e.g. `"ChangeTracking"`). |
 
 **Example:**
@@ -103,10 +102,6 @@ Requires a shared database (Postgres or MSSQL). Node topology is discovered from
     "Redb": {
       "Provider": "postgres",
       "UsePro": true,
-      "License": [
-        "<jwt-core.pro+postgres.pro>",
-        "<jwt-tsak.cluster>"
-      ],
       "PropsSaveStrategy": "ChangeTracking"
     },
     "Web": {
@@ -118,25 +113,6 @@ Requires a shared database (Postgres or MSSQL). Node topology is discovered from
   }
 }
 ```
-
-**License — multiple keys / env vars**
-
-The `License` field accepts a single JWT, a `|`-separated string, or a JSON array. Each JWT covers
-a fixed feature set, so cluster mode usually needs two: one for `core.pro` + provider, one for
-`tsak.cluster`.
-
-Environment variables (standard .NET convention, `:` → `__`):
-
-```pwsh
-$env:Tsak__Redb__License__0 = "<jwt1>"
-$env:Tsak__Redb__License__1 = "<jwt2>"
-# or single pipe-separated
-$env:Tsak__Redb__License = "<jwt1>|<jwt2>"
-```
-
-Legacy fallback (read by `LicenseStore` directly): `REDB_PRO_LICENSE`, `TSAK_LICENSE` env vars
-and `redb.license` / `tsak.license` files next to the executable. All sources merge into one
-pool, deduplicated by `jti`.
 
 ### Logging (Serilog)
 
@@ -193,7 +169,7 @@ redb.Tsak.Web
   └── redb.Tsak.Web.Pro       (cluster-mode services, interfaces)
         ├── redb.Tsak.Client
         ├── redb.Tsak.Contracts
-        └── redb.Tsak.Core.Pro (redb store, licensing, node registry)
+        └── redb.Tsak.Core.Pro (redb store, node registry)
 ```
 
 ### UI Features

@@ -420,7 +420,7 @@ else
         }
         catch (Exception ex)
         {
-            Log.LogWarning(ex, "[Storage] failed to list redb instances of node {NodeId}", NodeId);
+            Log.LogWarning(ex, "[Storage] failed to list redb instances of node {NodeId}", LogValue.Of(NodeId));
             // The list stays unknown, not empty: "no databases" is an answer this page has not got.
             _groups = [];
             _error = ex.Message;

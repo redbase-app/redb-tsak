@@ -1,5 +1,7 @@
 # redb.Tsak.CLI — `tsak`
 
+> Documentation and articles: <https://redbase.app>
+
 Command-line tool for managing a running redb.Tsak runtime. Connects to any Tsak node over HTTP, exposes every REST API operation as a composable noun-verb command, and is scriptable via JSON output and quiet mode.
 
 ## Install

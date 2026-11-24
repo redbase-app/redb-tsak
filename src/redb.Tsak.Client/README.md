@@ -1,5 +1,7 @@
 # redb.Tsak.Client
 
+> Documentation and articles: <https://redbase.app>
+
 Typed HTTP client for the [redb.Tsak](../../README.md) runtime REST API. Wraps every API endpoint behind a strongly-typed async interface with cancellation support, a configurable timeout, and structured error handling.
 
 ## Install

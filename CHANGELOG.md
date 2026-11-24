@@ -32,6 +32,22 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Pending changes live in `changelog/unreleased/` until the release; `pwsh scripts/changelog.ps1 -Preview` shows them.
 
+## [4.7.5] — 2026-11-24
+
+### Changed
+
+- **Tsak 4.7.5 runs on redb 4.7.5, which stores `TimeSpan` and `TimeOnly` as ticks.** Tsak's own data holds no such
+  values, so an existing Tsak database needs no conversion before the first start. Every node and image that shares the
+  database still moves to 4.7.5 together; there is no way back except a backup. Packages: `redb.Tsak.Core`, `redb.Tsak.Worker`.
+- **The start-up log no longer mentions a licence.** The Pro banner is a plain welcome, without a link to buy anything
+  or a free-tier notice, and the cluster dashboard no longer warns that it runs without a licence: Pro is free of
+  charge and needs no key. Packages: `redb.Tsak.Core.Pro`, `redb.Tsak.Web.Pro`.
+
+### Fixed
+
+- **The dashboard writes a node id from the page address into its log with line breaks escaped.** A `%0D%0A` in the
+  address could start a forged line in a plain-text log.
+
 ## [4.7.2] — 2026-11-13
 
 ### Changed

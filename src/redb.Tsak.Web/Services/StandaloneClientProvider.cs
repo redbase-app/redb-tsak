@@ -120,7 +120,7 @@ public sealed class StandaloneClientProvider : INodeClientProvider
         var node = _topology?.Nodes.FirstOrDefault(n => n.NodeId == nodeId);
         if (node is null || string.IsNullOrEmpty(node.ApiEndpoint))
         {
-            _logger.LogWarning("GetClient({NodeId}): node not found in standalone config", nodeId);
+            _logger.LogWarning("GetClient({NodeId}): node not found in standalone config", LogValue.Of(nodeId));
             return null;
         }
 

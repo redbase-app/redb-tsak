@@ -680,7 +680,7 @@ else
 
         if (_node is null)
         {
-            Log.LogWarning("[NodeDetail] Node {NodeId} not found in topology ({Count} nodes)", NodeId, topology.Nodes.Count);
+            Log.LogWarning("[NodeDetail] Node {NodeId} not found in topology ({Count} nodes)", LogValue.Of(NodeId), topology.Nodes.Count);
             _loading = false;
             return;
         }
@@ -688,13 +688,13 @@ else
         var client = NodeProvider.GetClient(NodeId);
         if (client is null)
         {
-            Log.LogWarning("[NodeDetail] GetClient returned null for {NodeId}", NodeId);
+            Log.LogWarning("[NodeDetail] GetClient returned null for {NodeId}", LogValue.Of(NodeId));
             _loading = false;
             return;
         }
         if (!_node.IsAlive)
         {
-            Log.LogWarning("[NodeDetail] Node {NodeId} is not alive, skipping API calls", NodeId);
+            Log.LogWarning("[NodeDetail] Node {NodeId} is not alive, skipping API calls", LogValue.Of(NodeId));
             _loading = false;
             return;
         }

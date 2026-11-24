@@ -1,5 +1,7 @@
 # redb.Tsak.Contracts
 
+> Documentation and articles: <https://redbase.app>
+
 Shared DTO (Data Transfer Object) library for the [redb.Tsak](../../README.md) management API. Contains all request and response types that flow between the Tsak Worker (server) and consumers: the typed HTTP client (`redb.Tsak.Client`), the CLI (`redb.Tsak.CLI`), the Web dashboard, and any third-party integration.
 
 ## Why a dedicated contracts assembly?

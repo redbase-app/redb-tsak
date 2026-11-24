@@ -21,7 +21,7 @@ Tags: `:<version>` (= `:<version>-net10`), `:latest`; `<version>` is the release
 can also be built for another target framework, and then carries that suffix (`:<version>-net9`). The standalone
 archives additionally bundle the shared route connectors for net8 / net9 / net10, so user modules (`.tpkg`)
 can target any of the three.
-Pro features (cluster, advanced storage) are on in the image and need no license token (§9).
+Pro features (cluster, advanced storage) are on in the image; Pro is free of charge and needs no key (§9).
 
 ```bash
 docker pull ghcr.io/redbase-app/redb-tsak-stack:<version>
@@ -39,7 +39,7 @@ docker run --rm -p 9090:9090 -p 8085:8085 ghcr.io/redbase-app/redb-tsak-stack:<v
 ```
 
 The shipped `appsettings.json` boots with **SQLite + Pro enabled + a one-node cluster** (see §6) —
-zero external dependencies and **no license key**: Pro runs free and unrestricted (§9). Override anything via env vars
+zero external dependencies; Pro is free of charge and needs no key (§9). Override anything via env vars
 (§4).
 
 ### What the image ships with — and what to change before you leave it running
@@ -103,7 +103,7 @@ index). All keys below live under `Tsak:` unless noted; defaults are the **shipp
 ```
 Tsak:Api:Port          ->  Tsak__Api__Port
 ConnectionStrings:Postgres   ->  ConnectionStrings__Postgres
-Tsak:Redb:License:0    ->  Tsak__Redb__License__0
+Tsak:Cluster:Enabled   ->  Tsak__Cluster__Enabled
 ```
 
 ### `Tsak:Storage` — state backend
@@ -111,12 +111,11 @@ Tsak:Redb:License:0    ->  Tsak__Redb__License__0
 |-----|---------|---------|
 | `Type` | `Redb` | `Redb` = persistent (uses `Redb:Provider`); `InMemory` = demo, nothing persists, no Pro/cluster. |
 
-### `Tsak:Redb` + `ConnectionStrings` — store & license
+### `Tsak:Redb` + `ConnectionStrings` — store
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `Redb:Provider` | `sqlite` | redb provider: `sqlite` / `postgres` / `mssql`. |
 | `Redb:UsePro` | `true` | Turn on Pro components. Free and unrestricted, no key. |
-| `Redb:License` | *(empty)* | Array of license token(s). **Leave empty** — Pro needs no key (§9). |
 | `Redb:PropsSaveStrategy` | `ChangeTracking` | Property write mode: `ChangeTracking` (Pro, what the image ships) or `DeleteInsert` (Free). Switching to Free means switching this too — the Free provider throws on a `ChangeTracking` batch, and the cluster bootstrap saves in a batch at startup, so the worker stops on boot. |
 | `ConnectionStrings:Sqlite` | `Data Source=redb.db` | SQLite file (Provider=sqlite). Persist via a volume. |
 | `ConnectionStrings:Postgres` | — | Npgsql connection string (Provider=postgres). |
@@ -233,7 +232,6 @@ The dashboard (Web / Stack) is a **Blazor Server** app on port `8085`.
 | Dashboard login | `Tsak:Web:AdminLogin` / `Tsak:Web:AdminPassword` | `admin` / `admin` | **Yes** |
 | Management-API auth secret | `Tsak:Auth:Secret` | *(stripped — empty)* | set if `Auth:Enabled=true` |
 | Web→worker service key | `Tsak:Web:ServiceApiKey` | *(stripped)* | set when Web and Worker are separate |
-| Pro license | `Tsak:Redb:License:0` | *(empty — none needed)* | no: Pro is free (§9) |
 
 ```bash
 docker run -p 8085:8085 \
@@ -300,7 +298,7 @@ problem. Access the dashboard at the path matching `ASPNETCORE_PATHBASE` (e.g. `
 
 The Tsak cluster is **redb-backed** (leader election + heartbeats live in the redb store; this
 is *not* Quartz clustering, which stays off on SQLite). The shipped config already runs it:
-`Tsak:Cluster:Enabled=true`, and clustering needs no license — the `tsak.cluster` feature is free (§9),
+`Tsak:Cluster:Enabled=true`, and clustering is free of charge and needs no key (§9),
 with no node cap.
 
 So **one worker = a working one-node cluster** (self-elected leader). To scale, run more nodes
@@ -518,7 +516,6 @@ services:
     environment:
       - Tsak__Redb__Provider=postgres
       - ConnectionStrings__Postgres=Host=pg;Username=tsak;Password=secret;Database=redb
-      - Tsak__Redb__License__0=<your-jwt>   # §9
     depends_on: [pg]
     restart: unless-stopped
   pg:
@@ -535,19 +532,14 @@ docker compose up -d
 
 ---
 
-## 9. Licensing — nothing to activate
+## 9. Pro is free of charge
 
-**There is no key to buy, request or install.** Pro is proprietary but runs **free and unrestricted**:
-`redb.*.Pro`, `redb.Tsak.Core.Pro`, the dashboard and
-clustering, in production, with no node cap and no request limit. The images ship with
-`Tsak:Redb:License` **empty**, and that is the correct state — leave it empty.
+Pro is free of charge and needs no key: `redb.*.Pro`, `redb.Tsak.Core.Pro`, the dashboard and clustering run
+unrestricted, in production, with no node cap and no request limit. There is nothing to activate.
 
 Pro packages are proprietary (closed source) but free of charge. **Larger companies that need the
 Pro sources — for audit, escrow, or to build in-house — can request them; we hand them over.**
 Write to <https://redbase.app/pro>.
-
-> If you inherited a config carrying an old trial JWT, delete it. It is not needed, and
-> shipping a JWT in an image is exactly what the release pipeline blocks.
 
 ---
 

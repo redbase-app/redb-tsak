@@ -36,45 +36,12 @@ Required when `Storage:Type = "Redb"` or `Cluster:Enabled = true`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `Provider` | `string` | — | `"postgres"` or `"mssql"`. |
-| `UsePro` | `bool` | `false` | Enable redb.Core.Pro features (props change tracking, clustering). |
-| `License` | `string \| string[]` | — | **Not needed** — Pro and `tsak.cluster` are free, so leave this unset even with `UsePro = true`. Accepts a single JWT, a `\|`-separated string, or a JSON array. |
+| `UsePro` | `bool` | `false` | Enable redb.Core.Pro features (props change tracking, clustering). Pro is free of charge and needs no key. |
 | `PropsSaveStrategy` | `string` | `"DeleteInsert"` | Props write strategy: `"DeleteInsert"` or `"ChangeTracking"`. |
 
 Connection string is selected automatically based on `Provider`:
 - `ConnectionStrings:Postgres` for `"postgres"`
 - `ConnectionStrings:MSSql` for `"mssql"`
-
-#### License — multiple keys
-
-A single license JWT covers a fixed feature set (e.g. `core.pro` + `postgres.pro`). To combine
-several licenses (e.g. add `tsak.cluster` on top of `core.pro`), use any of:
-
-```jsonc
-// Array (recommended)
-"License": [
-  "<jwt-core.pro+postgres.pro>",
-  "<jwt-tsak.cluster>"
-]
-
-// Pipe-separated string
-"License": "<jwt1>|<jwt2>"
-```
-
-Environment variables follow the standard .NET convention (`:` → `__`):
-
-```pwsh
-# Single value
-$env:Tsak__Redb__License = "<jwt1>|<jwt2>"
-
-# Array by index
-$env:Tsak__Redb__License__0 = "<jwt1>"
-$env:Tsak__Redb__License__1 = "<jwt2>"
-```
-
-Legacy/secret-store fallback (read directly by `LicenseStore`, bypassing config):
-`REDB_PRO_LICENSE` and `TSAK_LICENSE` env vars (also `\|`-separated). Files `redb.license` /
-`tsak.license` next to the executable are picked up automatically. All sources are merged into a
-single pool and deduplicated by `jti`.
 
 ### `Tsak:Api` — Built-in REST API
 
@@ -204,7 +171,7 @@ When Prometheus is enabled, metrics are exported at `http://*:{Port}/metrics` fo
 
 ### `Tsak:Cluster` — Cluster Coordination (Pro)
 
-Requires `Storage:Type = "Redb"`, `Redb:UsePro = true`, and a valid license.
+Requires `Storage:Type = "Redb"` and `Redb:UsePro = true`. Pro is free of charge and needs no key.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -273,7 +240,7 @@ Program.cs
 redb.Tsak.Worker
   ├── redb.Tsak.Core           (module registry, contexts, coordinator, API, monitoring)
   └── redb.Tsak.Core.Pro       (cluster: leader election, node registry, assignments)
-        └── redb.Core.Pro      (redb store, licensing)
+        └── redb.Core.Pro      (redb store)
 ```
 
 ### Module Loading
@@ -357,10 +324,6 @@ If hot-reload is enabled, the worker re-scans directories periodically and perfo
     "Redb": {
       "Provider": "postgres",
       "UsePro": true,
-      "License": [
-        "<jwt-core.pro+postgres.pro>",
-        "<jwt-tsak.cluster>"
-      ],
       "PropsSaveStrategy": "ChangeTracking"
     },
     "Cluster": {
