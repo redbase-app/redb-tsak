@@ -488,13 +488,13 @@ curl -s -H "X-Api-Key: $KEY" http://localhost:9090/api/system/health | jq
 ```bash
 # 2. tsak CLI — same operations, tabular or --output json for CI
 tsak context list
-tsak health
+tsak system health
 tsak route inflight orders route-1
 ```
 
 ```csharp
 // 3. Typed C# client — ITsakApiClient covers the whole surface
-services.AddTsakClient(o => { o.BaseUrl = "http://tsak-prod:9090"; o.ApiKey = key; });
+services.AddSingleton<ITsakApiClient>(_ => new TsakApiClient("http://tsak-prod:9090", key));
 
 public class Ops(ITsakApiClient tsak)
 {

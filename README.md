@@ -851,7 +851,7 @@ bean or `provider=` of a `sql:` endpoint.
 A module cannot reach the worker's DI, so it subscribes a redb `IRedbSaveInterceptor` through its context, in `InitializeAsync` or `main`:
 
 ```csharp
-public override async Task<IRouteContext> InitializeAsync(IRouteContext context)
+public async Task<IRouteContext> InitializeAsync(IRouteContext context)
 {
     context.GetService<ITsakSaveInterceptors>()?.Add(new NotifyFrontInterceptor());
     // routes...
@@ -904,7 +904,7 @@ auth model, and the extension points.
 
 ```bash
 # Authenticate
-KEY="$(tsak auth create --name ci --roles admin --output json | jq -r .rawKey)"
+KEY="$(tsak auth create --name ci --roles admin --output json | jq -r .Key)"
 
 # Health
 curl -s http://localhost:9090/api/system/health | jq
@@ -951,11 +951,9 @@ While the route is stopped, `/api/echo` answers `503` with the name of the route
 ### Typed C# client
 
 ```csharp
-services.AddTsakClient(opts =>
-{
-    opts.BaseUrl = "http://tsak-prod:9090";
-    opts.ApiKey = builder.Configuration["TsakKey"];
-});
+// redb.Tsak.Client has no DI extension: register the client yourself. The key goes out as the X-API-Key header.
+builder.Services.AddSingleton<ITsakApiClient>(_ =>
+    new TsakApiClient("http://tsak-prod:9090", builder.Configuration["TsakKey"]));
 
 public class MyService(ITsakApiClient tsak)
 {
@@ -1216,10 +1214,9 @@ Stop / restart REST responses include `DrainTimeMs` and `InflightAfter` — oper
 ```csharp
 public class MyHook : ITsakLifecycleHook
 {
+    public int Order => 10;                                // lower starts earlier and stops later
     public Task OnStartingAsync(CancellationToken ct)  => /* before module discovery */;
-    public Task OnStartedAsync (CancellationToken ct)  => /* after all contexts running */;
-    public Task OnStoppingAsync(CancellationToken ct)  => /* before context drain (reverse) */;
-    public Task OnStoppedAsync (CancellationToken ct)  => /* after all contexts stopped */;
+    public Task OnStoppingAsync(CancellationToken ct)  => /* before context drain (reverse order) */;
 }
 
 builder.Services.AddSingleton<ITsakLifecycleHook, MyHook>();
@@ -1360,7 +1357,7 @@ Modules use it via `redb.Route.Quartz`:
 
 ```csharp
 From("cron:0 */5 * * * ?")           // every 5 minutes
-    .Setbody(() => DateTime.UtcNow)
+    .SetBody(() => DateTime.UtcNow)
     .To("rabbitmq://heartbeats");
 ```
 

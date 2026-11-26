@@ -150,8 +150,10 @@ Configuration values are set as context properties. Access them in your route mo
 ```csharp
 public class OrdersRoute : RouteBuilder
 {
-    public override void Configure(IRouteContext context)
+    protected override void Configure()
     {
+        var context = Context!;
+
         // Simple value (Layer 1-2)
         var autoStart = context.GetProperty<string>("AutoStart");
         

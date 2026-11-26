@@ -32,6 +32,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Pending changes live in `changelog/unreleased/` until the release; `pwsh scripts/changelog.ps1 -Preview` shows them.
 
+## [4.7.6] — 2026-11-27
+
+### Changed
+
+- **Tsak 4.7.6 and its images run on redb 4.7.6, which loads pages with less memory and plans more queries through the
+  indexes.** Tsak's own code is unchanged. A database needs no conversion step. Packages: `redb.Tsak.Core`, `redb.Tsak.Worker`.
+
 ## [4.7.5] — 2026-11-24
 
 ### Changed
