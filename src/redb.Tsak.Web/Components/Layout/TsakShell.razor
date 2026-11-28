@@ -1,5 +1,6 @@
 @inherits LayoutComponentBase
 @inject ToastService Toast
+@inject NavigationManager Nav
 @implements IDisposable
 
 @* Anonymous access is blocked by the [Authorize] attribute every page inherits from
@@ -10,9 +11,15 @@
     <div class="shell-main">
         <TsakTopBar />
         <main class="shell-content">
-            <TsakErrorBoundary>
-                @Body
-            </TsakErrorBoundary>
+            @* Keyed by the node of the address: a change of node in the address (the node switcher, a link)
+               disposes the page and builds a new one for the new node. Without the key Blazor reuses the page
+               instance, and the page kept showing the previous node's data until its next poll, or for good on
+               the pages that load once. *@
+            <div class="shell-page" @key="_nodeKey">
+                <TsakErrorBoundary>
+                    @Body
+                </TsakErrorBoundary>
+            </div>
         </main>
     </div>
 </div>
@@ -20,11 +27,17 @@
 
 @code {
     private TsakToast? _toast;
+    private string _nodeKey = string.Empty;
 
     protected override void OnInitialized()
     {
         Toast.OnShow += OnToast;
     }
+
+    // The router hands the layout a new Body on every navigation, so the key is taken in the same render pass
+    // that builds the new page.
+    protected override void OnParametersSet() =>
+        _nodeKey = NodePath.NodeIdOf(Nav.ToBaseRelativePath(Nav.Uri)) ?? string.Empty;
 
     private void OnToast(string message, string level, int durationMs)
     {

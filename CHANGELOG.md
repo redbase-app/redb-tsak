@@ -32,6 +32,23 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Pending changes live in `changelog/unreleased/` until the release; `pwsh scripts/changelog.ps1 -Preview` shows them.
 
+## [4.7.7] — 2026-11-28
+
+### Changed
+
+- **Tsak 4.7.7 and its images run on redb 4.7.7, which makes fewer round trips per Pro list call and runs several
+  groupings faster.** Apart from the two fixes below, Tsak's code is unchanged. A database needs no conversion step. Packages: `redb.Tsak.Core`, `redb.Tsak.Worker`.
+
+### Fixed
+
+- **A node's start time and uptime count from the start of the node.** The monitoring page took them from the first
+  request for system info, so a node up for hours showed a few seconds after the dashboard first opened it.
+  `/api/system/info` and the cluster topology now report the same start time, the start of the node's process, which
+  also no longer moves when a node registers again. Packages: `redb.Tsak.Core`, `redb.Tsak.Core.Pro`.
+- **A node page of the dashboard shows the node in its address after an in-app change of node.** Following a link to
+  the same page of another node kept the previous node's data on screen until the page's next refresh, and for good on
+  the Storage, Dead-letter and Audit pages; the page is now built anew for the new node. Packages: `redb.Tsak.Web`.
+
 ## [4.7.6] — 2026-11-27
 
 ### Changed

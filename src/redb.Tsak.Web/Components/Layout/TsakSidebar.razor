@@ -129,21 +129,7 @@
         InvokeAsync(StateHasChanged);
     }
 
-    private void UpdateActiveNode()
-    {
-        var path = Nav.ToBaseRelativePath(Nav.Uri);
-        if (path.StartsWith("node/", StringComparison.OrdinalIgnoreCase))
-        {
-            var rest = path.Substring(5);
-            var slash = rest.IndexOf('/');
-            _activeNodeId = slash >= 0 ? rest.Substring(0, slash) : rest;
-            if (string.IsNullOrEmpty(_activeNodeId)) _activeNodeId = null;
-        }
-        else
-        {
-            _activeNodeId = null;
-        }
-    }
+    private void UpdateActiveNode() => _activeNodeId = NodePath.NodeIdOf(Nav.ToBaseRelativePath(Nav.Uri));
 
     public void Dispose()
     {

@@ -18,8 +18,6 @@ namespace redb.Tsak.Core.Controllers;
 [Route("/api/system")]
 public class SystemController : RedbController
 {
-    private static readonly DateTimeOffset StartTime = DateTimeOffset.UtcNow;
-
     [HttpGet("/health")]
     public async Task<object> GetHealth()
     {
@@ -152,8 +150,8 @@ public class SystemController : RedbController
             InformationalVersion = entry?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
                 ?.InformationalVersion?.Split('+')[0]
                 ?? entry?.GetName().Version?.ToString(),
-            StartedAt = StartTime.UtcDateTime,
-            Uptime = (DateTimeOffset.UtcNow - StartTime).ToString(),
+            StartedAt = NodeStartTime.Value.UtcDateTime,
+            Uptime = (DateTimeOffset.UtcNow - NodeStartTime.Value).ToString(),
             ContextCount = contextMgr?.GetAllContexts().Count ?? 0,
             ModuleCount = moduleReg?.GetAllModules().Count ?? 0,
             MachineName = Environment.MachineName,
